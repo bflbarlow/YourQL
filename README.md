@@ -1,17 +1,17 @@
 # YourQL
 
 ## Overview
-**YourQL** is a desktop application built with [Wails](https://wails.io/), designed to be a stripped-down, standalone version of the "Discussion Engine" originally found in the `data_app` web application. It focuses entirely on the core functionality of conversational database querying and LLM integration, removing the complexity of user authentication, workspaces, and multi-tenancy.
+**YourQL** is a desktop application built with [Wails v2](https://wails.io/). It focuses entirely on the core functionality of conversational database querying and LLM integration, providing a clean chat-like interface for interacting with databases via natural language.
 
 The application bridges the gap between natural language and SQL, allowing users to interact with their databases via a chat-like interface powered by Large Language Models (LLMs).
 
 ## Architecture
-YourQL follows the standard Wails architecture, combining a Go-based backend with a Svelte-based frontend:
+YourQL follows the standard Wails architecture, combining a Go-based backend with a Svelte 5-based frontend:
 
-1.  **Core Engine (`pkg/services/`)**: Contains the "Discussion Engine" logic. This includes the `ProcessUserMessage` function, which orchestrates the conversation loop: fetching context, calling the LLM, parsing JSON responses, and executing SQL.
-2.  **Database Layer (`pkg/models/`)**: Handles all database interactions using GORM and the MySQL driver. It defines the data structures for conversations, messages, and database connections.
-3.  **Wails Bindings (`app.go`)**: The gateway between the frontend and the backend. It exposes Go functions (like `ListDiscussions`) to the Svelte frontend.
-4.  **LLM Integration (`pkg/services/llm_*.go`)**: Provides a unified interface for multiple LLM providers (OpenAI, Anthropic, Ollama, and local models).
+1. **Core Engine (`pkg/services/`)**: Contains the "Discussion Engine" logic. This includes the `ProcessUserMessage` function, which orchestrates the conversation loop: fetching context, calling the LLM, parsing JSON responses, and executing SQL.
+2. **Database Layer (`pkg/models/`)**: Handles all database interactions using GORM and the modernc.org/sqlite driver. It defines the data structures for conversations, messages, and database connections.
+3. **Wails Bindings (`app.go`)**: The gateway between the frontend and the backend. It exposes Go functions (like `ListConversations`, `ProcessUserMessage`) to the Svelte frontend.
+4. **LLM Integration (`pkg/services/llm_*.go`)**: Provides a unified interface for multiple LLM providers (OpenAI, Anthropic, Ollama, and local models).
 
 ## Project Structure
 ```text
@@ -19,17 +19,31 @@ YourQL/
 ├── app.go                      # Wails application struct and bindings
 ├── main.go                     # Application entry point
 ├── go.mod / go.sum             # Go dependencies
-├── .env                        # Configuration (DB, LLM keys, etc.)
 ├── wails.json                  # Wails configuration
-├── pkg/                        # Core business logic (migrated from data_app)
+├── pkg/                        # Core business logic
 │   ├── models/                 # Data structures and DB schemas
-│   ├── services/               # Business logic (Discussion Engine, SQL execution, etc.)
-│   ├── controllers/            # API-like handlers (adapted for Wails)
-│   ├── configuration/          # Config parsing utilities
-│   └── utils/                  # Helper functions (sanitization, slugs)
-└── frontend/                   # Svelte UI
+│   │   ├── conversation.go     # Conversation and message models
+│   │   ├── db_connection.go    # Database connection models
+│   │   ├── llm_provider.go     # LLM provider models
+│   │   └── setup.go            # DB initialization and migrations
+│   ├── services/               # Business logic
+│   │   ├── discussion_engine.go # Core conversation orchestration
+│   │   ├── conversation.go     # Conversation persistence
+│   │   ├── sql_execution.go    # SQL execution and retry logic
+│   │   ├── database_introspection.go # Schema fetching
+│   │   ├── database_connection.go # Connection management
+│   │   ├── llm_client.go       # LLM interface definition
+│   │   ├── llm_openai.go       # OpenAI-compatible provider
+│   │   ├── llm_anthropic.go    # Anthropic Claude provider
+│   │   ├── llm_ollama.go       # Ollama provider
+│   │   ├── llm_local.go        # Custom local model provider
+│   │   └── llm_mock.go         # Mock provider for testing
+│   └── controllers/            # API-like handlers (adapted for Wails)
+└── frontend/                   # Svelte 5 UI
     ├── src/
     │   ├── App.svelte          # Main application component
+    │   ├── ConversationView.svelte # Conversation display and input
+    │   ├── SettingsView.svelte     # Settings management
     │   └── main.js             # Entry point
     ├── wailsjs/                # Auto-generated Wails bindings
     └── package.json            # Frontend dependencies
@@ -38,142 +52,205 @@ YourQL/
 ## Backend Details
 
 ### Core Components
-The backend of YourQL is built on a robust set of services migrated from the original `data_app`. These components work together to provide the "Discussion Engine" capabilities:
+The backend of YourQL is built on a robust set of services that work together to provide the "Discussion Engine" capabilities:
 
-1. **Discussion Engine (`pkg/services/discussion_engine.go`)**:
-   - The heart of the application. It manages the state of a conversation, interacts with the LLM, and handles the logic for SQL generation and execution.
-   - **Exploration Mode**: Supports "exploration rounds" where the LLM can run intermediate queries to gather data before formulating a final answer.
-   - **Safety Constraints**: Enforces read-only restrictions on exploration queries to prevent accidental data modification.
+#### 1. Discussion Engine (`pkg/services/discussion_engine.go`)
+- The heart of the application. It manages the state of a conversation, interacts with the LLM, and handles the logic for SQL generation and execution.
+- **Exploration Mode**: Supports "exploration rounds" where the LLM can run intermediate queries to gather data before formulating a final answer.
+- **Safety Constraints**: Enforces read-only restrictions on exploration queries to prevent accidental data modification.
+- **Context Management**: Automatically injects database schema into the LLM context via `buildSystemPrompt`.
+- **System Prompt Capping**: If the system prompt exceeds 16KB, it is truncated to prevent context window overflow.
+- **Retry Logic**: Handles LLM clarification responses and retry scenarios for final query generation.
 
-2. **LLM Client (`pkg/services/llm_client.go`)**:
-   - A unified interface for interacting with different LLM providers.
-   - **Supported Providers**:
-     - **OpenAI** (`llm_openai.go`): Supports GPT-4 and other OpenAI models.
-     - **Anthropic** (`llm_anthropic.go`): Supports Claude models.
-     - **Ollama** (`llm_ollama.go`): For local, self-hosted models.
-     - **Local** (`llm_local.go`): For custom local model paths.
-     - **Mock** (`llm_mock.go`): For testing without an actual LLM.
+#### 2. LLM Client (`pkg/services/llm_client.go`)
+- A unified interface for interacting with different LLM providers.
+- **Supported Providers**:
+  - **OpenAI** (`llm_openai.go`): Supports GPT-4 and other OpenAI-compatible models (OpenRouter, LM Studio, etc.).
+  - **Anthropic** (`llm_anthropic.go`): Supports Claude models.
+  - **Ollama** (`llm_ollama.go`): For local, self-hosted models.
+  - **Local** (`llm_local.go`): For custom HTTP endpoints supporting both OpenAI-compatible and legacy API formats.
+  - **Mock** (`llm_mock.go`): For testing without an actual LLM.
 
-3. **SQL Execution (`pkg/services/sql_execution.go`)**:
-   - Handles the execution of SQL queries against the configured database connection.
-   - Includes retry logic for transient errors and provides a mechanism to feed error messages back to the LLM for self-correction.
+#### 3. SQL Execution (`pkg/services/sql_execution.go`)
+- Handles the execution of SQL queries against the configured database connection.
+- Includes retry logic for transient errors and provides a mechanism to feed error messages back to the LLM for self-correction.
 
-4. **Database Introspection (`pkg/services/database_introspection.go`)**:
-   - Automatically fetches the schema of the connected database (tables, columns, indexes, foreign keys).
-   - This schema is injected into the LLM's context to ensure generated SQL is accurate and compatible.
+#### 4. Database Introspection (`pkg/services/database_introspection.go`)
+- Automatically fetches the schema of the connected database (tables, columns, indexes, foreign keys).
+- **Multi-DB Support**: Uses `INFORMATION_SCHEMA` for MySQL and `pragma_table_info()` for SQLite.
+- This schema is injected into the LLM's context to ensure generated SQL is accurate and compatible.
+
+#### 5. Conversation Management (`pkg/services/conversation.go`)
+- Persists conversations and messages to the local SQLite database (`~/.yourql/yourql.db`).
+- Supports soft delete for discussions with proper status tracking.
+- Manages metadata for storing LLM payloads and exploration results.
+
+### Database Storage
+YourQL uses a local SQLite database for all application data:
+- **Location**: `~/.yourql/yourql.db`
+- **Auto-creation**: Directory and database are created automatically on first run
+- **Migration Strategy**: Uses `CREATE TABLE IF NOT EXISTS` + `addColumnIfNotExists()` helper for safe schema evolution
+- **SQLite Driver**: Uses `modernc.org/sqlite` (pure Go, no CGO) to avoid cross-compilation issues
+- **Date Functions**: Uses `CURRENT_TIMESTAMP` (not `NOW()`) for SQLite compatibility
 
 ### Configuration
-YourQL relies on a `.env` file located in the root directory for configuration. Key environment variables include:
-
-- `DB_CONN_STR`: The MySQL connection string.
-- `LLM_PROVIDER`: The default LLM to use (`openai`, `anthropic`, `ollama`, `local`).
-- `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`: API keys for the respective providers.
-- `OLLAMA_BASE_URL` / `OLLAMA_MODEL`: Configuration for local Ollama instances.
+Configuration is stored in the local SQLite database, not in `.env` files. Users manage settings through the Settings UI:
+- **Model Configurations**: LLM provider settings (name, type, model, base URL, API key)
+- **Database Configurations**: External database connections (MySQL, SQLite) with introspection
+- **General Settings**: Application-wide preferences
 
 ### Dependencies
 The project uses the following major Go modules:
-- **Wails v2**: For the desktop framework.
-- **GORM**: For database ORM operations.
-- **Gin**: Used in the migrated controllers for request/response handling.
-- **go-sql-driver/mysql**: For MySQL connectivity.
-- **godotenv**: For environment variable management.
+- **Wails v2**: For the desktop framework
+- **GORM**: For database ORM operations
+- **modernc.org/sqlite**: Pure Go SQLite driver (no CGO)
+- **github.com/go-sql-driver/mysql**: MySQL driver registration
+- **github.com/samber/lo**: Functional helpers
 
 ## Frontend and Wails Integration
 
 ### Technology Stack
-- **Svelte 5**: Used for building the reactive user interface.
-- **Vite**: Used as the build tool and development server.
-- **Wails Runtime**: Provides the bridge between the Go backend and the JavaScript frontend.
+- **Svelte 5**: Used for building the reactive user interface
+- **Vite**: Used as the build tool and development server
+- **Wails Runtime**: Provides the bridge between the Go backend and the JavaScript frontend
 
 ### Wails Bindings
 Wails automatically generates TypeScript and JavaScript bindings that allow the Svelte frontend to call Go functions. These are located in `frontend/wailsjs/go/main/`.
 
-Example of how a binding is defined in `app.go`:
-```go
-// ListDiscussions retrieves titles of discussions for a user in a workspace
-func (a *App) ListDiscussions(workspaceID uint, userID uint) ([]string, error) {
-    discussions, err := services.ListConversationsByUser(workspaceID, userID)
-    if err != nil {
-        return nil, err
-    }
-
-    var titles []string
-    for _, d := range discussions {
-        if d.Title != nil {
-            titles = append(titles, *d.Title)
-        } else {
-            titles = append(titles, "Untitled")
-        }
-    }
-    return titles, nil
-}
+Regenerate bindings after adding new Go methods:
+```bash
+~/go/bin/wails generate module
 ```
 
-In the Svelte frontend, this is called using the generated `App.js`:
-```javascript
-import {ListDiscussions} from '../wailsjs/go/main/App.js'
+### UI Implementation
 
-// Calling the Go function
-const res = await ListDiscussions(1, 1);
-```
+#### Sidebar Navigation
+- **Discussions**: List of conversations with actual LLM provider and DB connection names
+- **Settings**: Three tabs for configuration management
 
-### Current UI Implementation
-The current `App.svelte` provides a simplified interface to test the backend:
-1. **Status Box**: Displays the current state of the application (e.g., "Ready", "Loading", or error messages).
-2. **Action Button**: Triggers the `loadDiscussions` function, which calls the backend to fetch conversations.
-3. **Discussion List**: Displays the titles of the retrieved discussions in a clean, responsive list.
+#### Conversation View (`ConversationView.svelte`)
+- **Message Display**: User and assistant messages with Markdown support
+- **Input**: Textarea with send button
+- **Tech Toggle**: Show/hide intermediate engine messages (raw SQL, exploration results, LLM payloads)
+- **Exploration Results**: Displays intermediate SQL queries and their results when tech details are enabled
+- **Raw LLM Payloads**: Shows full request/response JSON with copy button when tech details are enabled
+
+#### Settings View (`SettingsView.svelte`)
+
+**Model Configurations Tab**
+- List of configured LLM providers
+- Add/edit/delete providers
+- Test connections
+
+**Database Configurations Tab**
+- **List View**: Horizontal list of database connections with type badges
+- **Detail View**: Click any connection to see full configuration:
+  - Connection info (name, type, host, port, database, credentials)
+  - Custom system prompt
+  - Business rules (one per line)
+  - Exploration settings (allow exploration, max rounds, safety mode)
+  - **Editable Schema**: Load and view database schema with inline table/column description editing
+  - Actions: Save, Test Connection, Delete
+
+**General Settings Tab**
+- Application-wide preferences
 
 ### Styling
-The UI uses a clean, modern aesthetic with:
-- **Global Resets**: Ensures consistent behavior across different OS environments.
-- **Flexbox Layout**: Used for centering and responsive design.
-- **Card-style Containers**: For status and list items to improve readability.
+The UI uses a clean, light theme with:
+- White background, black text, blue accents
+- Flexbox layout for responsive design
+- Card-style containers for settings and conversation items
 
 ---
 
-## Needed Changes and Potential Enhancements
+## Key Implementation Details
 
-### 1. Immediate Fixes and Refinements
-- **Database Initialization**: 
-  - The current `app.go` calls `models.ConnectDatabase()` during startup. For a desktop app, it would be better to make the database connection dynamic, allowing users to connect to different databases without restarting the app.
-  - **Recommendation**: Create a "Settings" or "Connections" view in the frontend to manage multiple database connections.
+### Svelte 5 Patterns Used
+- **`$props()` rune**: For component props (replaces `export let`)
+- **`$state()`**: For ALL reactive local state
+- **`$derived(expr)`**: For computed values (not `$derived let x = $state(...)`)
+- **`$effect()`**: For syncing derived state
+- **Callback pattern**: For child→parent data flow
+- **`onclick`**: Event handlers (no colon syntax)
+- **`{@html}`**: For safe HTML rendering
 
-- **Environment Variable Handling**: 
-  - The `environment` package relies on a `.env` file in the working directory. In a packaged Wails app, the working directory might not be predictable.
-  - **Recommendation**: Update `pkg/environment/env.go` to look for the `.env` file in the user's home directory or the app's data directory.
+### Go Patterns Used
+- **`make([]*Type, 0)`**: For empty slices (prevents `nil` serializing to `null` in JSON)
+- **`addColumnIfNotExists()`**: Safe column addition for SQLite migrations
+- **`_ "github.com/go-sql-driver/mysql"`**: Required for driver registration
 
-- **Frontend Error Handling**: 
-  - While the current UI shows errors, it would be beneficial to provide more specific feedback for common issues (e.g., "Database unreachable" vs. "LLM API key invalid").
+### SQLite Date Functions
+- Use `CURRENT_TIMESTAMP` (not `NOW()`) for SQLite compatibility
 
-### 2. Feature Enhancements
-- **Dynamic LLM Selection**: 
-  - Allow users to select which LLM to use for a specific conversation directly from the UI.
+### LLM Client Interface
+```go
+type LLMClient interface {
+    ChatCompletion(ctx context.Context, messages []ChatMessage) (string, error)
+    ChatCompletionWithPayload(ctx context.Context, messages []ChatMessage) (content, requestJSON, responseJSON string, err error)
+}
+```
+- `ChatCompletionWithPayload` captures full request/response JSON for debugging
+- Payloads are stored in `conversation_messages` as metadata for `exploration`-role messages
 
-- **SQL Query Editor**: 
-  - Provide a code editor (e.g., Monaco Editor) for users to view and manually edit the SQL queries generated by the LLM before they are executed.
+### Exploration Queries
+Per-connection configuration stored as JSON in `db_connections.config`:
+- `exploration_allowed`: Enable/disable exploration
+- `max_exploration_rounds`: Maximum intermediate query rounds
+- `exploration_safety`: Safety mode (strict/relaxed/permissive)
+- `system_prompt`: Custom system prompt for this connection
+- `business_rules`: Business rules injected into system prompt
+- `table_descriptions`: Custom table descriptions
+- `column_descriptions`: Custom column descriptions (format: `table.column`)
 
-- **Query History and Persistence**: 
-  - The backend already supports saving queries. The frontend should provide a more robust history view, allowing users to revisit past queries and their results.
+### Technical Details Toggle
+Per-discussion boolean stored in `tech_details` column:
+- **OFF**: Shows only user and assistant messages
+- **ON**: Shows all intermediate engine messages including:
+  - Exploration SQL queries and results
+  - Raw LLM request/response JSON
+  - Full LLM message array
+  - Copy button for payloads
 
-- **Export Functionality**: 
-  - Add the ability to export query results to CSV, JSON, or Excel formats.
+### Soft Delete
+Discussions are soft-deleted via `status = 'deleted'` and `deleted_at = CURRENT_TIMESTAMP`. List queries filter on `status != 'deleted'` (safe column that always exists).
 
-### 3. Architectural Improvements
-- **Modularization**: 
-  - The `pkg/services` directory is quite large. Consider splitting the "Discussion Engine" into its own sub-package (e.g., `pkg/services/engine/`) to improve maintainability.
+---
 
-- **Configuration Management**: 
-  - Move away from `.env` files for a desktop app. Implement a local JSON or SQLite-based configuration system to store LLM keys and database credentials securely.
+## Development
 
-- **Testing**: 
-  - The project currently lacks a test suite. Adding unit tests for the `discussion_engine.go` and `sql_execution.go` modules would be highly beneficial.
+### Prerequisites
+- Go 1.21+
+- Node.js 18+
+- Wails CLI: `go install github.com/wailsapp/wails/v2/cmd/wails@latest`
 
-### 4. UI/UX Polish
-- **Markdown Rendering**: 
-  - The LLM often returns responses in Markdown. The frontend should include a Markdown renderer to display these responses correctly.
+### Building
+```bash
+# Generate Wails bindings
+~/go/bin/wails generate module
 
-- **Loading States**: 
-  - Implement more granular loading indicators (e.g., "Thinking...", "Running SQL...") to give users better feedback during long operations.
+# Build Go backend
+go build .
 
-- **Theme Support**: 
-  - Add support for dark mode, which is a standard expectation for modern desktop applicationLet# YourQL
+# Build frontend
+cd frontend && npm run build
+
+# Run in dev mode
+wails dev
+```
+
+### Running
+```bash
+wails dev
+```
+
+### Testing
+- Test LLM connections from Settings → Model Configurations → Test button
+- Test DB connections from Settings → Database Configurations → Detail View → Test Connection
+- View schema from Settings → Database Configurations → Detail View → Load Schema
+
+---
+
+## Known Limitations
+- Small models (e.g., qwen3.5-0.8b) may not handle consecutive same-role messages well
+- System prompt is capped at 16KB to prevent context overflow
+- LLM base URLs must include `/v1` prefix for OpenAI-compatible endpoints (e.g., `http://192.168.0.176:1234/v1`)
