@@ -5,6 +5,24 @@
 
 The application bridges the gap between natural language and SQL, allowing users to interact with their databases via a chat-like interface powered by Large Language Models (LLMs).
 
+## Screenshots
+
+<p align="center">
+  <img src="screenshots/discussions-view.png" alt="Discussions View" width="45%" />
+  <img src="screenshots/conversation-view.png" alt="Conversation View" width="45%" />
+</p>
+
+<p align="center">
+  <img src="screenshots/settings-llm-providers.png" alt="LLM Provider Settings" width="45%" />
+  <img src="screenshots/settings-db-connections.png" alt="Database Connection Settings" width="45%" />
+</p>
+
+<p align="center">
+  <img src="screenshots/discussion-settings-popover.png" alt="Discussion Settings" width="45%" />
+  <img src="screenshots/discussion-settings-popover-2.png" alt="Discussion Settings Expanded" width="45%" />
+</p>
+
+---
 ## Architecture
 YourQL follows the standard Wails architecture, combining a Go-based backend with a Svelte 5-based frontend:
 

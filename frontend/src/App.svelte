@@ -1,5 +1,6 @@
 <script>
-  import { ListConversations, CreateConversation, GetConversationMessages, ProcessUserMessage, DeleteConversation, UpdateConversationTechDetails, ArchiveConversation, RestoreConversation, UpdateConversationSettings, ListLLMProviders, ListDBConnections, GetGeneralSettings } from '../wailsjs/go/main/App.js'
+  import { ListConversations, CreateConversation, GetConversationMessages, ProcessUserMessage, DeleteConversation, UpdateConversationTechDetails, ArchiveConversation, RestoreConversation, UpdateConversationSettings, ListLLMProviders, ListDBConnections, UpdateConversationTitle, UpdateConversationMaxMessages, UpdateConversationPinned, DuplicateConversation, ClearConversationMessages } from '../wailsjs/go/main/App.js'
+  import { MessageSquare, Settings, X, Copy, Trash2, Pin, ChevronRight, ChevronLeft, Plus } from 'lucide-svelte'
   import SettingsView from './SettingsView.svelte'
   import ConversationView from './ConversationView.svelte'
 
@@ -7,23 +8,21 @@
   let conversations = $state([])
   let llmProviders = $state([])
   let dbConnections = $state([])
-  
-  // App version and description
+  let sidebarCollapsed = $state(false)
+
   const appVersion = '0.1.0'
   const appDescription = 'YourQL: Natural Language to SQL Desktop App'
-  
-  // Lookup maps for names by ID
+
   let llmNameByID = $derived(
     Object.fromEntries(llmProviders.map(p => [p.id, p.name]))
   )
   let dbNameByID = $derived(
     Object.fromEntries(dbConnections.map(c => [c.id, c.name]))
   )
-  let generalSettings = $state({})
+
   let status = $state("Ready")
   let error = $state(null)
 
-  // New discussion form state
   let showNewDiscussion = $state(false)
   let newDiscussionTitle = $state('')
   let selectedLLMProvider = $state(null)
@@ -31,7 +30,6 @@
   let creating = $state(false)
   let createError = $state(null)
 
-  // Active conversation state
   let activeConversation = $state(null)
   let conversationMessages = $state([])
   let userMessage = $state('')
@@ -40,40 +38,31 @@
   let showTechDetails = $state(false)
   let selectedConversation = $state(null)
   let showGearPopover = $state(false)
-  
-  // Close gear popover whenever activeView changes (page navigation)
+
   $effect(() => {
-    // Trigger on activeView change
     activeView
     showGearPopover = false
     selectedConversation = null
   })
 
-  // Delete confirmation state
   let deleteTargetId = $state(null)
   let deleteTargetTitle = $state('')
   let deleting = $state(false)
 
-  // Load initial data
+  let showArchived = $state(false)
+
   async function loadData() {
     status = "Loading..."
     error = null
     try {
-      // Load conversations
-      const convRes = await ListConversations(1, 1)
-      conversations = convRes || []
+      const convRes = await ListConversations()
+      conversations = (convRes || []).filter(c => showArchived || c.status !== 'archived')
 
-      // Load LLM providers
       const llmRes = await ListLLMProviders()
       llmProviders = llmRes || []
 
-      // Load DB connections
       const dbRes = await ListDBConnections()
       dbConnections = dbRes || []
-
-      // Load general settings
-      const settingsRes = await GetGeneralSettings()
-      generalSettings = settingsRes || {}
 
       status = "Loaded successfully"
     } catch (e) {
@@ -82,10 +71,8 @@
     }
   }
 
-  // Call loadData on component mount
   loadData()
 
-  // Create a new discussion
   async function handleCreateDiscussion() {
     if (!newDiscussionTitle.trim()) {
       createError = 'Please enter a title'
@@ -99,22 +86,17 @@
       const llmProviderID = selectedLLMProvider ? selectedLLMProvider.id : null
       const dbConnectionID = selectedDBConnection ? selectedDBConnection.id : null
 
-      const conversation = await CreateConversation(1, 1, newDiscussionTitle.trim(), llmProviderID, dbConnectionID)
+      const conversation = await CreateConversation(newDiscussionTitle.trim(), llmProviderID, dbConnectionID)
 
-      // Reset form
       showNewDiscussion = false
       newDiscussionTitle = ''
       selectedLLMProvider = null
       selectedDBConnection = null
 
-      // Reload conversations
       await loadData()
 
-      // Open the new conversation
       activeConversation = conversation
       activeView = 'conversation'
-
-      // Load messages
       conversationMessages = await GetConversationMessages(conversation.id)
     } catch (e) {
       createError = e.toString()
@@ -123,7 +105,6 @@
     }
   }
 
-  // Open a conversation
   async function openConversation(conversation) {
     activeConversation = conversation
     activeView = 'conversation'
@@ -136,7 +117,6 @@
     }
   }
 
-  // Delete conversation confirmation
   function requestDeleteConversation(id, title) {
     deleteTargetId = id
     deleteTargetTitle = title || 'Untitled'
@@ -174,11 +154,8 @@
     messageError = null
 
     try {
-      // Process through discussion engine (backend now persists user message)
       await ProcessUserMessage(activeConversation.id, userMessage.trim())
       userMessage = ''
-
-      // Reload messages from DB
       conversationMessages = await GetConversationMessages(activeConversation.id)
     } catch (e) {
       messageError = e.toString()
@@ -187,98 +164,196 @@
     }
   }
 
-  // Back to conversations list
   function backToConversations() {
     activeConversation = null
     conversationMessages = []
     activeView = 'discussions'
   }
-  
-  // Toggle tech details
+
   async function handleTechDetailsToggle() {
     showTechDetails = !showTechDetails
     if (activeConversation) {
       try {
-        // Persist toggle state to backend
         await UpdateConversationTechDetails(activeConversation.id, showTechDetails)
       } catch (e) {
         console.error('Failed to save tech details toggle:', e)
       }
     }
   }
-  
+
   async function handleUpdateConversationSettings(llmProviderID, dbConnectionID) {
     if (!activeConversation) return
     try {
       await UpdateConversationSettings(activeConversation.id, llmProviderID, dbConnectionID)
-      // Update local state
       if (llmProviderID !== null) activeConversation.llm_provider_id = llmProviderID
       if (dbConnectionID !== null) activeConversation.db_connection_id = dbConnectionID
       activeConversation.updated_at = new Date().toISOString()
-      // Reload conversations to update sidebar order
-      const convRes = await ListConversations(1, 1)
-      conversations = convRes || []
+      const convRes = await ListConversations()
+      conversations = (convRes || []).filter(c => showArchived || c.status !== 'archived')
     } catch (e) {
       console.error('Failed to update conversation settings:', e)
     }
   }
-  
+
   async function handleArchiveConversation() {
     if (!activeConversation) return
     try {
       await ArchiveConversation(activeConversation.id)
       backToConversations()
-      // Reload conversations to update sidebar
-      const convRes = await ListConversations(1, 1)
-      conversations = convRes || []
+      const convRes = await ListConversations()
+      conversations = (convRes || []).filter(c => showArchived || c.status !== 'archived')
     } catch (e) {
       console.error('Failed to archive conversation:', e)
+    }
+  }
+
+  // ==================== New conversation settings handlers ====================
+  async function handleRenameConversation() {
+    if (!selectedConversation || !selectedConversation.title?.trim()) return
+    try {
+      const updated = await UpdateConversationTitle(selectedConversation.id, selectedConversation.title.trim())
+      if (activeConversation && activeConversation.id === selectedConversation.id) {
+        activeConversation.title = updated.title
+      }
+      await loadData()
+    } catch (e) {
+      console.error('Failed to rename conversation:', e)
+    }
+  }
+
+  async function handleSetMaxMessages(maxMessages) {
+    if (!selectedConversation) return
+    try {
+      await UpdateConversationMaxMessages(selectedConversation.id, maxMessages)
+      if (activeConversation && activeConversation.id === selectedConversation.id) {
+        activeConversation.max_messages = maxMessages
+      }
+    } catch (e) {
+      console.error('Failed to set max messages:', e)
+    }
+  }
+
+  async function handleSetPinned(pinned) {
+    if (!selectedConversation) return
+    try {
+      await UpdateConversationPinned(selectedConversation.id, pinned)
+    } catch (e) {
+      console.error('Failed to set pinned:', e)
+    }
+  }
+
+  async function handleToggleTechDetails(id) {
+    try {
+      await UpdateConversationTechDetails(id, true)
+      if (activeConversation && activeConversation.id === id) {
+        activeConversation.tech_details = true
+      }
+    } catch (e) {
+      console.error('Failed to toggle tech details:', e)
+    }
+  }
+
+  async function handleDuplicateConversation() {
+    if (!selectedConversation) return
+    try {
+      const duplicated = await DuplicateConversation(selectedConversation.id)
+      await loadData()
+      // Open the duplicated conversation
+      activeConversation = duplicated
+      activeView = 'conversation'
+      conversationMessages = await GetConversationMessages(duplicated.id)
+      showGearPopover = false
+      selectedConversation = null
+    } catch (e) {
+      console.error('Failed to duplicate conversation:', e)
+    }
+  }
+
+  async function handleClearMessages() {
+    if (!selectedConversation) return
+    if (!confirm('Clear all messages in this conversation? The conversation itself will remain.')) return
+    try {
+      await ClearConversationMessages(selectedConversation.id)
+      if (activeConversation && activeConversation.id === selectedConversation.id) {
+        conversationMessages = []
+      }
+      showGearPopover = false
+      selectedConversation = null
+      await loadData()
+    } catch (e) {
+      console.error('Failed to clear messages:', e)
     }
   }
 </script>
 
 <div class="app-layout">
-  <!-- Sidebar -->
-  <aside class="sidebar">
+  <aside class="sidebar {sidebarCollapsed ? 'collapsed' : ''}">
     <div class="sidebar-header">
-      <h1>YourQL</h1>
+      <button class="sidebar-toggle" onclick={() => sidebarCollapsed = !sidebarCollapsed} title="{sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}">
+        {#if sidebarCollapsed}
+          <ChevronRight size={16} />
+        {:else}
+          <ChevronLeft size={16} />
+        {/if}
+      </button>
+      {#if !sidebarCollapsed}
+        <h1>YourQL</h1>
+      {/if}
     </div>
 
     <nav class="sidebar-nav">
       <button
         class="nav-item {activeView === 'discussions' ? 'active' : ''}"
         onclick={() => activeView = 'discussions'}
+        title="Discussions"
       >
-        <span class="nav-icon">💬</span>
-        <span>Discussions</span>
+        <span class="nav-icon"><MessageSquare size={18} /></span>
+        {#if !sidebarCollapsed}
+          <span>Discussions</span>
+        {/if}
       </button>
 
       <button
         class="nav-item {activeView === 'settings' ? 'active' : ''}"
         onclick={() => activeView = 'settings'}
+        title="Settings"
       >
-        <span class="nav-icon">⚙️</span>
-        <span>Settings</span>
+        <span class="nav-icon"><Settings size={18} /></span>
+        {#if !sidebarCollapsed}
+          <span>Settings</span>
+        {/if}
       </button>
-      
+
       <button
         class="nav-item {activeView === 'about' ? 'active' : ''}"
         onclick={() => activeView = 'about'}
+        title="About"
       >
-        <span class="nav-icon">ℹ️</span>
-        <span>About</span>
+        <span class="nav-icon">i️</span>
+        {#if !sidebarCollapsed}
+          <span>About</span>
+        {/if}
       </button>
     </nav>
 
     <div class="sidebar-footer">
-      <div class="status-indicator">
-        <span class="status-dot {error ? 'error' : 'success'}"></span>
-        <span class="status-text">{status}</span>
-      </div>
+      {#if sidebarCollapsed}
+        <button
+          class="btn-new-discussion btn-new-discussion-icon"
+          onclick={() => showNewDiscussion = true}
+          type="button"
+          title="New Discussion"
+        >
+          <Plus size={16} />
+        </button>
+      {:else}
+        <button class="btn-new-discussion" onclick={() => showNewDiscussion = true} type="button">
+          <Plus size={14} /> New Discussion
+        </button>
+      {/if}
     </div>
   </aside>
 
-  <!-- Main Content Area -->
   <main class="main-content">
     {#if error}
       <div class="error-banner">
@@ -290,7 +365,13 @@
       <div class="view-container">
         <div class="view-header">
           <h2>Discussions</h2>
-          <button class="btn btn-primary" onclick={() => showNewDiscussion = true}>+ New Discussion</button>
+          <div class="view-header-actions">
+            <label class="archived-toggle">
+              <input type="checkbox" bind:checked={showArchived} onchange={() => loadData()} />
+              Show archived
+            </label>
+            <button class="btn btn-primary" onclick={() => showNewDiscussion = true}>+ New Discussion</button>
+          </div>
         </div>
         <div class="view-content">
           {#if conversations.length === 0}
@@ -319,8 +400,9 @@
                     onclick={(e) => { e.stopPropagation(); requestDeleteConversation(conv.id, conv.title) }}
                     title="Delete discussion"
                     type="button"
+                    disabled={deleting}
                   >
-                    ✕
+                    <X size={14} />
                   </button>
                   <button
                     class="gear-btn"
@@ -328,7 +410,7 @@
                     title="Conversation settings"
                     type="button"
                   >
-                    ⚙️
+                    <Settings size={14} />
                   </button>
                 </div>
               {/each}
@@ -346,6 +428,8 @@
         {messageError}
         userMessage={userMessage}
         showTechDetails={showTechDetails}
+        maxMessages={activeConversation?.max_messages || 0}
+        onMaxMessagesChange={handleSetMaxMessages}
         onSendMessage={handleSendMessage}
         onBack={backToConversations}
         onMessageChange={(val) => userMessage = val}
@@ -358,7 +442,6 @@
       <SettingsView
         {llmProviders}
         {dbConnections}
-        {generalSettings}
         onUpdate={loadData}
       />
     {:else if activeView === 'about'}
@@ -367,12 +450,12 @@
           <h2>YourQL</h2>
           <p class="version">Version {appVersion}</p>
           <p class="description">{appDescription}</p>
-          
+
           <div class="about-section">
             <h3>What is YourQL?</h3>
             <p>YourQL is a desktop application that lets you query databases using natural language. It uses Large Language Models (LLMs) to translate your questions into SQL queries and executes them against your configured databases.</p>
           </div>
-          
+
           <div class="about-section">
             <h3>Key Features</h3>
             <ul>
@@ -384,7 +467,7 @@
               <li>Technical details toggle for debugging</li>
             </ul>
           </div>
-          
+
           <div class="about-section">
             <h3>Technology Stack</h3>
             <ul>
@@ -394,7 +477,7 @@
               <li><strong>LLM Integration:</strong> OpenAI API, Anthropic Claude, Ollama, Local models</li>
             </ul>
           </div>
-          
+
           <div class="about-section">
             <h3>License</h3>
             <p>YourQL is an open-source project. Source code available on GitHub.</p>
@@ -403,16 +486,19 @@
       </div>
     {/if}
   </main>
-  
+
   {#if showGearPopover && selectedConversation}
-    <div class="gear-popover" onclick={(e) => e.stopPropagation()}>
+    <div class="gear-popover-overlay" onclick={() => { showGearPopover = false; selectedConversation = null }}></div>
+    <div class="gear-popover gear-popover-wide" onclick={(e) => e.stopPropagation()}>
       <div class="gear-popover-header">
         <span>Settings for "{selectedConversation.title}"</span>
-        <button class="gear-popover-close" onclick={() => { showGearPopover = false; selectedConversation = null }}>✕</button>
+        <button class="gear-popover-close" onclick={() => { showGearPopover = false; selectedConversation = null }}><X size={16} /></button>
       </div>
+
+      <!-- LLM Provider -->
       <div class="gear-popover-section">
         <label>LLM Provider</label>
-        <select 
+        <select
           value={selectedConversation.llm_provider_id || ''}
           onchange={(e) => {
             const val = e.target.value ? parseInt(e.target.value) : null
@@ -425,9 +511,11 @@
           {/each}
         </select>
       </div>
+
+      <!-- DB Connection -->
       <div class="gear-popover-section">
         <label>DB Connection</label>
-        <select 
+        <select
           value={selectedConversation.db_connection_id || ''}
           onchange={(e) => {
             const val = e.target.value ? parseInt(e.target.value) : null
@@ -440,15 +528,86 @@
           {/each}
         </select>
       </div>
+
+      <!-- Rename -->
+      <div class="gear-popover-section">
+        <label>Rename</label>
+        <input
+          type="text"
+          value={selectedConversation.title || ''}
+          placeholder="Enter new name..."
+          oninput={(e) => {
+            selectedConversation.title = e.target.value
+          }}
+          onkeydown={(e) => {
+            if (e.key === 'Enter') {
+              handleRenameConversation()
+              e.target.blur()
+            }
+          }}
+          onblur={() => {
+            handleRenameConversation()
+          }}
+        />
+      </div>
+
+      <!-- Message Limit -->
+      <div class="gear-popover-section">
+        <label>Visible Messages</label>
+        <div class="message-limit-group">
+          <button
+            class="msg-limit-btn {selectedConversation.max_messages === 0 ? 'active' : ''}"
+            onclick={() => handleSetMaxMessages(0)}
+          >Show All</button>
+          <input
+            type="number"
+            value={selectedConversation.max_messages || ''}
+            placeholder="e.g. 50"
+            min="1"
+            max="500"
+            oninput={(e) => {
+              const val = parseInt(e.target.value)
+              if (val >= 1 && val <= 500) {
+                selectedConversation.max_messages = val
+              }
+            }}
+            onblur={() => handleSetMaxMessages(selectedConversation.max_messages || 0)}
+          />
+        </div>
+      </div>
+
+      <!-- Pin -->
+      <div class="gear-popover-section">
+        <label>
+          <input type="checkbox" bind:checked={selectedConversation.pinned} onchange={() => handleSetPinned(selectedConversation.pinned)} />
+          Pin to top of list
+        </label>
+      </div>
+
+      <!-- Tech Details -->
+      <div class="gear-popover-section">
+        <label>
+          <input type="checkbox" bind:checked={selectedConversation.tech_details} onchange={() => handleToggleTechDetails(selectedConversation.id)} />
+          Show technical details by default
+        </label>
+      </div>
+
       <div class="gear-popover-divider"></div>
+
+      <!-- Action buttons -->
       <div class="gear-popover-actions">
+        <button class="gear-action-btn duplicate" onclick={() => handleDuplicateConversation()} title="Duplicate">
+          <Copy size={14} /> Duplicate
+        </button>
+        <button class="gear-action-btn clear" onclick={() => handleClearMessages()} title="Clear messages">
+          <Trash2 size={14} /> Clear
+        </button>
         {#if selectedConversation.status === 'archived'}
           <button class="gear-action-btn restore" onclick={() => {
             RestoreConversation(selectedConversation.id).then(() => {
               showGearPopover = false
               selectedConversation = null
-              const convRes = ListConversations(1, 1)
-              convRes.then(res => { conversations = res || [] })
+              loadData()
             }).catch(e => console.error('Failed to restore:', e))
           }}>Restore</button>
         {/if}
@@ -461,13 +620,12 @@
     </div>
   {/if}
 
-  <!-- New Discussion Modal -->
   {#if showNewDiscussion}
     <div class="modal-overlay" onclick={() => showNewDiscussion = false}>
       <div class="modal" onclick={(e) => e.stopPropagation()}>
         <div class="modal-header">
           <h3>New Discussion</h3>
-          <button class="modal-close" onclick={() => showNewDiscussion = false}>×</button>
+          <button class="modal-close" onclick={() => showNewDiscussion = false}><X size={16} /></button>
         </div>
         <div class="modal-body">
           <div class="form-group">
@@ -514,7 +672,6 @@
     </div>
   {/if}
 
-  <!-- Delete Confirmation Modal -->
   {#if deleteTargetId}
     <div class="modal-overlay" onclick={cancelDelete}>
       <div class="modal delete-confirm" onclick={(e) => e.stopPropagation()}>
@@ -552,28 +709,72 @@
     width: 100vw;
   }
 
-  /* Sidebar Styles */
   .sidebar {
     width: 250px;
+    min-width: 250px;
     background: #f5f5f5;
     display: flex;
     flex-direction: column;
     padding: 20px 0;
-    box-shadow: 2px 0 10px rgba(0, 0, 0, 0.05);
     border-right: 1px solid #e0e0e0;
+    border-right: 1px solid #e0e0e0;
+    transition: width 0.2s ease, min-width 0.2s ease, padding 0.2s ease;
+    overflow: hidden;
+  }
+
+  .sidebar.collapsed {
+    width: 60px;
+    min-width: 60px;
+    padding: 20px 0;
   }
 
   .sidebar-header {
     padding: 0 20px 30px;
     border-bottom: 1px solid #e0e0e0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .sidebar-toggle {
+    width: 28px;
+    height: 28px;
+    border: none;
+    background: transparent;
+    border-radius: 6px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    color: #666666;
+    transition: all 0.2s ease;
+    flex-shrink: 0;
+  }
+  
+  .sidebar-toggle:hover {
+    background: rgba(2, 136, 209, 0.1);
+    color: #0288d1;
+  }
+
+  .sidebar.collapsed .sidebar-header {
+    padding: 0 16px 20px;
+    justify-content: center;
   }
 
   .sidebar-header h1 {
     margin: 0;
     font-size: 24px;
     font-weight: 700;
-    color: #4fc3f7;
+    color: #0277bd;
     letter-spacing: 1px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .sidebar.collapsed .sidebar-header h1 {
+    display: none;
   }
 
   .sidebar-nav {
@@ -589,28 +790,39 @@
     margin-bottom: 8px;
     background: transparent;
     border: none;
-    border-radius: 8px;
+    border-radius: 6px;
     color: #666666;
     font-size: 15px;
     cursor: pointer;
     transition: all 0.2s ease;
     text-align: left;
+    gap: 12px;
   }
 
   .nav-item:hover {
-    background: rgba(79, 195, 247, 0.1);
+    background: rgba(2, 136, 209, 0.1);
     color: #0288d1;
   }
 
   .nav-item.active {
-    background: rgba(79, 195, 247, 0.15);
+    background: rgba(2, 136, 209, 0.15);
     color: #0288d1;
     font-weight: 600;
   }
 
   .nav-icon {
-    margin-right: 12px;
     font-size: 18px;
+    flex-shrink: 0;
+  }
+
+  .sidebar.collapsed .nav-item {
+    justify-content: center;
+    padding: 12px;
+    margin-bottom: 12px;
+  }
+
+  .sidebar.collapsed .nav-item span:not(.nav-icon) {
+    display: none;
   }
 
   .sidebar-footer {
@@ -618,47 +830,49 @@
     border-top: 1px solid #e0e0e0;
   }
 
-  .status-indicator {
-    display: flex;
-    align-items: center;
-    gap: 8px;
+  .btn-new-discussion {
+    width: 100%;
+    padding: 10px 0;
+    border: none;
+    border-radius: 6px;
+    background: #0288d1;
+    color: #ffffff;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.2s ease;
   }
 
-  .status-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: #4fc3f7;
+  .btn-new-discussion:hover {
+    background: #0288d1;
   }
 
-  .status-dot.error {
-    background: #ef5350;
+  .btn-new-discussion-icon {
+    width: 100%;
+    padding: 12px 0;
+    font-size: 20px;
+    font-weight: 400;
   }
 
-  .status-dot.success {
-    background: #4fc3f7;
+  .sidebar.collapsed .sidebar-footer {
+    padding: 15px 8px;
   }
 
-  .status-text {
-    font-size: 12px;
-    color: #999999;
-  }
-
-  /* Main Content Styles */
   .main-content {
     flex: 1;
     background: #ffffff;
     overflow-y: auto;
     position: relative;
+    transition: width 0.2s ease;
   }
 
   .error-banner {
-    background: rgba(239, 83, 80, 0.1);
-    border: 1px solid #ef5350;
-    color: #ffcdd2;
+    background: #ffebee;
+    border: 1px solid #ffcdd2;
+    color: #b71c1c;
     padding: 12px 20px;
     font-size: 13px;
-    border-radius: 0 0 8px 8px;
+    border-radius: 6px;
   }
 
   .view-container {
@@ -680,6 +894,25 @@
     font-size: 28px;
     font-weight: 600;
     color: #000000;
+  }
+
+  .view-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .archived-toggle {
+    font-size: 13px;
+    color: #808080;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+  }
+
+  .archived-toggle input {
+    cursor: pointer;
   }
 
   .view-content {
@@ -719,7 +952,7 @@
   .conversation-item {
     background: #f9f9f9;
     padding: 15px 20px;
-    border-radius: 8px;
+    border-radius: 6px;
     border: 1px solid #e0e0e0;
     flex: 1;
     text-align: left;
@@ -728,13 +961,9 @@
   }
 
   .conversation-item:hover {
-    background: rgba(79, 195, 247, 0.05);
-    border-color: rgba(79, 195, 247, 0.3);
+    background: rgba(2, 136, 209, 0.05);
+    border-color: rgba(2, 136, 209, 0.3);
     transform: translateX(5px);
-  }
-
-  .conversation-item:active {
-    transform: translateX(3px);
   }
 
   .conversation-title {
@@ -756,14 +985,13 @@
   }
 
   .conversation-model, .conversation-db {
-    background: rgba(79, 195, 247, 0.1);
+    background: rgba(2, 136, 209, 0.1);
     color: #0288d1;
     padding: 2px 8px;
-    border-radius: 4px;
+    border-radius: 6px;
     font-size: 11px;
   }
 
-  /* Modal Styles */
   .modal-overlay {
     position: fixed;
     top: 0;
@@ -779,12 +1007,12 @@
 
   .modal {
     background: #ffffff;
-    border-radius: 12px;
+    border-radius: 6px;
     width: 500px;
     max-width: 90vw;
     max-height: 90vh;
     overflow-y: auto;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+    border: 2px solid #0288d1;
   }
 
   .modal-header {
@@ -834,7 +1062,6 @@
     gap: 10px;
   }
 
-  /* Form Styles */
   .form-group {
     margin-bottom: 20px;
   }
@@ -852,29 +1079,29 @@
     width: 100%;
     padding: 10px 12px;
     border: 1px solid #e0e0e0;
-    border-radius: 8px;
+    border-radius: 6px;
     font-size: 14px;
     color: #000000;
     background: #ffffff;
     transition: border-color 0.2s ease;
+    box-sizing: border-box;
   }
 
   .form-group input:focus,
   .form-group select:focus {
     outline: none;
-    border-color: #4fc3f7;
-    box-shadow: 0 0 0 3px rgba(79, 195, 247, 0.1);
+    border-color: #0288d1;
+    border: 2px solid #0288d1;
   }
 
   .form-group input::placeholder {
     color: #cccccc;
   }
 
-  /* Button Styles */
   .btn {
     padding: 10px 20px;
     border: none;
-    border-radius: 8px;
+    border-radius: 6px;
     font-size: 14px;
     font-weight: 500;
     cursor: pointer;
@@ -887,7 +1114,7 @@
   }
 
   .btn-primary {
-    background: #4fc3f7;
+    background: #0288d1;
     color: #ffffff;
   }
 
@@ -934,7 +1161,7 @@
     color: #ccc;
     font-size: 16px;
     cursor: pointer;
-    border-radius: 4px;
+    border-radius: 6px;
     transition: all 0.15s;
     display: flex;
     align-items: center;
@@ -965,12 +1192,11 @@
     border: 1px solid #ef5350;
     color: #ef5350;
     padding: 12px 16px;
-    border-radius: 8px;
+    border-radius: 6px;
     font-size: 14px;
     margin-top: 16px;
   }
-  
-  /* Gear Button */
+
   .gear-btn {
     display: flex;
     align-items: center;
@@ -984,13 +1210,18 @@
     font-size: 16px;
     transition: all 0.2s ease;
   }
-  
+
   .gear-btn:hover {
     background: #e0e0e0;
     color: #000000;
   }
-  
-  /* Gear Popover */
+
+  .gear-popover-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    z-index: 19999;
+  }
+
   .gear-popover {
     position: fixed;
     top: 50%;
@@ -998,15 +1229,19 @@
     transform: translate(-50%, -50%);
     width: 320px;
     background: #ffffff;
-    border: 2px solid #4fc3f7;
-    border-radius: 12px;
-    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.2);
+    border: 2px solid #0288d1;
+    border-radius: 6px;
+    border: 2px solid #0288d1;
     z-index: 20000;
     display: flex;
     flex-direction: column;
     overflow: hidden;
   }
-  
+
+  .gear-popover-wide {
+    width: 420px;
+  }
+
   .gear-popover-header {
     display: flex;
     justify-content: space-between;
@@ -1017,7 +1252,7 @@
     font-size: 14px;
     color: #1a1a1a;
   }
-  
+
   .gear-popover-close {
     background: none;
     border: none;
@@ -1026,15 +1261,15 @@
     cursor: pointer;
     padding: 0 4px;
   }
-  
+
   .gear-popover-close:hover {
     color: #000000;
   }
-  
+
   .gear-popover-section {
     padding: 14px 18px;
   }
-  
+
   .gear-popover-section label {
     display: block;
     font-size: 11px;
@@ -1044,69 +1279,212 @@
     letter-spacing: 0.5px;
     margin-bottom: 8px;
   }
-  
+
   .gear-popover-section select {
     width: 100%;
     padding: 10px 12px;
     border: 1px solid #e0e0e0;
-    border-radius: 8px;
+    border-radius: 6px;
     font-size: 14px;
     color: #000000;
     background: #f9f9f9;
     cursor: pointer;
+    box-sizing: border-box;
   }
-  
+
   .gear-popover-section select:focus {
     outline: none;
-    border-color: #4fc3f7;
+    border-color: #0288d1;
   }
-  
-  .gear-popover-divider {
-    height: 1px;
-    background: #f0f0f0;
-    margin: 0 18px;
+
+  .gear-popover-section input[type="text"] {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    font-size: 14px;
+    color: #000000;
+    background: #f9f9f9;
+    box-sizing: border-box;
+    transition: border-color 0.2s ease;
   }
-  
+
+  .gear-popover-section input[type="text"]:focus {
+    outline: none;
+    border-color: #0288d1;
+  }
+
+  .message-limit-group {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .msg-limit-btn {
+    padding: 8px 14px;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    background: #f9f9f9;
+    color: #333333;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    white-space: nowrap;
+  }
+
+  .msg-limit-btn:hover {
+    background: #e0e0e0;
+  }
+
+  .msg-limit-btn.active {
+    background: #0288d1;
+    color: #ffffff;
+    border-color: #0288d1;
+  }
+
+  .message-limit-group input[type="number"] {
+    flex: 1;
+    padding: 8px 10px;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    font-size: 14px;
+    color: #000000;
+    background: #f9f9f9;
+    box-sizing: border-box;
+  }
+
+  .message-limit-group input[type="number"]:focus {
+    outline: none;
+    border-color: #0288d1;
+  }
+
+  .gear-popover-section label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: #333333;
+    cursor: pointer;
+  }
+
+  .gear-popover-section label input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: #0288d1;
+  }
+
   .gear-popover-actions {
     display: flex;
-    gap: 10px;
+    gap: 8px;
     padding: 14px 18px;
     border-top: 1px solid #f0f0f0;
+    flex-wrap: wrap;
   }
-  
+
   .gear-action-btn {
     flex: 1;
-    padding: 10px 14px;
-    border-radius: 8px;
-    font-size: 14px;
+    min-width: 80px;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 13px;
     font-weight: 500;
     cursor: pointer;
     border: 1px solid #e0e0e0;
     transition: all 0.2s ease;
   }
-  
+
   .gear-action-btn.archive {
     background: #ffffff;
     color: #ef5350;
     border-color: #ef5350;
   }
-  
+
   .gear-action-btn.archive:hover {
     background: #ef5350;
     color: #ffffff;
   }
-  
+
   .gear-action-btn.restore {
     background: #ffffff;
     color: #4caf50;
     border-color: #4caf50;
   }
-  
+
   .gear-action-btn.restore:hover {
     background: #4caf50;
     color: #ffffff;
   }
-  
+
+  .gear-action-btn.duplicate {
+    background: #ffffff;
+    color: #1976d2;
+    border-color: #1976d2;
+  }
+
+  .gear-action-btn.duplicate:hover {
+    background: #1976d2;
+    color: #ffffff;
+  }
+
+  .gear-action-btn.clear {
+    background: #ffffff;
+    color: #ff9800;
+    border-color: #ff9800;
+  }
+
+  .gear-action-btn.clear:hover {
+    background: #ff9800;
+    color: #ffffff;
+  }
+
+  .gear-popover-divider {
+    height: 1px;
+    background: #f0f0f0;
+    margin: 0 18px;
+  }
+
+  .gear-popover-actions {
+    display: flex;
+    gap: 8px;
+    padding: 14px 18px;
+    border-top: 1px solid #f0f0f0;
+    flex-wrap: wrap;
+  }
+
+  .gear-action-btn {
+    flex: 1;
+    min-width: 80px;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    border: 1px solid #e0e0e0;
+    transition: all 0.2s ease;
+  }
+
+  .gear-action-btn.archive {
+    background: #ffffff;
+    color: #ef5350;
+    border-color: #ef5350;
+  }
+
+  .gear-action-btn.archive:hover {
+    background: #ef5350;
+    color: #ffffff;
+  }
+
+  .gear-action-btn.restore {
+    background: #ffffff;
+    color: #4caf50;
+    border-color: #4caf50;
+  }
+
+  .gear-action-btn.restore:hover {
+    background: #4caf50;
+    color: #ffffff;
+  }
+
   /* About View */
   .about-view {
     flex: 1;
@@ -1114,62 +1492,62 @@
     overflow-y: auto;
     background: #ffffff;
   }
-  
+
   .about-content {
     max-width: 800px;
     margin: 0 auto;
   }
-  
+
   .about-content h2 {
     font-size: 2.5rem;
     font-weight: 700;
     color: #1a1a1a;
     margin-bottom: 0.5rem;
   }
-  
+
   .about-content .version {
     font-size: 1rem;
     color: #666666;
     margin-bottom: 1.5rem;
   }
-  
+
   .about-content .description {
     font-size: 1.125rem;
     color: #333333;
     margin-bottom: 2.5rem;
     line-height: 1.6;
   }
-  
+
   .about-section {
     margin-bottom: 2.5rem;
   }
-  
+
   .about-section h3 {
     font-size: 1.25rem;
     font-weight: 600;
     color: #1a1a1a;
     margin-bottom: 1rem;
   }
-  
+
   .about-section p {
     font-size: 1rem;
     color: #333333;
     line-height: 1.6;
     margin-bottom: 0.75rem;
   }
-  
+
   .about-section ul {
     margin-left: 1.5rem;
     margin-bottom: 1rem;
   }
-  
+
   .about-section li {
     font-size: 1rem;
     color: #333333;
     line-height: 1.6;
     margin-bottom: 0.5rem;
   }
-  
+
   .about-section li strong {
     color: #000000;
     font-weight: 600;

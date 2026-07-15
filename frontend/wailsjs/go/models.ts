@@ -8,7 +8,7 @@ export namespace main {
 	    port?: number;
 	    database?: string;
 	    username?: string;
-	    ssl_mode?: string;
+	    sslMode?: string;
 	    is_default: boolean;
 	    is_active: boolean;
 	    exploration_allowed: boolean;
@@ -29,7 +29,7 @@ export namespace main {
 	        this.port = source["port"];
 	        this.database = source["database"];
 	        this.username = source["username"];
-	        this.ssl_mode = source["ssl_mode"];
+	        this.sslMode = source["sslMode"];
 	        this.is_default = source["is_default"];
 	        this.is_active = source["is_active"];
 	        this.exploration_allowed = source["exploration_allowed"];
@@ -63,7 +63,7 @@ export namespace main {
 	    name: string;
 	    provider: string;
 	    model?: string;
-	    base_url?: string;
+	    baseURL?: string;
 	    is_default: boolean;
 	    is_active: boolean;
 	
@@ -77,7 +77,7 @@ export namespace main {
 	        this.name = source["name"];
 	        this.provider = source["provider"];
 	        this.model = source["model"];
-	        this.base_url = source["base_url"];
+	        this.baseURL = source["baseURL"];
 	        this.is_default = source["is_default"];
 	        this.is_active = source["is_active"];
 	    }
@@ -195,12 +195,12 @@ export namespace models {
 	
 	export class Conversation {
 	    id: number;
-	    workspace_id: number;
-	    user_id: number;
 	    title?: string;
 	    llm_provider_id?: number;
 	    db_connection_id?: number;
 	    status: string;
+	    max_messages: number;
+	    pinned: boolean;
 	    // Go type: time
 	    created_at: any;
 	    // Go type: time
@@ -216,12 +216,12 @@ export namespace models {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
-	        this.workspace_id = source["workspace_id"];
-	        this.user_id = source["user_id"];
 	        this.title = source["title"];
 	        this.llm_provider_id = source["llm_provider_id"];
 	        this.db_connection_id = source["db_connection_id"];
 	        this.status = source["status"];
+	        this.max_messages = source["max_messages"];
+	        this.pinned = source["pinned"];
 	        this.created_at = this.convertValues(source["created_at"], null);
 	        this.updated_at = this.convertValues(source["updated_at"], null);
 	        this.deleted_at = this.convertValues(source["deleted_at"], null);

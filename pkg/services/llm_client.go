@@ -3,21 +3,18 @@ package services
 import (
 	"context"
 	"fmt"
+	"strings"
+
 	"YourQL/pkg/models"
 )
 
-// LLMClient defines the interface for interacting with language models.
 type LLMClient interface {
-	// ChatCompletion sends a conversation to the LLM and returns the response.
 	ChatCompletion(ctx context.Context, messages []ChatMessage) (string, error)
-	
-	// ChatCompletionWithPayload sends a conversation and returns the full request/response payloads.
 	ChatCompletionWithPayload(ctx context.Context, messages []ChatMessage) (content, requestJSON, responseJSON string, err error)
 }
 
-// ChatMessage represents a single message in a conversation.
 type ChatMessage struct {
-	Role    string // "system", "user", "assistant"
+	Role    string
 	Content string
 }
 
@@ -32,9 +29,22 @@ func NewLLMClient(provider *models.LLMProvider) (LLMClient, error) {
 		return NewOllamaClient(provider)
 	case "local":
 		return NewLocalClient(provider)
-	case "mock":
-		return NewMockClient(provider)
 	default:
 		return nil, fmt.Errorf("unsupported LLM provider: %s", provider.Provider)
 	}
+}
+
+func toOpenAIMessages(messages []ChatMessage) []map[string]string {
+	result := make([]map[string]string, len(messages))
+	for i, msg := range messages {
+		result[i] = map[string]string{
+			"role":    msg.Role,
+			"content": msg.Content,
+		}
+	}
+	return result
+}
+
+func removeTrailingSlash(s string) string {
+	return strings.TrimSuffix(s, "/")
 }

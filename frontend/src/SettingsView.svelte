@@ -10,15 +10,13 @@
     DeleteDBConnection,
     SetDefaultDBConnection,
     TestDBConnection,
-    GetSchemaPreview,
-    ExecuteQuery,
-    UpdateGeneralSettings
+    GetSchemaPreview
   } from '../wailsjs/go/main/App.js'
+  import { Search } from 'lucide-svelte'
   
   let { 
     llmProviders = [], 
     dbConnections = [], 
-    generalSettings = {},
     onUpdate = () => {}
   } = $props()
   
@@ -89,76 +87,116 @@
   // Temporary business rules for editing
   let tempBusinessRules = $state('')
   
-  // General Settings Form State
-  let settingsForm = $state({
-    app_name: 'YourQL',
-    app_version: '0.1.0',
-    default_llm_provider: 'openai',
-    theme: 'light',
-    language: 'en'
-  })
   
   let llmStatus = $state('')
   let dbStatus = $state('')
   let schemaData = $state(null)
   let schemaLoading = $state(false)
+
+  // Schema tables sorting
+  let schemaSortColumn = $state('name')
+  let schemaSortDirection = $state('asc')
+
+  let sortedSchemaTables = $derived(
+    schemaData && schemaData.tables
+      ? [...schemaData.tables].sort((a, b) => {
+          let valA, valB
+          if (schemaSortColumn === 'name') {
+            valA = a.name
+            valB = b.name
+          } else if (schemaSortColumn === 'row_count') {
+            valA = a.row_count || 0
+            valB = b.row_count || 0
+          } else if (schemaSortColumn === 'columns') {
+            valA = a.columns?.length || 0
+            valB = b.columns?.length || 0
+          } else {
+            return 0
+          }
+          let comparison = 0
+          if (typeof valA === 'number' && typeof valB === 'number') {
+            comparison = valA - valB
+          } else {
+            comparison = String(valA).localeCompare(String(valB))
+          }
+          return schemaSortDirection === 'asc' ? comparison : -comparison
+        })
+      : (schemaData?.tables || [])
+  )
+
+  function handleSchemaSort(column) {
+    if (schemaSortColumn === column) {
+      schemaSortDirection = schemaSortDirection === 'asc' ? 'desc' : 'asc'
+    } else {
+      schemaSortColumn = column
+      schemaSortDirection = 'asc'
+    }
+  }
+
+  function schemaSortIndicator(column) {
+    if (schemaSortColumn !== column) return ' ↕'
+    return schemaSortDirection === 'asc' ? ' ↑' : ' ↓'
+  }
   
   // Exploration settings
   let explorationAllowed = $state(true)
   let maxExplorationRounds = $state(2)
   let explorationSafety = $state('strict')
-  
-  // Exploration Queries
-  let queryConnectionId = $state(0)
-  let queryText = $state('')
-  let queryResults = $state(null)
-  let queryLoading = $state(false)
-  let queryError = $state('')
-  
-  function resetLLMForm() {
-    llmForm = { name: '', provider: 'openai', model: '', baseURL: '', apiKey: '' }
-    editingLLMId = null
-  }
-  
-  function resetDBForm() {
-    dbForm = { name: '', type: 'mysql', host: 'localhost', port: 3306, database: '', username: 'root', password: '', sslMode: 'false' }
-    editingDBId = null
-  }
-  
+
+  // ==================== LLM Provider Handlers ====================
   async function handleCreateLLM() {
+    llmStatus = ''
+    if (!llmForm.name.trim() || !llmForm.model.trim()) {
+      llmStatus = 'Error: Name and Model are required'
+      return
+    }
     try {
       if (editingLLMId) {
         await UpdateLLMProvider(editingLLMId, llmForm.name, llmForm.model, llmForm.baseURL, llmForm.apiKey)
         llmStatus = 'Provider updated successfully'
+        editingLLMId = null
       } else {
         await CreateLLMProvider(llmForm.name, llmForm.provider, llmForm.model, llmForm.baseURL, llmForm.apiKey)
         llmStatus = 'Provider created successfully'
       }
       resetLLMForm()
-      showLLMEditModal = false
       onUpdate()
     } catch (e) {
       llmStatus = 'Error: ' + e.toString()
     }
   }
-  
+
+  function resetLLMForm() {
+    llmForm = {
+      name: '',
+      provider: 'openai',
+      model: '',
+      baseURL: '',
+      apiKey: ''
+    }
+  }
+
   function startEditLLM(provider) {
+    llmForm = {
+      name: provider.name,
+      provider: provider.provider,
+      model: provider.model || '',
+      baseURL: provider.baseURL || '',
+      apiKey: ''
+    }
     editingLLMId = provider.id
-    llmForm.name = provider.name
-    llmForm.provider = provider.provider
-    llmForm.model = provider.model || ''
-    llmForm.baseURL = provider.base_url || ''
-    llmForm.apiKey = provider.api_key || ''
     showLLMEditModal = true
     llmStatus = ''
   }
-  
+
   function cancelEditLLM() {
-    resetLLMForm()
     showLLMEditModal = false
+    editingLLMId = null
+    resetLLMForm()
   }
-  
+
   async function handleDeleteLLM(id) {
+    if (!confirm('Are you sure you want to delete this provider?')) return
     try {
       await DeleteLLMProvider(id)
       llmStatus = 'Provider deleted'
@@ -167,137 +205,59 @@
       llmStatus = 'Error: ' + e.toString()
     }
   }
-  
+
   async function handleTestLLM(id) {
+    llmStatus = 'Testing connection...'
     try {
       const result = await TestLLMProviderConnection(id)
-      llmStatus = 'Test result: ' + result
+      llmStatus = result
     } catch (e) {
-      llmStatus = 'Test failed: ' + e.toString()
+      llmStatus = 'Error: ' + e.toString()
     }
   }
-  
+
+  // ==================== DB Connection List Modal Handlers ====================
   async function handleCreateDB() {
+    dbStatus = ''
+    if (!dbForm.name.trim()) {
+      dbStatus = 'Error: Name is required'
+      return
+    }
     try {
-      // Build exploration config
-      const config = {
-        exploration_allowed: explorationAllowed,
-        max_exploration_rounds: maxExplorationRounds,
-        exploration_safety: explorationSafety
-      }
-      const configJSON = JSON.stringify(config)
-      
       if (editingDBId) {
-        await UpdateDBConnection(editingDBId, dbForm.name, dbForm.host, dbForm.port, dbForm.database, dbForm.username, dbForm.password, dbForm.sslMode, configJSON)
+        await UpdateDBConnection(editingDBId, dbForm.name, dbForm.host, dbForm.database, dbForm.username, dbForm.password, dbForm.sslMode, dbForm.port, '')
         dbStatus = 'Connection updated successfully'
+        editingDBId = null
       } else {
-        await CreateDBConnection(dbForm.name, dbForm.type, dbForm.host, dbForm.port, dbForm.database, dbForm.username, dbForm.password, dbForm.sslMode, configJSON)
+        await CreateDBConnection(dbForm.name, dbForm.type, dbForm.host, dbForm.port, dbForm.database, dbForm.username, dbForm.password, dbForm.sslMode, '')
         dbStatus = 'Connection created successfully'
       }
-      resetDBForm()
-      showDBEditModal = false
+      cancelEditDB()
       onUpdate()
     } catch (e) {
       dbStatus = 'Error: ' + e.toString()
     }
   }
-  
-  function startEditDB(connection) {
-    editingDBId = connection.id
-    dbForm.name = connection.name
-    dbForm.type = connection.type
-    dbForm.host = connection.host || 'localhost'
-    dbForm.port = connection.port || 0
-    dbForm.database = connection.database || ''
-    dbForm.username = connection.username || ''
-    dbForm.password = connection.password || ''
-    dbForm.sslMode = connection.ssl_mode || 'false'
-    
-    // Parse exploration settings from config
-    if (connection.config) {
-      try {
-        const cfg = JSON.parse(connection.config)
-        explorationAllowed = cfg.exploration_allowed ?? true
-        maxExplorationRounds = cfg.max_exploration_rounds ?? 2
-        explorationSafety = cfg.exploration_safety ?? 'strict'
-      } catch {
-        explorationAllowed = true
-        maxExplorationRounds = 2
-        explorationSafety = 'strict'
-      }
-    } else {
-      explorationAllowed = true
-      maxExplorationRounds = 2
-      explorationSafety = 'strict'
-    }
-    
-    showDBEditModal = true
-    dbStatus = ''
-  }
-  
+
   function cancelEditDB() {
-    resetDBForm()
     showDBEditModal = false
+    editingDBId = null
+    dbForm = {
+      name: '',
+      type: 'sqlite',
+      host: '',
+      port: 0,
+      database: '',
+      username: '',
+      password: '',
+      sslMode: ''
+    }
   }
-  
-  // DB Detail navigation functions
+
+  // ==================== DB Detail View Handlers ====================
   function openDBDetail(connection) {
-    selectedDBConnection = connection
-    showDBDetail = true
-    schemaData = null
-    schemaLoading = false
-    editingDBId = connection.id  // Set editing ID for save operation
-    
-    // Populate form
-    dbDetailForm = {
-      name: connection.name || '',
-      type: connection.type || 'mysql',
-      host: connection.host || 'localhost',
-      port: connection.port || 3306,
-      database: connection.database || '',
-      username: connection.username || '',
-      password: connection.password || '',
-      sslMode: connection.ssl_mode || 'false'
-    }
-    
-    // Parse config
-    if (connection.config) {
-      try {
-        const cfg = JSON.parse(connection.config)
-        dbDetailConfig = {
-          system_prompt: cfg.system_prompt || '',
-          business_rules: cfg.business_rules || [],
-          table_descriptions: cfg.table_descriptions || {},
-          column_descriptions: cfg.column_descriptions || {},
-          include_indexes: cfg.include_indexes ?? false,
-          include_foreign_keys: cfg.include_foreign_keys ?? false,
-          include_table_comments: cfg.include_table_comments ?? false,
-          exploration_allowed: cfg.exploration_allowed ?? false,
-          max_exploration_rounds: cfg.max_exploration_rounds ?? 2,
-          exploration_safety: cfg.exploration_safety ?? 'strict',
-          max_action_retries: cfg.max_action_retries ?? 3,
-          max_final_query_retries: cfg.max_final_query_retries ?? 2,
-          default_limit: cfg.default_limit ?? 0,
-          exploration_default_limit: cfg.exploration_default_limit ?? 0,
-          query_length_threshold: cfg.query_length_threshold ?? 0
-        }
-        tempBusinessRules = (cfg.business_rules || []).join('\n')
-      } catch {
-        resetDBDetailConfig()
-      }
-    } else {
-      resetDBDetailConfig()
-    }
-    dbStatus = ''
-  }
-  
-  function closeDBDetail() {
-    showDBDetail = false
-    selectedDBConnection = null
-  }
-  
-  function resetDBDetailConfig() {
-    dbDetailConfig = {
+    // Build default config
+    let config = {
       system_prompt: '',
       business_rules: [],
       table_descriptions: {},
@@ -305,7 +265,7 @@
       include_indexes: false,
       include_foreign_keys: false,
       include_table_comments: false,
-      exploration_allowed: false,
+      exploration_allowed: true,
       max_exploration_rounds: 2,
       exploration_safety: 'strict',
       max_action_retries: 3,
@@ -314,110 +274,134 @@
       exploration_default_limit: 0,
       query_length_threshold: 0
     }
-    tempBusinessRules = ''
-  }
-  
-  async function handleSaveDBDetail() {
-    if (!selectedDBConnection) return
-    
-    try {
-      // Build config JSON
-      const config = {
-        ...dbDetailConfig,
-        business_rules: tempBusinessRules.split('\n').filter(r => r.trim())
+
+    // Parse existing config from connection
+    if (connection.config) {
+      try {
+        const parsed = JSON.parse(connection.config)
+        if (parsed.system_prompt) config.system_prompt = parsed.system_prompt
+        if (parsed.business_rules) config.business_rules = parsed.business_rules
+        if (parsed.table_descriptions) config.table_descriptions = parsed.table_descriptions
+        if (parsed.column_descriptions) config.column_descriptions = parsed.column_descriptions
+        if (typeof parsed.exploration_allowed === 'boolean') config.exploration_allowed = parsed.exploration_allowed
+        if (parsed.max_exploration_rounds) config.max_exploration_rounds = parsed.max_exploration_rounds
+        if (parsed.exploration_safety) config.exploration_safety = parsed.exploration_safety
+        if (parsed.max_action_retries) config.max_action_retries = parsed.max_action_retries
+        if (parsed.max_final_query_retries) config.max_final_query_retries = parsed.max_final_query_retries
+        if (parsed.default_limit) config.default_limit = parsed.default_limit
+        if (parsed.exploration_default_limit) config.exploration_default_limit = parsed.exploration_default_limit
+        if (parsed.query_length_threshold) config.query_length_threshold = parsed.query_length_threshold
+      } catch (e) {
+        console.error('Failed to parse config:', e)
       }
-      const configJSON = JSON.stringify(config)
-      
-      if (editingDBId) {
-        await UpdateDBConnection(editingDBId, dbDetailForm.name, dbDetailForm.host, dbDetailForm.port, dbDetailForm.database, dbDetailForm.username, dbDetailForm.password, dbDetailForm.sslMode, configJSON)
-        dbStatus = 'Connection updated successfully'
-      } else {
-        await CreateDBConnection(dbDetailForm.name, dbDetailForm.type, dbDetailForm.host, dbDetailForm.port, dbDetailForm.database, dbDetailForm.username, dbDetailForm.password, dbDetailForm.sslMode, configJSON)
-        dbStatus = 'Connection created successfully'
-      }
-      
-      // Refresh list and update selected connection
-      await onUpdate()
-      
-      // Refresh the selected connection from the updated list
-      if (selectedDBConnection && editingDBId) {
-        // Find the updated connection in the list
-        const updatedConn = dbConnections.find(c => c.id === editingDBId)
-        if (updatedConn) {
-          selectedDBConnection = updatedConn
-          openDBDetail(updatedConn)
-        }
-      }
-    } catch (e) {
-      dbStatus = 'Error: ' + e.toString()
     }
+
+    dbDetailForm = {
+      name: connection.name,
+      type: connection.type,
+      host: connection.host || 'localhost',
+      port: connection.port || 0,
+      database: connection.database || '',
+      username: connection.username || '',
+      password: '',
+      sslMode: connection.sslMode || 'disable'
+    }
+
+    dbDetailConfig = config
+    tempBusinessRules = (config.business_rules || []).join('\n')
+
+    selectedDBConnection = connection
+    showDBDetail = true
+    schemaData = null
+    dbStatus = ''
   }
-  
-  async function handleDeleteDB(id) {
+
+  function closeDBDetail() {
+    showDBDetail = false
+    selectedDBConnection = null
+    schemaData = null
+    dbStatus = ''
+  }
+
+  async function handleSaveDBDetail() {
+    dbStatus = ''
+    if (!dbDetailForm.name.trim()) {
+      dbStatus = 'Error: Name is required'
+      return
+    }
     try {
-      await DeleteDBConnection(id)
-      dbStatus = 'Connection deleted'
+      const config = {
+        system_prompt: dbDetailConfig.system_prompt,
+        business_rules: tempBusinessRules.split('\n').filter(r => r.trim()),
+        table_descriptions: dbDetailConfig.table_descriptions,
+        column_descriptions: dbDetailConfig.column_descriptions,
+        exploration_allowed: dbDetailConfig.exploration_allowed,
+        max_exploration_rounds: dbDetailConfig.max_exploration_rounds,
+        exploration_safety: dbDetailConfig.exploration_safety,
+        max_action_retries: dbDetailConfig.max_action_retries,
+        max_final_query_retries: dbDetailConfig.max_final_query_retries,
+        default_limit: dbDetailConfig.default_limit,
+        exploration_default_limit: dbDetailConfig.exploration_default_limit,
+        query_length_threshold: dbDetailConfig.query_length_threshold
+      }
+
+      const configStr = JSON.stringify(config)
+
+      await UpdateDBConnection(
+        selectedDBConnection.id,
+        dbDetailForm.name,
+        dbDetailForm.host,
+        dbDetailForm.database,
+        dbDetailForm.username,
+        dbDetailForm.password,
+        dbDetailForm.sslMode,
+        dbDetailForm.port,
+        configStr
+      )
+      dbStatus = 'Connection saved successfully'
       onUpdate()
     } catch (e) {
       dbStatus = 'Error: ' + e.toString()
     }
   }
-  
+
   async function handleTestDB(id) {
+    dbStatus = 'Testing connection...'
     try {
       const result = await TestDBConnection(id)
-      dbStatus = 'Test result: ' + result
+      dbStatus = result
     } catch (e) {
-      dbStatus = 'Test failed: ' + e.toString()
+      dbStatus = 'Error: ' + e.toString()
     }
   }
 
   async function handleViewSchema(id) {
+    schemaLoading = true
+    schemaData = null
+    dbStatus = ''
     try {
-      schemaLoading = true
-      schemaData = null
-      const result = await GetSchemaPreview(id)
-      schemaData = result
+      schemaData = await GetSchemaPreview(id)
     } catch (e) {
-      dbStatus = 'Schema fetch failed: ' + e.toString()
+      dbStatus = 'Error loading schema: ' + e.toString()
     } finally {
       schemaLoading = false
     }
   }
-  
-  async function handleExecuteQuery() {
-    if (!queryConnectionId || !queryText.trim()) {
-      queryError = 'Please select a connection and enter a query'
-      return
-    }
-    
-    queryLoading = true
-    queryResults = null
-    queryError = ''
-    
+
+  async function handleDeleteDB(id) {
+    if (!confirm('Are you sure you want to delete this connection?')) return
     try {
-      const result = await ExecuteQuery(queryConnectionId, queryText.trim())
-      queryResults = result
+      await DeleteDBConnection(id)
+      dbStatus = 'Connection deleted'
+      if (showDBDetail && selectedDBConnection && selectedDBConnection.id === id) {
+        closeDBDetail()
+      }
+      onUpdate()
     } catch (e) {
-      queryError = e.toString()
-    } finally {
-      queryLoading = false
+      dbStatus = 'Error: ' + e.toString()
     }
   }
-  
-  function clearQueryResults() {
-    queryResults = null
-    queryError = ''
-  }
-  
-  async function handleSaveSettings() {
-    try {
-      await UpdateGeneralSettings(settingsForm)
-      llmStatus = 'Settings saved successfully'
-    } catch (e) {
-      llmStatus = 'Error saving settings: ' + e.toString()
-    }
-  }
+
 </script>
 
 <div class="settings-container">
@@ -434,12 +418,7 @@
     >
       Database Configurations
     </button>
-    <button 
-      class="tab-btn {activeSettingsTab === 'general' ? 'active' : ''}"
-      onclick={() => activeSettingsTab = 'general'}
-    >
-      General Settings
-    </button>
+
   </div>
   
   <div class="settings-content">
@@ -569,9 +548,9 @@
                     <div class="form-group">
                       <label>SSL Mode</label>
                       <select bind:value={dbDetailForm.sslMode}>
-                        <option value="false">false</option>
-                        <option value="true">true</option>
-                        <option value="preferred">preferred</option>
+                        <option value="disable">false</option>
+                        <option value="require">true</option>
+                        <option value="prefer">preferred</option>
                       </select>
                     </div>
                   </div>
@@ -681,7 +660,29 @@
                     <h4>Schema — {schemaData.connection_name} ({schemaData.total_tables} table(s))</h4>
                     <p class="hint">Enter descriptions for tables and columns. These are saved as part of the connection config.</p>
                     
-                    {#each schemaData.tables as table, i}
+                    <!-- Sort controls -->
+                    <div class="schema-sort-controls">
+                      <button 
+                        class="sort-btn {schemaSortColumn === 'name' ? 'active' : ''}" 
+                        onclick={() => handleSchemaSort('name')}
+                      >
+                        Name{schemaSortIndicator('name')}
+                      </button>
+                      <button 
+                        class="sort-btn {schemaSortColumn === 'row_count' ? 'active' : ''}" 
+                        onclick={() => handleSchemaSort('row_count')}
+                      >
+                        Rows{schemaSortIndicator('row_count')}
+                      </button>
+                      <button 
+                        class="sort-btn {schemaSortColumn === 'columns' ? 'active' : ''}" 
+                        onclick={() => handleSchemaSort('columns')}
+                      >
+                        Columns{schemaSortIndicator('columns')}
+                      </button>
+                    </div>
+                    
+                    {#each sortedSchemaTables as table, i}
                       <div class="schema-table-editable">
                         <div class="schema-table-header">
                           <strong>{table.name}</strong>
@@ -765,48 +766,6 @@
               {/if}
             </div>
           {/if}
-        </div>
-      </div>
-    {:else if activeSettingsTab === 'general'}
-      <div class="settings-section">
-        <h3>General Settings</h3>
-        <p class="section-desc">Configure application-wide preferences</p>
-        
-        <div class="form-card">
-          <h4>Application Preferences</h4>
-          <div class="form-grid">
-            <div class="form-group">
-              <label>App Name</label>
-              <input type="text" bind:value={settingsForm.app_name} />
-            </div>
-            <div class="form-group">
-              <label>Default LLM Provider</label>
-              <select bind:value={settingsForm.default_llm_provider}>
-                <option value="openai">OpenAI</option>
-                <option value="anthropic">Anthropic</option>
-                <option value="ollama">Ollama</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label>Theme</label>
-              <select bind:value={settingsForm.theme}>
-                <option value="light">Light</option>
-                <option value="dark">Dark</option>
-                <option value="system">System</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label>Language</label>
-              <select bind:value={settingsForm.language}>
-                <option value="en">English</option>
-                <option value="es">Spanish</option>
-                <option value="fr">French</option>
-              </select>
-            </div>
-          </div>
-          <div class="form-actions">
-            <button class="btn btn-primary" onclick={handleSaveSettings}>Save Settings</button>
-          </div>
         </div>
       </div>
     {/if}
@@ -902,14 +861,14 @@
         <div class="form-group">
           <label>SSL Mode</label>
           <select bind:value={dbForm.sslMode}>
-            <option value="false">false</option>
-            <option value="true">true</option>
-            <option value="preferred">preferred</option>
+            <option value="disable">false</option>
+            <option value="require">true</option>
+            <option value="prefer">preferred</option>
           </select>
         </div>
         
         <div class="exploration-config">
-          <h5>🔍 Exploration Queries</h5>
+          <h5><Search size={14} /> Exploration Queries</h5>
           <p class="hint">When enabled, the LLM can run intermediate queries to explore the database before producing a final answer.</p>
           
           <div class="form-group">
@@ -1022,7 +981,7 @@
   .form-card {
     background: #f9f9f9;
     padding: 25px;
-    border-radius: 12px;
+    border-radius: 6px;
     margin-bottom: 20px;
     border: 1px solid #1a1a1a;
   }
@@ -1048,7 +1007,7 @@
   
   .form-group label {
     font-size: 13px;
-    color: #a0a0a0;
+    color: #333333;
     font-weight: 500;
   }
   
@@ -1083,8 +1042,8 @@
   }
   
   .btn-primary {
-    background: #4fc3f7;
-    color: #000000;
+    background: #0288d1;
+    color: #ffffff;
     font-weight: 600;
   }
   
@@ -1094,7 +1053,7 @@
   
   .btn-secondary {
     background: #e0e0e0;
-    color: #a0a0a0;
+    color: #333333;
     border: 1px solid #2a2a2a;
   }
   
@@ -1106,7 +1065,7 @@
     padding: 6px 12px;
     font-size: 12px;
     background: #e0e0e0;
-    color: #a0a0a0;
+    color: #333333;
     border: 1px solid #2a2a2a;
   }
   
@@ -1132,9 +1091,9 @@
   }
   
   .status-message.success {
-    background: rgba(79, 195, 247, 0.1);
+    background: rgba(2, 136, 209, 0.1);
     color: #0288d1;
-    border: 1px solid rgba(79, 195, 247, 0.3);
+    border: 1px solid rgba(2, 136, 209, 0.3);
   }
   
   .status-message.error {
@@ -1147,6 +1106,10 @@
   .connections-list,
   .db-list-view {
     margin-top: 20px;
+  }
+  
+  .db-list-view .btn {
+    margin-bottom: 12px;
   }
   
   .providers-list h4,
@@ -1162,7 +1125,7 @@
   .db-connection-item {
     background: #f9f9f9;
     padding: 15px;
-    border-radius: 8px;
+    border-radius: 6px;
     margin-bottom: 10px;
     display: flex;
     align-items: center;
@@ -1192,7 +1155,7 @@
     color: #999999;
     background: #e0e0e0;
     padding: 3px 8px;
-    border-radius: 4px;
+    border-radius: 6px;
   }
   
   .provider-details,
@@ -1211,14 +1174,14 @@
   .badge {
     font-size: 11px;
     padding: 3px 8px;
-    border-radius: 4px;
+    border-radius: 6px;
     font-weight: 600;
   }
   
   .badge.default {
-    background: rgba(79, 195, 247, 0.15);
+    background: rgba(2, 136, 209, 0.15);
     color: #0288d1;
-    border: 1px solid rgba(79, 195, 247, 0.3);
+    border: 1px solid rgba(2, 136, 209, 0.3);
   }
   
   .badge.exploration {
@@ -1241,10 +1204,10 @@
   }
   
   .sqlite-info {
-    background: rgba(79, 195, 247, 0.05);
-    border: 1px solid rgba(79, 195, 247, 0.2);
+    background: rgba(2, 136, 209, 0.05);
+    border: 1px solid rgba(2, 136, 209, 0.2);
     padding: 15px 20px;
-    border-radius: 8px;
+    border-radius: 6px;
     margin-top: 20px;
   }
   
@@ -1263,7 +1226,7 @@
     padding: 12px 16px;
     background: #f8f9fa;
     border: 1px solid #e8e8e8;
-    border-radius: 8px;
+    border-radius: 6px;
     font-size: 13px;
     color: #666666;
     line-height: 1.5;
@@ -1295,12 +1258,11 @@
   
   .edit-modal {
     background: #ffffff;
-    border-radius: 12px;
+    border-radius: 6px;
     width: 90%;
     max-width: 500px;
     max-height: 80vh;
     overflow-y: auto;
-    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
     animation: slideUp 0.2s ease;
   }
   
@@ -1457,7 +1419,7 @@
   .schema-preview {
     background: #ffffff;
     border: 1px solid #1a1a1a;
-    border-radius: 12px;
+    border-radius: 6px;
     padding: 20px;
     margin-top: 20px;
   }
@@ -1468,6 +1430,43 @@
     font-size: 16px;
   }
 
+  .schema-sort-controls {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid #e0e0e0;
+  }
+
+  .sort-btn {
+    padding: 6px 12px;
+    background: #f5f5f5;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    font-size: 12px;
+    color: #666;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .sort-btn:hover {
+    background: #e0e0e0;
+    color: #333;
+  }
+
+  .sort-btn.active {
+    background: #0288d1;
+    color: #fff;
+    border-color: #0288d1;
+  }
+
+  .sort-btn.active:hover {
+    background: #29b6f6;
+  }
+
   .schema-preview .loading {
     text-align: center;
     color: #808080;
@@ -1476,7 +1475,7 @@
   .schema-table {
     background: #f9f9f9;
     border: 1px solid #e0e0e0;
-    border-radius: 8px;
+    border-radius: 6px;
     padding: 12px;
     margin-bottom: 12px;
   }
@@ -1509,7 +1508,7 @@
   .schema-col {
     background: #ffffff;
     border: 1px solid #d0d0d0;
-    border-radius: 4px;
+    border-radius: 6px;
     padding: 3px 8px;
     font-size: 12px;
     color: #333;
@@ -1529,7 +1528,7 @@
   .schema-table-editable {
     margin-bottom: 24px;
     border: 1px solid #e0e0e0;
-    border-radius: 8px;
+    border-radius: 6px;
     overflow: hidden;
   }
   
@@ -1552,7 +1551,7 @@
   .schema-table-desc input {
     flex: 1;
     border: 1px solid #e0e0e0;
-    border-radius: 4px;
+    border-radius: 6px;
     padding: 6px 10px;
     font-size: 13px;
   }
@@ -1614,7 +1613,7 @@
     color: #fff;
     font-size: 9px;
     padding: 1px 5px;
-    border-radius: 3px;
+    border-radius: 6px;
     font-weight: 600;
   }
   
@@ -1633,7 +1632,7 @@
   .col-desc-input {
     flex: 1;
     border: 1px solid #e0e0e0;
-    border-radius: 4px;
+    border-radius: 6px;
     padding: 4px 8px;
     font-size: 12px;
     transition: border-color 0.2s ease;
@@ -1673,13 +1672,13 @@
   
   .query-input:focus {
     border-color: #0288d1;
-    box-shadow: 0 0 0 3px rgba(2, 136, 209, 0.1);
+    background: transparent;
   }
   
   .query-results {
     background: #ffffff;
     border: 1px solid #1a1a1a;
-    border-radius: 12px;
+    border-radius: 6px;
     padding: 20px;
     margin-top: 20px;
   }
@@ -1702,7 +1701,7 @@
   .results-table {
     overflow-x: auto;
     border: 1px solid #e0e0e0;
-    border-radius: 8px;
+    border-radius: 6px;
   }
   
   .table-header {
@@ -1780,7 +1779,7 @@
   .db-section {
     background: #ffffff;
     border: 1px solid #e0e0e0;
-    border-radius: 12px;
+    border-radius: 6px;
     padding: 20px;
   }
   
@@ -1817,7 +1816,7 @@
     color: #1565c0;
     font-size: 11px;
     padding: 4px 8px;
-    border-radius: 4px;
+    border-radius: 6px;
     font-weight: 600;
   }
 </style>

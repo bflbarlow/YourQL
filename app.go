@@ -20,23 +20,23 @@ func NewApp() *App {
 	return &App{}
 }
 
-// startup is called when the app starts. The context is saved
-// so we can call the runtime methods
+// startup is called when the app starts.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
-	models.ConnectDatabase()
+	if err := models.ConnectDatabase(); err != nil {
+		println("Database error:", err.Error())
+	}
 }
 
 // ==================== Discussions ====================
 
-// ListDiscussions retrieves titles of discussions for a user in a workspace
-func (a *App) ListDiscussions(workspaceID uint, userID uint) ([]string, error) {
-	discussions, err := services.ListConversationsByUser(workspaceID, userID)
+func (a *App) ListDiscussions() ([]string, error) {
+	discussions, err := services.ListConversationsByUser()
 	if err != nil {
 		return nil, err
 	}
 
-	var titles []string
+	titles := make([]string, 0, len(discussions))
 	for _, d := range discussions {
 		if d.Title != nil {
 			titles = append(titles, *d.Title)
@@ -47,48 +47,59 @@ func (a *App) ListDiscussions(workspaceID uint, userID uint) ([]string, error) {
 	return titles, nil
 }
 
-// ListConversations retrieves all conversations for a user in a workspace
-func (a *App) ListConversations(workspaceID uint, userID uint) ([]*models.Conversation, error) {
-	return services.ListConversationsByUser(workspaceID, userID)
+func (a *App) ListConversations() ([]*models.Conversation, error) {
+	return services.ListConversationsByUser()
 }
 
-// CreateConversation creates a new discussion
-func (a *App) CreateConversation(workspaceID, userID uint, title string, llmProviderID, dbConnectionID *uint) (*models.Conversation, error) {
-	return services.CreateConversation(workspaceID, userID, title, llmProviderID, dbConnectionID)
+func (a *App) CreateConversation(title string, llmProviderID, dbConnectionID *uint) (*models.Conversation, error) {
+	return services.CreateConversation(title, llmProviderID, dbConnectionID)
 }
 
-// GetConversationMessages retrieves all messages in a conversation
 func (a *App) GetConversationMessages(conversationID uint) ([]*models.ConversationMessage, error) {
 	return services.GetConversationMessages(conversationID)
 }
 
-// ProcessUserMessage processes a user message in a conversation
 func (a *App) ProcessUserMessage(conversationID uint, userMessage string) error {
 	return services.ProcessUserMessage(conversationID, userMessage)
 }
 
-// DeleteConversation soft-deletes a conversation (sets deleted_at).
 func (a *App) DeleteConversation(id uint) error {
 	return services.SoftDeleteConversation(id)
 }
 
-// UpdateConversationTechDetails updates the tech_details toggle for a conversation.
 func (a *App) UpdateConversationTechDetails(id uint, showTechDetails bool) error {
 	return services.UpdateConversationTechDetails(id, showTechDetails)
 }
 
-// UpdateConversationSettings updates the LLM provider and DB connection for a conversation.
 func (a *App) UpdateConversationSettings(id uint, llmProviderID *uint, dbConnectionID *uint) error {
 	_, err := services.UpdateConversation(id, nil, nil, llmProviderID, dbConnectionID)
 	return err
 }
 
-// ArchiveConversation archives a conversation.
+func (a *App) UpdateConversationTitle(id uint, title string) (*models.Conversation, error) {
+	return services.UpdateConversationTitle(id, title)
+}
+
+func (a *App) UpdateConversationMaxMessages(id uint, maxMessages int) error {
+	return services.UpdateConversationMaxMessages(id, maxMessages)
+}
+
+func (a *App) UpdateConversationPinned(id uint, pinned bool) error {
+	return services.UpdateConversationPinned(id, pinned)
+}
+
+func (a *App) DuplicateConversation(id uint) (*models.Conversation, error) {
+	return services.DuplicateConversation(id)
+}
+
+func (a *App) ClearConversationMessages(id uint) error {
+	return services.DeleteConversationMessages(id)
+}
+
 func (a *App) ArchiveConversation(id uint) error {
 	return services.ArchiveConversation(id)
 }
 
-// RestoreConversation restores an archived conversation.
 func (a *App) RestoreConversation(id uint) error {
 	return services.RestoreConversation(id)
 }
@@ -97,23 +108,22 @@ func (a *App) RestoreConversation(id uint) error {
 
 // LLMProviderSetting represents an LLM provider configuration for the frontend
 type LLMProviderSetting struct {
-	ID          uint    `json:"id"`
-	Name        string  `json:"name"`
-	Provider    string  `json:"provider"` // openai, anthropic, ollama, local
-	Model       string  `json:"model,omitempty"`
-	BaseURL     string  `json:"base_url,omitempty"`
-	IsDefault   bool    `json:"is_default"`
-	IsActive    bool    `json:"is_active"`
+	ID        uint   `json:"id"`
+	Name      string `json:"name"`
+	Provider  string `json:"provider"`
+	Model     string `json:"model,omitempty"`
+	BaseURL   string `json:"baseURL,omitempty"`
+	IsDefault bool   `json:"is_default"`
+	IsActive  bool   `json:"is_active"`
 }
 
-// ListLLMProviders retrieves all configured LLM providers
 func (a *App) ListLLMProviders() ([]LLMProviderSetting, error) {
-	providers, err := services.ListLLMProvidersByWorkspace(1) // Using workspace ID 1
+	providers, err := services.ListLLMProvidersByWorkspace()
 	if err != nil {
 		return nil, err
 	}
 
-	var settings []LLMProviderSetting
+	settings := make([]LLMProviderSetting, 0, len(providers))
 	for _, p := range providers {
 		model := ""
 		if p.Model != nil {
@@ -136,29 +146,24 @@ func (a *App) ListLLMProviders() ([]LLMProviderSetting, error) {
 	return settings, nil
 }
 
-// CreateLLMProvider creates a new LLM provider configuration
 func (a *App) CreateLLMProvider(name, provider, model, baseURL, apiKey string) error {
-	_, err := services.CreateLLMProvider(1, 1, name, provider, model, baseURL, apiKey, true, "")
+	_, err := services.CreateLLMProvider(name, provider, model, baseURL, apiKey, true, "")
 	return err
 }
 
-// UpdateLLMProvider updates an existing LLM provider configuration
 func (a *App) UpdateLLMProvider(id uint, name, model, baseURL, apiKey string) error {
 	_, err := services.UpdateLLMProvider(id, &name, &model, &baseURL, &apiKey, nil)
 	return err
 }
 
-// DeleteLLMProvider deletes an LLM provider configuration
 func (a *App) DeleteLLMProvider(id uint) error {
 	return services.DeleteLLMProvider(id)
 }
 
-// SetDefaultLLMProvider sets a provider as the default
 func (a *App) SetDefaultLLMProvider(id uint) error {
-	return services.SetDefaultLLMProvider(1, id)
+	return services.SetDefaultLLMProvider(id)
 }
 
-// TestLLMProviderConnection tests if an LLM provider configuration is valid
 func (a *App) TestLLMProviderConnection(id uint) (string, error) {
 	provider, err := services.GetLLMProviderByID(id)
 	if err != nil {
@@ -172,30 +177,29 @@ func (a *App) TestLLMProviderConnection(id uint) (string, error) {
 
 // DBConnectionSetting represents a database connection configuration for the frontend
 type DBConnectionSetting struct {
-	ID                  uint    `json:"id"`
-	Name                string  `json:"name"`
-	Type                string  `json:"type"` // mysql, postgres, sqlite
-	Host                string  `json:"host,omitempty"`
-	Port                int     `json:"port,omitempty"`
-	Database            string  `json:"database,omitempty"`
-	Username            string  `json:"username,omitempty"`
-	SSLMode             string  `json:"ssl_mode,omitempty"`
-	IsDefault           bool    `json:"is_default"`
-	IsActive            bool    `json:"is_active"`
-	ExplorationAllowed  bool    `json:"exploration_allowed"`
+	ID                   uint   `json:"id"`
+	Name                 string `json:"name"`
+	Type                 string `json:"type"` // mysql, sqlite
+	Host                 string `json:"host,omitempty"`
+	Port                 int    `json:"port,omitempty"`
+	Database             string `json:"database,omitempty"`
+	Username             string `json:"username,omitempty"`
+	SSLMode              string `json:"sslMode,omitempty"`
+	IsDefault            bool   `json:"is_default"`
+	IsActive             bool   `json:"is_active"`
+	ExplorationAllowed   bool   `json:"exploration_allowed"`
 	MaxExplorationRounds int    `json:"max_exploration_rounds"`
-	ExplorationSafety   string  `json:"exploration_safety"`
-	Config              string  `json:"config,omitempty"` // JSON string
+	ExplorationSafety    string `json:"exploration_safety"`
+	Config               string `json:"config,omitempty"`
 }
 
-// ListDBConnections retrieves all configured database connections
 func (a *App) ListDBConnections() ([]DBConnectionSetting, error) {
-	connections, err := services.ListDBConnectionsByWorkspace(1) // Using workspace ID 1
+	connections, err := services.ListDBConnectionsByWorkspace()
 	if err != nil {
 		return nil, err
 	}
 
-	var settings []DBConnectionSetting
+	settings := make([]DBConnectionSetting, 0, len(connections))
 	for _, c := range connections {
 		host := ""
 		if c.Host != nil {
@@ -217,8 +221,7 @@ func (a *App) ListDBConnections() ([]DBConnectionSetting, error) {
 		if c.SSLMode != nil {
 			sslMode = *c.SSLMode
 		}
-		
-		// Parse exploration settings from config
+
 		explorationAllowed := true
 		maxExplorationRounds := 2
 		explorationSafety := "strict"
@@ -236,50 +239,45 @@ func (a *App) ListDBConnections() ([]DBConnectionSetting, error) {
 				}
 			}
 		}
-		
+
 		settings = append(settings, DBConnectionSetting{
-			ID:                  c.ID,
-			Name:                c.Name,
-			Type:                c.Type,
-			Host:                host,
-			Port:                port,
-			Database:            database,
-			Username:            username,
-			SSLMode:             sslMode,
-			IsDefault:           c.IsDefault,
-			IsActive:            c.IsActive,
-			ExplorationAllowed:  explorationAllowed,
+			ID:                   c.ID,
+			Name:                 c.Name,
+			Type:                 c.Type,
+			Host:                 host,
+			Port:                 port,
+			Database:             database,
+			Username:             username,
+			SSLMode:              sslMode,
+			IsDefault:            c.IsDefault,
+			IsActive:             c.IsActive,
+			ExplorationAllowed:   explorationAllowed,
 			MaxExplorationRounds: maxExplorationRounds,
-			ExplorationSafety:   explorationSafety,
-			Config:              configStr,
+			ExplorationSafety:    explorationSafety,
+			Config:               configStr,
 		})
 	}
 	return settings, nil
 }
 
-// CreateDBConnection creates a new database connection configuration
 func (a *App) CreateDBConnection(name, dbType, host string, port int, database, username, password, sslMode, config string) error {
-	_, err := services.CreateDBConnection(1, 1, name, dbType, host, port, database, username, password, sslMode, config)
+	_, err := services.CreateDBConnection(name, dbType, host, port, database, username, password, sslMode, config)
 	return err
 }
 
-// UpdateDBConnection updates an existing database connection configuration
 func (a *App) UpdateDBConnection(id uint, name, host, database, username, password, sslMode string, port int, config string) error {
 	_, err := services.UpdateDBConnection(id, &name, &host, &port, &database, &username, &password, &sslMode, &config)
 	return err
 }
 
-// DeleteDBConnection deletes a database connection configuration
 func (a *App) DeleteDBConnection(id uint) error {
 	return services.DeleteDBConnection(id)
 }
 
-// SetDefaultDBConnection sets a connection as the default
 func (a *App) SetDefaultDBConnection(id uint) error {
-	return services.SetDefaultDBConnection(1, id)
+	return services.SetDefaultDBConnection(id)
 }
 
-// TestDBConnection tests if a database connection is valid by actually pinging it.
 func (a *App) TestDBConnection(id uint) (string, error) {
 	conn, err := services.GetDBConnectionByID(id)
 	if err != nil {
@@ -307,16 +305,14 @@ type SchemaPreview struct {
 	Tables         []SchemaTablePreview `json:"tables"`
 }
 
-// SchemaTablePreview represents a single table preview for the Settings UI.
 type SchemaTablePreview struct {
-	Name      string              `json:"name"`
-	RowCount  int64               `json:"row_count"`
-	Columns   []SchemaColumnPreview `json:"columns"`
-	Indexes   int                 `json:"indexes"`
-	ForeignKeys int               `json:"foreign_keys"`
+	Name        string                  `json:"name"`
+	RowCount    int64                   `json:"row_count"`
+	Columns     []SchemaColumnPreview   `json:"columns"`
+	Indexes     int                     `json:"indexes"`
+	ForeignKeys int                     `json:"foreign_keys"`
 }
 
-// SchemaColumnPreview represents a single column preview for the Settings UI.
 type SchemaColumnPreview struct {
 	Name         string `json:"name"`
 	DataType     string `json:"data_type"`
@@ -324,7 +320,6 @@ type SchemaColumnPreview struct {
 	IsNullable   bool   `json:"is_nullable"`
 }
 
-// GetSchemaPreview fetches and returns schema metadata for a DB connection.
 func (a *App) GetSchemaPreview(id uint) (*SchemaPreview, error) {
 	conn, err := services.GetDBConnectionByID(id)
 	if err != nil {
@@ -353,23 +348,22 @@ func (a *App) GetSchemaPreview(id uint) (*SchemaPreview, error) {
 			})
 		}
 		preview.Tables = append(preview.Tables, SchemaTablePreview{
-			Name:         t.Name,
-			RowCount:     t.RowCount,
-			Columns:      cols,
+			Name:        t.Name,
+			RowCount:    t.RowCount,
+			Columns:     cols,
 			Indexes:      len(t.Indexes),
-			ForeignKeys:  len(t.ForeignKeys),
+			ForeignKeys: len(t.ForeignKeys),
 		})
 	}
 
 	return preview, nil
 }
 
-// QueryResult represents a row from a query execution
-
+// QueryResult represents a row from a query execution (§2.14 – kept for ExecuteQuery)
 type QueryResult struct {
-	Columns []string      `json:"columns"`
-	Rows    [][]interface{} `json:"rows"`
-	TotalRows int        `json:"total_rows"`
+	Columns   []string         `json:"columns"`
+	Rows      [][]interface{}  `json:"rows"`
+	TotalRows int              `json:"total_rows"`
 }
 
 // ExecuteQuery runs a SQL query against a configured database connection
@@ -420,7 +414,6 @@ func (a *App) ExecuteQuery(connID uint, query string) (*QueryResult, error) {
 			return nil, fmt.Errorf("failed to scan row: %w", err)
 		}
 
-		// Convert values to JSON-safe types
 		row := make([]interface{}, len(columns))
 		for i, v := range values {
 			switch val := v.(type) {
@@ -439,16 +432,15 @@ func (a *App) ExecuteQuery(connID uint, query string) (*QueryResult, error) {
 
 // ==================== General Settings ====================
 
-// GeneralSettings represents the general application settings
 type GeneralSettings struct {
 	AppName            string `json:"app_name"`
 	AppVersion         string `json:"app_version"`
 	DefaultLLMProvider string `json:"default_llm_provider"`
-	Theme              string `json:"theme"` // light, dark, system
+	Theme              string `json:"theme"`
 	Language           string `json:"language"`
 }
 
-// GetGeneralSettings retrieves the general application settings
+// GetGeneralSettings returns hard-coded defaults (not persisted)
 func (a *App) GetGeneralSettings() GeneralSettings {
 	return GeneralSettings{
 		AppName:            "YourQL",
@@ -459,9 +451,7 @@ func (a *App) GetGeneralSettings() GeneralSettings {
 	}
 }
 
-// UpdateGeneralSettings updates the general application settings
+// UpdateGeneralSettings is a no-op — settings are not persisted (§4.6)
 func (a *App) UpdateGeneralSettings(settings GeneralSettings) error {
-	// In a real implementation, this would save to a config file or database
-	// For now, we just return nil
 	return nil
 }

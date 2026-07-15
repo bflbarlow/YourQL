@@ -67,18 +67,6 @@ func GetDatabaseSchema(conn *models.DBConnection) (*DatabaseSchema, error) {
 	}
 }
 
-// GetSchemaForConnection returns schema info for a connection (for editing table descriptions).
-func GetSchemaForConnection(conn *models.DBConnection) (*DatabaseSchema, error) {
-	switch conn.Type {
-	case "mysql":
-		return getMySQLSchema(conn)
-	case "sqlite":
-		return getSQLiteSchema(conn)
-	default:
-		return nil, fmt.Errorf("unsupported database type: %s", conn.Type)
-	}
-}
-
 // getMySQLSchema introspects a MySQL database.
 func getMySQLSchema(conn *models.DBConnection) (*DatabaseSchema, error) {
 	if conn.Database == nil {

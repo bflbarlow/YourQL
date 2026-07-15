@@ -8,10 +8,10 @@ import (
 type ConversationMessage struct {
 	ID             uint      `json:"id"`
 	ConversationID uint      `json:"conversation_id"`
-	Role           string    `json:"role"` // user, assistant, system, exploration, exploration_error, exploration_hint
+	Role           string    `json:"role"` // user, assistant, system, exploration
 	Content        string    `json:"content"`
-	LLMContent     *string   `json:"llm_content,omitempty"` // LLM-friendly version (plain text or JSON), optional
-	SQLResults     *string   `json:"sql_results,omitempty"` // JSON-serialized QueryResult from a previously executed SQL query
-	Metadata       *string   `json:"metadata,omitempty"` // JSON string (token usage, model used, etc.)
+	LLMContent     *string   `json:"llm_content,omitempty"`
+	SQLResults     *string   `json:"sql_results,omitempty"`
+	Metadata       *string   `json:"metadata,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
 }

@@ -11,28 +11,10 @@ import (
 	"YourQL/pkg/models"
 )
 
-// CreateDBConnection creates a new database connection for a workspace.
-func CreateDBConnection(workspaceID, createdBy uint, name, dbType, host string, port int, database, username, password, sslMode string, configJSON string) (*models.DBConnection, error) {
-	isMember, err := IsWorkspaceMember(workspaceID, createdBy)
-	if err != nil {
-		return nil, fmt.Errorf("failed to check workspace membership: %w", err)
-	}
-	if !isMember {
-		return nil, errors.New("user is not a member of this workspace")
-	}
-
-	hasPermission, err := CheckPermission(workspaceID, createdBy, "can_manage_db")
-	if err != nil {
-		return nil, err
-	}
-	if !hasPermission {
-		return nil, errors.New("insufficient permissions to manage database connections")
-	}
-
+func CreateDBConnection(name, dbType, host string, port int, database, username, password, sslMode string, configJSON string) (*models.DBConnection, error) {
 	now := time.Now().UTC()
 	isActive := true
 
-	// Handle empty config as NULL for JSON column
 	var configArg interface{}
 	if configJSON == "" {
 		configArg = nil
@@ -41,8 +23,8 @@ func CreateDBConnection(workspaceID, createdBy uint, name, dbType, host string, 
 	}
 
 	result, err := models.DB.Exec(
-		"INSERT INTO db_connections (workspace_id, name, type, host, port, `database`, username, password, ssl_mode, is_default, is_active, config, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		workspaceID, name, dbType, host, port, database, username, password, sslMode, false, isActive, configArg, createdBy, now, now,
+		"INSERT INTO db_connections (name, type, host, port, `database`, username, password, ssl_mode, is_default, is_active, config, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		name, dbType, host, port, database, username, password, sslMode, false, isActive, configArg, now, now,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create database connection: %w", err)
@@ -54,41 +36,35 @@ func CreateDBConnection(workspaceID, createdBy uint, name, dbType, host string, 
 	}
 
 	conn := &models.DBConnection{
-		ID:          uint(id),
-		WorkspaceID: workspaceID,
-		Name:        name,
-		Type:        dbType,
-		IsActive:    isActive,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:       uint(id),
+		Name:     name,
+		Type:     dbType,
+		IsActive: isActive,
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 
 	return conn, nil
 }
 
-// GetDBConnectionByID retrieves a database connection by ID.
 func GetDBConnectionByID(id uint) (*models.DBConnection, error) {
 	var c models.DBConnection
 	var hostNull, databaseNull, usernameNull, passwordNull, sslModeNull sql.NullString
 	var configNull []byte
-	var portNull, createdByNull sql.NullInt64
+	var portNull sql.NullInt64
 	err := models.DB.QueryRow(
-		"SELECT id, workspace_id, name, type, host, port, `database`, username, password, ssl_mode, is_default, is_active, config, created_by, created_at, updated_at FROM db_connections WHERE id = ? LIMIT 1",
+		"SELECT id, name, type, host, port, `database`, username, password, ssl_mode, is_default, is_active, config, created_at, updated_at FROM db_connections WHERE id = ? LIMIT 1",
 		id,
 	).Scan(
-		&c.ID, &c.WorkspaceID, &c.Name, &c.Type, &hostNull, &portNull,
+		&c.ID, &c.Name, &c.Type, &hostNull, &portNull,
 		&databaseNull, &usernameNull, &passwordNull, &sslModeNull,
-		&c.IsDefault, &c.IsActive, &configNull, &createdByNull, &c.CreatedAt, &c.UpdatedAt,
+		&c.IsDefault, &c.IsActive, &configNull, &c.CreatedAt, &c.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, errors.New("database connection not found")
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get database connection: %w", err)
-	}
-	if createdByNull.Valid {
-		cb := uint(createdByNull.Int64)
-		c.CreatedBy = &cb
 	}
 	if hostNull.Valid {
 		c.Host = &hostNull.String
@@ -116,11 +92,9 @@ func GetDBConnectionByID(id uint) (*models.DBConnection, error) {
 	return &c, nil
 }
 
-// ListDBConnectionsByWorkspace lists all database connections for a workspace.
-func ListDBConnectionsByWorkspace(workspaceID uint) ([]*models.DBConnection, error) {
+func ListDBConnectionsByWorkspace() ([]*models.DBConnection, error) {
 	rows, err := models.DB.Query(
-		"SELECT id, workspace_id, name, type, host, port, `database`, username, password, ssl_mode, is_default, is_active, config, created_by, created_at, updated_at FROM db_connections WHERE workspace_id = ? ORDER BY is_default DESC, created_at DESC",
-		workspaceID,
+		"SELECT id, name, type, host, port, `database`, username, password, ssl_mode, is_default, is_active, config, created_at, updated_at FROM db_connections ORDER BY is_default DESC, created_at DESC",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list database connections: %w", err)
@@ -132,11 +106,11 @@ func ListDBConnectionsByWorkspace(workspaceID uint) ([]*models.DBConnection, err
 		var c models.DBConnection
 		var hostNull, databaseNull, usernameNull, passwordNull, sslModeNull sql.NullString
 		var configNull []byte
-		var portNull, createdByNull sql.NullInt64
+		var portNull sql.NullInt64
 		err := rows.Scan(
-			&c.ID, &c.WorkspaceID, &c.Name, &c.Type, &hostNull, &portNull,
+			&c.ID, &c.Name, &c.Type, &hostNull, &portNull,
 			&databaseNull, &usernameNull, &passwordNull, &sslModeNull,
-			&c.IsDefault, &c.IsActive, &configNull, &createdByNull, &c.CreatedAt, &c.UpdatedAt,
+			&c.IsDefault, &c.IsActive, &configNull, &c.CreatedAt, &c.UpdatedAt,
 		)
 		if err != nil {
 			continue
@@ -164,40 +138,15 @@ func ListDBConnectionsByWorkspace(workspaceID uint) ([]*models.DBConnection, err
 			s := string(configNull)
 			c.Config = &s
 		}
-		if createdByNull.Valid {
-			cb := uint(createdByNull.Int64)
-			c.CreatedBy = &cb
-		}
 		connections = append(connections, &c)
 	}
 	return connections, nil
 }
 
-// UpdateDBConnection updates a database connection's configuration.
 func UpdateDBConnection(id uint, name *string, host *string, port *int, database *string, username *string, password *string, sslMode *string, configJSON *string) (*models.DBConnection, error) {
 	c, err := GetDBConnectionByID(id)
 	if err != nil {
 		return nil, err
-	}
-
-	var createdBy uint
-	if c.CreatedBy != nil {
-		createdBy = *c.CreatedBy
-	}
-	isMember, err := IsWorkspaceMember(c.WorkspaceID, createdBy)
-	if err != nil {
-		return nil, err
-	}
-	if !isMember {
-		return nil, errors.New("user is not a member of this workspace")
-	}
-
-	hasPermission, err := CheckPermission(c.WorkspaceID, createdBy, "can_manage_db")
-	if err != nil {
-		return nil, err
-	}
-	if !hasPermission {
-		return nil, errors.New("insufficient permissions to update database connection")
 	}
 
 	updates := make([]string, 0)
@@ -254,7 +203,6 @@ func UpdateDBConnection(id uint, name *string, host *string, port *int, database
 	return GetDBConnectionByID(id)
 }
 
-// DeleteDBConnection deletes a database connection.
 func DeleteDBConnection(id uint) error {
 	c, err := GetDBConnectionByID(id)
 	if err != nil {
@@ -284,61 +232,43 @@ func DeleteDBConnection(id uint) error {
 	return nil
 }
 
-// SetDefaultDBConnection sets a database connection as the default for a workspace.
-func SetDefaultDBConnection(workspaceID, connectionID uint) error {
+func SetDefaultDBConnection(connectionID uint) error {
 	var exists bool
 	err := models.DB.QueryRow(
-		"SELECT EXISTS(SELECT 1 FROM db_connections WHERE id = ? AND workspace_id = ?)",
-		connectionID, workspaceID,
+		"SELECT EXISTS(SELECT 1 FROM db_connections WHERE id = ?)",
+		connectionID,
 	).Scan(&exists)
 	if err != nil {
 		return fmt.Errorf("failed to verify connection: %w", err)
 	}
 	if !exists {
-		return errors.New("connection not found in workspace")
+		return errors.New("connection not found")
 	}
 
-	_, err = models.DB.Exec(
-		"UPDATE db_connections SET is_default = 0 WHERE workspace_id = ?",
-		workspaceID,
-	)
+	_, err = models.DB.Exec("UPDATE db_connections SET is_default = 0")
 	if err != nil {
 		return fmt.Errorf("failed to unset previous defaults: %w", err)
 	}
 
-	_, err = models.DB.Exec(
-		"UPDATE db_connections SET is_default = 1 WHERE id = ?",
-		connectionID,
-	)
+	_, err = models.DB.Exec("UPDATE db_connections SET is_default = 1 WHERE id = ?", connectionID)
 	if err != nil {
 		return fmt.Errorf("failed to set default: %w", err)
-	}
-
-	// Update workspace default_db_connection field
-	_, err = models.DB.Exec(
-		"UPDATE workspaces SET default_db_connection = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-		connectionID, workspaceID,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to update workspace default: %w", err)
 	}
 
 	return nil
 }
 
-// GetDefaultDBConnection retrieves the default database connection for a workspace.
-func GetDefaultDBConnection(workspaceID uint) (*models.DBConnection, error) {
+func GetDefaultDBConnection() (*models.DBConnection, error) {
 	var c models.DBConnection
 	var hostNull, databaseNull, usernameNull, passwordNull, sslModeNull sql.NullString
 	var configNull []byte
-	var portNull, createdByNull sql.NullInt64
+	var portNull sql.NullInt64
 	err := models.DB.QueryRow(
-		"SELECT id, workspace_id, name, type, host, port, `database`, username, password, ssl_mode, is_default, is_active, config, created_by, created_at, updated_at FROM db_connections WHERE workspace_id = ? AND is_default = 1 LIMIT 1",
-		workspaceID,
+		"SELECT id, name, type, host, port, `database`, username, password, ssl_mode, is_default, is_active, config, created_at, updated_at FROM db_connections WHERE is_default = 1 LIMIT 1",
 	).Scan(
-		&c.ID, &c.WorkspaceID, &c.Name, &c.Type, &hostNull, &portNull,
+		&c.ID, &c.Name, &c.Type, &hostNull, &portNull,
 		&databaseNull, &usernameNull, &passwordNull, &sslModeNull,
-		&c.IsDefault, &c.IsActive, &configNull, &createdByNull, &c.CreatedAt, &c.UpdatedAt,
+		&c.IsDefault, &c.IsActive, &configNull, &c.CreatedAt, &c.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -346,7 +276,7 @@ func GetDefaultDBConnection(workspaceID uint) (*models.DBConnection, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get default database connection: %w", err)
 	}
-	log.Printf("[db_connection] Found default DB connection ID %d for workspace %d", c.ID, workspaceID)
+	log.Printf("[db_connection] Found default DB connection ID %d", c.ID)
 	if hostNull.Valid {
 		c.Host = &hostNull.String
 	}
@@ -357,7 +287,7 @@ func GetDefaultDBConnection(workspaceID uint) (*models.DBConnection, error) {
 	if databaseNull.Valid {
 		c.Database = &databaseNull.String
 	}
-	if usernameNull.Valid {
+	if usernameNull.Value != nil {
 		c.Username = &usernameNull.String
 	}
 	if passwordNull.Valid {
@@ -365,10 +295,6 @@ func GetDefaultDBConnection(workspaceID uint) (*models.DBConnection, error) {
 	}
 	if sslModeNull.Valid {
 		c.SSLMode = &sslModeNull.String
-	}
-	if createdByNull.Valid {
-		cb := uint(createdByNull.Int64)
-		c.CreatedBy = &cb
 	}
 	if len(configNull) > 0 {
 		s := string(configNull)
