@@ -2,63 +2,60 @@ package services
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"html"
 	"regexp"
 	"strings"
 	"time"
 
-	"YourQL/pkg/configuration"
 	"YourQL/pkg/models"
 
 	_ "modernc.org/sqlite"
 )
 
+// Default limits (previously from pkg/configuration).
+const (
+	defaultLimit            = 1000
+	explorationDefaultLimit = 100
+	queryLengthThreshold    = 200
+)
+
 // humanizeColumnName converts database column names to human-readable labels.
 func humanizeColumnName(col string) string {
-	// Replace underscores and hyphens with spaces
 	col = strings.ReplaceAll(col, "_", " ")
 	col = strings.ReplaceAll(col, "-", " ")
-	
-	// Find word boundaries using regex
+
 	words := wordRegex.FindAllString(col, -1)
 	if words == nil {
-		return strings.Title(col)
+		return strings.ToUpper(col[:1]) + strings.ToLower(col[1:])
 	}
-	
+
 	var result []string
 	for _, w := range words {
 		if w == "" {
 			continue
 		}
-		// Keep acronyms all uppercase
 		if strings.ToUpper(w) == w && len(w) > 1 {
 			result = append(result, w)
 		} else {
-			// Title case (first letter uppercase, rest lower)
 			result = append(result, strings.ToUpper(w[:1])+strings.ToLower(w[1:]))
 		}
 	}
 	return strings.Join(result, " ")
 }
 
-var (
-	wordRegex = regexp.MustCompile(`([A-Z]+[a-z]*|[a-z]+|\d+)`)
-)
+var wordRegex = regexp.MustCompile(`([A-Z]+[a-z]*|[a-z]+|\d+)`)
 
-// applyDefaultLimit appends a LIMIT clause to the query if one is not already present
-// and the query length exceeds the configured threshold. Short queries (e.g.
-// "SELECT COUNT(*) FROM users") are assumed intentional and left unbounded.
+// applyDefaultLimit appends a LIMIT clause if not already present and query exceeds threshold.
 func applyDefaultLimit(sqlQuery string, conn *models.DBConnection, isExploration bool) string {
 	trimmed := strings.TrimSpace(sqlQuery)
 	upper := strings.ToUpper(trimmed)
 
-	// Check if LIMIT is already present (word-boundary aware).
 	if regexp.MustCompile(`(?i)\bLIMIT\b`).MatchString(upper) {
 		return sqlQuery
 	}
 
-	// Determine the threshold: per-connection override → app default.
 	var threshold int
 	if conn != nil {
 		config, err := conn.ParseConfig()
@@ -67,21 +64,15 @@ func applyDefaultLimit(sqlQuery string, conn *models.DBConnection, isExploration
 		}
 	}
 	if threshold == 0 {
-		threshold = configuration.Config.SQLQuery.QueryLengthThreshold
+		threshold = queryLengthThreshold
 	}
-
-	// If threshold is -1, always apply the limit regardless of length.
-	// If threshold is 0 (disabled), never apply the limit.
 	if threshold == 0 {
 		return sqlQuery
 	}
-
-	// Check query length against threshold.
 	if len(trimmed) <= threshold {
 		return sqlQuery
 	}
 
-	// Determine the limit value: per-connection override → app default.
 	var limitValue int
 	if conn != nil {
 		config, err := conn.ParseConfig()
@@ -95,92 +86,63 @@ func applyDefaultLimit(sqlQuery string, conn *models.DBConnection, isExploration
 	}
 	if limitValue == 0 {
 		if isExploration {
-			limitValue = configuration.Config.SQLQuery.ExplorationDefaultLimit
+			limitValue = explorationDefaultLimit
 		} else {
-			limitValue = configuration.Config.SQLQuery.DefaultLimit
+			limitValue = defaultLimit
 		}
 	}
 	if limitValue <= 0 {
-		return sqlQuery // disabled
+		return sqlQuery
 	}
 
-	// Find the logical end of the outermost query to append LIMIT.
-	// Strip trailing comments first.
 	cleaned := strippedTrailingComments(trimmed)
-	cleanedUpper := strings.ToUpper(cleaned)
 
-	// CTE (WITH ...): append after the final closing paren.
-	if strings.HasPrefix(cleanedUpper, "WITH") {
-		// Find the last ')' that closes the CTE chain.
-		// Walk backwards to find the outermost closing paren.
+	// CTE (WITH ...): append after the final closing paren
+	if strings.HasPrefix(strings.ToUpper(cleaned), "WITH") {
 		depth := 0
-		lastClose := -1
 		for i := len(cleaned) - 1; i >= 0; i-- {
 			switch cleaned[i] {
 			case ')':
 				depth++
-				lastClose = i
 			case '(':
 				depth--
 				if depth <= 0 {
-					// Found the outermost closing paren
-					return cleaned[:lastClose+1] + " LIMIT " + fmt.Sprintf("%d", limitValue)
+					return cleaned[:i+1] + " LIMIT " + fmt.Sprintf("%d", limitValue)
 				}
 			}
 		}
-		// No closing paren found — just append
 		return cleaned + " LIMIT " + fmt.Sprintf("%d", limitValue)
 	}
 
-	// UNION / UNION ALL: append after the last query in the chain.
-	// Find the last SELECT keyword before the end.
-	lastSelect := -1
-	for {
-		idx := strings.Index(cleanedUpper[lastSelect+1:], "SELECT")
-		if idx == -1 {
-			break
-		}
-		lastSelect = lastSelect + 1 + idx
-	}
-	if lastSelect >= 0 {
-		// Append after the last SELECT's logical end (which is the end of the string)
-		return cleaned + " LIMIT " + fmt.Sprintf("%d", limitValue)
+	// UNION queries: wrap in outer SELECT to apply limit correctly (§5.5)
+	if regexp.MustCompile(`(?i)\bUNION\b`).MatchString(cleaned) {
+		return "SELECT * FROM (" + cleaned + ") subq LIMIT " + fmt.Sprintf("%d", limitValue)
 	}
 
-	// Plain SELECT: just append.
+	// Plain SELECT: just append
 	return cleaned + " LIMIT " + fmt.Sprintf("%d", limitValue)
 }
 
-// strippedTrailingComments removes trailing SQL comments (-- ... and /* ... */) from the end of a string.
+// strippedTrailingComments removes trailing SQL comments.
 func strippedTrailingComments(s string) string {
 	trimmed := strings.TrimSpace(s)
-	
-	// Strip trailing line comments (-- ...)
-	for strings.HasSuffix(trimmed, "--") || strings.Contains(trimmed, "\n--") {
-		idx := strings.LastIndex(trimmed, "--")
-		if idx >= 0 {
-			// Check if it's actually a comment (preceded by whitespace or at start)
-			if idx == 0 || trimmed[idx-1] == ' ' || trimmed[idx-1] == '\t' || trimmed[idx-1] == '\n' {
-				trimmed = trimmed[:idx]
-				trimmed = strings.TrimRight(trimmed, " \t\n\r")
-				break
-			}
+
+	// Strip trailing line comments
+	lastDash := strings.LastIndex(trimmed, "--")
+	if lastDash >= 0 && (lastDash == 0 || trimmed[lastDash-1] == ' ' || trimmed[lastDash-1] == '\t' || trimmed[lastDash-1] == '\n') {
+		before := strings.TrimSpace(trimmed[:lastDash])
+		if before != "" {
+			trimmed = before
 		}
-		break
 	}
 
-	// Strip trailing block comments (/* ... */)
-	for strings.HasSuffix(trimmed, "/*") || strings.HasSuffix(trimmed, "*/") {
-		idx := strings.LastIndex(trimmed, "/*")
-		if idx >= 0 {
-			endIdx := strings.Index(trimmed[idx:], "*/")
-			if endIdx >= 0 {
-				endIdx = idx + endIdx + 2
-				trimmed = strings.TrimRight(trimmed[:idx], " \t\n\r")
-				break
-			}
+	// Strip trailing block comments
+	lastBlock := strings.LastIndex(trimmed, "*/")
+	if lastBlock >= 0 {
+		openIdx := strings.LastIndex(trimmed[:lastBlock], "/*")
+		if openIdx >= 0 {
+			trimmed = strings.TrimSpace(trimmed[:openIdx])
 		}
-		break
 	}
 
 	return trimmed
@@ -188,41 +150,32 @@ func strippedTrailingComments(s string) string {
 
 // QueryResult holds the results of a SQL query.
 type QueryResult struct {
-	Columns []string        `json:"columns"`
-	Rows    [][]interface{} `json:"rows"`
-	RowCount int            `json:"row_count"`
+	Columns  []string        `json:"columns"`
+	Rows     [][]interface{} `json:"rows"`
+	RowCount int             `json:"row_count"`
 }
 
 // executeSQL connects to the external database and runs the given SQL query.
-// Only SELECT queries are allowed for safety.
 func executeSQL(conn *models.DBConnection, sqlQuery string) (*QueryResult, error) {
 	return executeSQLWithMode(conn, sqlQuery, false)
 }
 
 // executeSQLWithMode is like executeSQL but allows specifying exploration mode.
 func executeSQLWithMode(conn *models.DBConnection, sqlQuery string, isExploration bool) (*QueryResult, error) {
-	// Apply default LIMIT if not already present
 	sqlQuery = applyDefaultLimit(sqlQuery, conn, isExploration)
 
-	// Validate query: only read-only queries allowed
 	trimmed := strings.TrimSpace(sqlQuery)
 	upper := strings.ToUpper(trimmed)
 
-	// Allow SELECT and CTE (WITH) queries
 	isSelect := strings.HasPrefix(upper, "SELECT")
 	isCTE := false
 	if strings.HasPrefix(upper, "WITH") && len(upper) > 4 {
-		// Check that after "WITH" there is whitespace or '(' (for CTE)
 		next := upper[4]
 		isCTE = next == ' ' || next == '\t' || next == '\n' || next == '\r' || next == '(' || next == 'R'
 	}
 	if !isSelect && !isCTE {
 		return nil, fmt.Errorf("only SELECT queries are allowed")
 	}
-
-	// For CTE queries, we rely on the database to validate the query.
-	// SQLite and MySQL both support CTEs and will reject
-	// non-SELECT statements inside CTEs.
 
 	dsn, err := BuildDSN(conn)
 	if err != nil {
@@ -238,7 +191,6 @@ func executeSQLWithMode(conn *models.DBConnection, sqlQuery string, isExploratio
 	db.SetConnMaxLifetime(30 * time.Second)
 	db.SetMaxOpenConns(5)
 
-	// Execute query
 	rows, err := db.Query(sqlQuery)
 	if err != nil {
 		return nil, fmt.Errorf("query execution failed: %w", err)
@@ -250,10 +202,8 @@ func executeSQLWithMode(conn *models.DBConnection, sqlQuery string, isExploratio
 		return nil, fmt.Errorf("failed to get columns: %w", err)
 	}
 
-	// Scan rows
 	var resultRows [][]interface{}
 	for rows.Next() {
-		// Create slice of interface{} to hold column values
 		values := make([]interface{}, len(columns))
 		valuePtrs := make([]interface{}, len(columns))
 		for i := range values {
@@ -264,7 +214,6 @@ func executeSQLWithMode(conn *models.DBConnection, sqlQuery string, isExploratio
 			return nil, fmt.Errorf("failed to scan row: %w", err)
 		}
 
-		// Convert []byte to string for readability
 		for i, val := range values {
 			if b, ok := val.([]byte); ok {
 				values[i] = string(b)
@@ -278,19 +227,18 @@ func executeSQLWithMode(conn *models.DBConnection, sqlQuery string, isExploratio
 	}
 
 	return &QueryResult{
-		Columns: columns,
-		Rows:    resultRows,
+		Columns:  columns,
+		Rows:     resultRows,
 		RowCount: len(resultRows),
 	}, nil
 }
 
-// formatResults converts QueryResult into a human‑readable string.
+// formatResults converts QueryResult into a human-readable markdown string.
 func formatResults(result *QueryResult) string {
 	if result.RowCount == 0 {
 		return "No rows returned."
 	}
 
-	// Humanize column names for display
 	humanizedCols := make([]string, len(result.Columns))
 	for i, col := range result.Columns {
 		humanizedCols[i] = humanizeColumnName(col)
@@ -299,7 +247,6 @@ func formatResults(result *QueryResult) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("**%d row(s) returned**\n\n", result.RowCount))
 
-	// Determine column widths based on humanized column names and data
 	colWidths := make([]int, len(humanizedCols))
 	for i, col := range humanizedCols {
 		if len(col) > colWidths[i] {
@@ -315,7 +262,6 @@ func formatResults(result *QueryResult) string {
 		}
 	}
 
-	// Build markdown table header
 	for i, col := range humanizedCols {
 		sb.WriteString("| ")
 		sb.WriteString(padRight(col, colWidths[i]))
@@ -329,7 +275,6 @@ func formatResults(result *QueryResult) string {
 	}
 	sb.WriteString("|\n")
 
-	// Rows
 	for _, row := range result.Rows {
 		for i, val := range row {
 			sb.WriteString("| ")
@@ -368,14 +313,12 @@ func (r *AssistantResponse) ToHTML() string {
 	return sb.String()
 }
 
-// formatResultsHTML converts QueryResult into an HTML table with sticky header,
-// row limiting, show-more toggle, CSV export, and sortable columns.
+// formatResultsHTML converts QueryResult into an HTML table.
 func formatResultsHTML(result *QueryResult) string {
 	if result.RowCount == 0 {
 		return "<p>No rows returned.</p>"
 	}
 
-	// Humanize column names for display
 	humanizedCols := make([]string, len(result.Columns))
 	for i, col := range result.Columns {
 		humanizedCols[i] = humanizeColumnName(col)
@@ -391,32 +334,29 @@ func formatResultsHTML(result *QueryResult) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("<p><strong>%d row(s) returned</strong></p>\n", result.RowCount))
 
-	// Table toolbar with toggle and CSV buttons
-	sb.WriteString(`<div class="table-toolbar" style="margin-bottom:0.5rem; display:flex; gap:0.75rem; align-items:center;">
-`)
-	if !showAll {
-		sb.WriteString(fmt.Sprintf(`<button class="table-toggle-btn" data-target="data-%d" onclick="toggleRows(this, %d, %d)">Show more</button>
-`,
-			result.RowCount, result.RowCount, displayedRows))
-	}
+	// Toolbar – CSV button only (non-functional JS buttons removed per §3.8b)
+	sb.WriteString(`<div class="table-toolbar" style="margin-bottom:0.5rem; display:flex; gap:0.75rem; align-items:center;">`)
 	sb.WriteString(fmt.Sprintf(`<button class="table-toggle-btn" data-target="csv-%d" onclick="exportCSV(this, %d)">↓ CSV</button>
-`,
-		result.RowCount, result.RowCount))
+`, result.RowCount, result.RowCount))
 	sb.WriteString(`</div>
 `)
 
 	sb.WriteString(`<div class="table-container" style="overflow-x: auto;">`)
-	sb.WriteString(`<table class="result-table sortable" data-row-count="` + fmt.Sprint(result.RowCount) + `" style="border-collapse: collapse; width: 100%;">`)
+	// Encode raw data for client-side sorting
+	dataJSON, _ := json.Marshal(map[string]interface{}{
+		"columns": result.Columns,
+		"rows":    result.Rows,
+	})
+	sb.WriteString(fmt.Sprintf(`<table class="result-table sortable" data-sort-rows="%s" style="border-collapse: collapse; width: 100%;">`, html.EscapeString(string(dataJSON))))
 
-	// Sticky header
 	sb.WriteString(`<thead><tr>`)
-	for i, col := range result.Columns {
+	for i := range result.Columns {
 		humanized := humanizedCols[i]
-		sb.WriteString(fmt.Sprintf(`<th class="sortable-col" data-col="%s" onclick="sortColumn(this)" style="border:1px solid #e8e8e8; padding:10px 12px; text-align:left; background:#f8f9fa; position:sticky; top:0; z-index:2; font-weight:600; cursor:pointer; user-select:none; white-space:nowrap;">%s <span class="sort-icon" style="margin-left:4px;opacity:0.3;">⇅</span></th>`,
-			html.EscapeString(col), html.EscapeString(humanized)))
+		sb.WriteString(fmt.Sprintf(`<th class="sort-header" data-col="%d" style="border:1px solid #e8e8e8; padding:10px 12px; text-align:left; background:#f8f9fa; position:sticky; top:0; z-index:2; font-weight:600; user-select:none; white-space:nowrap; cursor:pointer;">%s <span class="sort-indicator"></span></th>`,
+			i, html.EscapeString(humanized)))
 	}
 	sb.WriteString(`</tr></thead>`)
-	sb.WriteString(`<tbody data-visible="` + fmt.Sprint(displayedRows) + `">`)
+	sb.WriteString(`<tbody>`)
 
 	for i, row := range result.Rows {
 		if i >= displayedRows {
@@ -425,7 +365,6 @@ func formatResultsHTML(result *QueryResult) string {
 		sb.WriteString(`<tr class="result-row">`)
 		for _, val := range row {
 			cell := fmt.Sprintf("%v", val)
-			// Right-align numbers, color-code dates
 			cellClass := ""
 			if isNumber(cell) {
 				cellClass = "num-cell"
@@ -444,17 +383,26 @@ func formatResultsHTML(result *QueryResult) string {
 
 // buildCollapsibleSQLBlockHTML returns HTML for a collapsible SQL code block with a copy button.
 func buildCollapsibleSQLBlockHTML(sqlQuery string) string {
-	// Store raw SQL in a data attribute (not escaped — JS reads it directly)
+	hash := sqlQueryHash(sqlQuery)
 	return fmt.Sprintf(`<details class="sql-block" style="margin: 1rem 0;">
-<summary style="cursor:pointer; color:#666; font-size:0.9rem; padding:0.5rem 0.75rem; background:#f5f5f5; border-radius:4px; display:flex; justify-content:space-between; align-items:center;">
+<summary style="cursor:pointer; color:#666; font-size:0.9rem; padding:0.5rem 0.75rem; background:#f5f5f5; border-radius:6px; display:flex; justify-content:space-between; align-items:center;">
   <span>Show SQL</span>
-  <button class="copy-btn" onclick="copySQL(this)" style="font-size:0.8rem; padding:2px 8px; border:1px solid #ddd; border-radius:4px; background:white; cursor:pointer; color:#666;">📋 Copy</button>
 </summary>
-<pre style="margin:0.5rem 0; padding:1rem; background:#f8f8f8; border-radius:4px; overflow-x:auto; border:1px solid #e8e8e8;"><code class="sql-code">%s</code></pre>
-</details>`, html.EscapeString(sqlQuery))
+<pre style="margin:0.5rem 0; padding:1rem; background:#f8f8f8; border-radius:6px; overflow-x:auto; border:1px solid #e8e8e8; position:relative;"><code class="sql-code" id="sql-code-%d">%s</code></pre>
+<button class="copy-sql-btn" onclick="copySQL('sql-code-%d')" style="position:absolute; top:8px; right:8px; font-size:0.8rem; padding:4px 10px; border:1px solid #ddd; border-radius:6px; background:white; cursor:pointer; color:#666; display:none;">Copy</button>
+</details>`, hash, html.EscapeString(sqlQuery), hash)
 }
 
-// formatExplorationHTML formats exploration results as HTML with a "collapse all" toggle.
+// sqlQueryHash returns a simple hash of the SQL query for unique element IDs.
+func sqlQueryHash(sql string) int {
+	hash := 0
+	for i := 0; i < len(sql); i++ {
+		hash = ((hash << 5) - hash) + int(sql[i])
+	}
+	return hash
+}
+
+// formatExplorationHTML formats exploration results as HTML.
 func formatExplorationHTML(results []ExplorationResult) string {
 	if len(results) == 0 {
 		return ""
@@ -462,9 +410,8 @@ func formatExplorationHTML(results []ExplorationResult) string {
 
 	var sb strings.Builder
 	sb.WriteString(`<details class="explore-block" style="margin:1rem 0;">
-<summary style="cursor:pointer; color:#666; font-size:0.9rem; padding:0.5rem 0.75rem; background:#f0f4ff; border-radius:4px; display:flex; justify-content:space-between; align-items:center;">
-  <span>🔍 Show ` + fmt.Sprint(len(results)) + ` intermediate query(ies)</span>
-  <button class="collapse-all-btn" onclick="toggleAllExploration(this)" style="font-size:0.8rem; padding:2px 8px; border:1px solid #c0d0f0; border-radius:4px; background:white; cursor:pointer; color:#4a90d9;">Collapse all</button>
+<summary style="cursor:pointer; color:#666; font-size:0.9rem; padding:0.5rem 0.75rem; background:#f0f4ff; border-radius:6px;">
+  <span>&#8981; Show ` + fmt.Sprint(len(results)) + ` intermediate query(ies)</span>
 </summary>
 <div class="exploration-results">
 `)
@@ -477,21 +424,13 @@ func formatExplorationHTML(results []ExplorationResult) string {
 			sb.WriteString(fmt.Sprintf(`<div style="color:#888; font-size:0.85rem; margin-bottom:0.5rem;">— %s</div>
 `, html.EscapeString(er.Explained)))
 		}
-		sb.WriteString(fmt.Sprintf(`<pre style="margin:0.375rem 0; font-size:0.85rem; overflow-x:auto; background:#fff; padding:0.5rem 0.75rem; border-radius:4px; border:1px solid #e8e8e8;"><code class="sql-code">%s</code></pre>
+		sb.WriteString(fmt.Sprintf(`<pre style="margin:0.375rem 0; font-size:0.85rem; overflow-x:auto; background:#fff; padding:0.5rem 0.75rem; border-radius:6px; border:1px solid #e8e8e8;"><code class="sql-code">%s</code></pre>
 `, html.EscapeString(er.SQL)))
 		if er.Result != nil && er.Result.RowCount > 0 {
-			// Humanize column names for display
-			humanizedCols := make([]string, len(er.Result.Columns))
-			for i, col := range er.Result.Columns {
-				humanizedCols[i] = humanizeColumnName(col)
-			}
-			sb.WriteString(fmt.Sprintf(`<div style="margin-top:0.375rem; display:flex; gap:1rem; font-size:0.85rem;">
-<span style="color:#27ae60;">✅ %d row(s)</span>
-<span style="color:#888;">Columns: %s</span>
-</div>
-`, er.Result.RowCount, strings.Join(humanizedCols, ", ")))
+			sb.WriteString(fmt.Sprintf(`<div style="margin-top:0.375rem; font-size:0.85rem; color:#27ae60;">&#10003; %d row(s)</div>
+`, er.Result.RowCount))
 		} else if er.Result != nil {
-			sb.WriteString(`<div style="margin-top:0.375rem; font-size:0.85rem; color:#888;">✅ 0 rows</div>
+			sb.WriteString(`<div style="margin-top:0.375rem; font-size:0.85rem; color:#888;">&#10003; 0 rows</div>
 `)
 		}
 		sb.WriteString("</div>\n")
@@ -501,7 +440,6 @@ func formatExplorationHTML(results []ExplorationResult) string {
 	return sb.String()
 }
 
-// isNumber returns true if the string looks like a number.
 func isNumber(s string) bool {
 	if s == "" {
 		return false
@@ -517,19 +455,13 @@ func isNumber(s string) bool {
 	return true
 }
 
-// isDate returns true if the string looks like a date (YYYY-MM-DD or contains / as separator).
 func isDate(s string) bool {
 	if len(s) < 8 {
 		return false
 	}
-	// Check YYYY-MM-DD pattern
-	if (s[4] == '-' && s[7] == '-') || (s[4] == '/' && s[7] == '/') {
-		return true
-	}
-	return false
+	return (s[4] == '-' && s[7] == '-') || (s[4] == '/' && s[7] == '/')
 }
 
-// padRight pads a string to the given length with spaces (or a specified rune).
 func padRight(s string, length int, pad ...rune) string {
 	if len(s) >= length {
 		return s
@@ -545,28 +477,19 @@ func padRight(s string, length int, pad ...rune) string {
 type ExplorationSafetyMode int
 
 const (
-	ExplorationStrict    ExplorationSafetyMode = iota // LIMIT, COUNT, DISTINCT, SHOW COLUMNS, DESCRIBE, INFORMATION_SCHEMA only
-	ExplorationModerate                                // strict + single-table JOIN, GROUP BY, ORDER BY
-	ExplorationRelaxed                                 // moderate + subqueries, UNION
+	ExplorationStrict    ExplorationSafetyMode = iota
+	ExplorationModerate
+	ExplorationRelaxed
 )
 
-// isRetryableError determines whether a SQL execution error is likely to be
-// corrected by the LLM (retryable) or is a fundamental connectivity issue (fatal).
+// isRetryableError determines whether a SQL execution error is retryable.
 func isRetryableError(err error) bool {
 	msg := err.Error()
 
-	// Fatal errors: these indicate infrastructure problems the LLM cannot fix
 	fatalPatterns := []string{
-		"dial",              // connection refused / network error
-		"handshake",         // SSL/TLS handshake failure
-		"authentication",    // auth failure
-		"max connections",   // server capacity
-		"connection reset",  // network drop
-		"i/o timeout",       // network timeout
-		"connection refused", // server not running
-		"no such host",      // DNS failure
-		"tls:",              // TLS error
-		"certificate",       // cert error
+		"dial", "handshake", "authentication", "max connections",
+		"connection reset", "i/o timeout", "connection refused",
+		"no such host", "tls:", "certificate",
 	}
 	upper := strings.ToUpper(msg)
 	for _, pat := range fatalPatterns {
@@ -575,68 +498,25 @@ func isRetryableError(err error) bool {
 		}
 	}
 
-	// Retryable errors: LLM can likely fix these
 	retryablePatterns := []string{
-		"unknown column",           // typo in column name
-		"unknown table",            // typo in table name
-		"doesn't exist",            // table doesn't exist
-		"syntax error",             // SQL syntax issue
-		"you have an error in your", // MySQL syntax error
-		"truncated incorrect",      // data type issue
-		"incorrect string value",   // encoding issue
-		"invalid use of group",     // GROUP BY issue
-		"ambiguous column",         // JOIN ambiguity
-		"multiple primary key",     // duplicate key
-		"deadlock",                 // transient deadlock
-		"lock wait timeout",        // transient lock
-		"too many connections",     // might resolve
-		"table is marked as crashed", // might self-repair
-		"incorrect key value",      // constraint issue
-		"data too long",            // column length
-		"out of range",             // numeric overflow
-		"division by zero",         // logic issue
-		"subquery returns more than 1 row", // subquery cardinality
-		"subquery",                        // general subquery issues
-		"1242",                            // MySQL error code for subquery returns more than 1 row
-		"invalid character",        // encoding
-		"invalid utf8",             // encoding
-		"invalid utf8mb4",          // encoding
-		"truncated incorrect",      // type conversion
-		"field doesn't have",       // missing field
-		"not found",                // might be wrong table reference
-		"not exists",               // might be wrong table reference
-		"access denied",            // permission on specific table
-		"permission denied",        // permission issue
-		"command denied",           // MySQL command permission
-		"function doesn't exist",   // function call issue
-		"column '.*' in field list", // column issue
-		"column '.*' in where",     // column issue
-		"column '.*' in order by",  // column issue
-		"column '.*' in group by",  // column issue
-		"column '.*' in having",    // column issue
-		"not in group by",          // GROUP BY issue
-		"invalid reference",        // JOIN reference issue
-		"conflicting types",        // type mismatch
-		"can't drop",               // constraint issue
-		"duplicate entry",           // constraint issue
-		"foreign key constraint",   // FK constraint
-		"cannot add foreign key",   // FK constraint
-		"cannot truncate",           // permission
-		"view's",                   // view issue
-		"stored function",          // function issue
-		"prepared statement",        // prepared stmt issue
-		"invalid collation",         // collation issue
-		"incorrect date value",      // date issue
-		"incorrect datetime value",  // datetime issue
-		"incorrect time value",      // time issue
-		"incorrect year value",      // year issue
-		"incorrect double value",    // numeric issue
-		"overflow",                 // numeric overflow
-		"underflow",               // numeric underflow
-		"truncated",               // truncation
-		"out of memory",           // might resolve
-		"temporary file",           // disk issue
-		"disk full",               // disk issue
+		"unknown column", "unknown table", "doesn't exist", "syntax error",
+		"you have an error in your", "truncated incorrect", "incorrect string value",
+		"invalid use of group", "ambiguous column", "multiple primary key",
+		"deadlock", "lock wait timeout", "too many connections",
+		"table is marked as crashed", "incorrect key value", "data too long",
+		"out of range", "division by zero",
+		"subquery returns more than 1 row", "subquery", "1242",
+		"invalid character", "invalid utf8", "invalid utf8mb4",
+		"field doesn't have", "not found", "not exists",
+		"access denied", "permission denied", "command denied",
+		"function doesn't exist", "column '.*' in", "not in group by",
+		"invalid reference", "conflicting types", "can't drop",
+		"duplicate entry", "foreign key constraint", "cannot add foreign key",
+		"cannot truncate", "view's", "stored function", "prepared statement",
+		"invalid collation", "incorrect date value", "incorrect datetime value",
+		"incorrect time value", "incorrect year value", "incorrect double value",
+		"overflow", "underflow", "truncated", "out of memory",
+		"temporary file", "disk full",
 	}
 	for _, pat := range retryablePatterns {
 		if regexp.MustCompile("(?i)" + pat).MatchString(msg) {
@@ -644,7 +524,6 @@ func isRetryableError(err error) bool {
 		}
 	}
 
-	// Default: if we can't classify, treat as retryable (optimistic)
 	return true
 }
 
@@ -660,16 +539,14 @@ func ParseExplorationSafety(s string) ExplorationSafetyMode {
 	}
 }
 
-// validateExplorationQuery checks whether an exploration query is allowed under the given safety mode.
+// validateExplorationQuery checks whether an exploration query is allowed.
 func validateExplorationQuery(sqlQuery string, mode ExplorationSafetyMode) error {
 	trimmed := strings.TrimSpace(sqlQuery)
 	upper := strings.ToUpper(trimmed)
 
-	// Must start with SELECT or WITH (CTE)
 	isSelect := strings.HasPrefix(upper, "SELECT")
 	isCTE := false
 	if strings.HasPrefix(upper, "WITH") && len(upper) > 4 {
-		// Check that after "WITH" there is whitespace or '(' (for CTE)
 		next := upper[4]
 		isCTE = next == ' ' || next == '\t' || next == '\n' || next == '\r' || next == '('
 	}
@@ -677,21 +554,20 @@ func validateExplorationQuery(sqlQuery string, mode ExplorationSafetyMode) error
 		return fmt.Errorf("exploration queries must be SELECT statements")
 	}
 
-	// Block all DML/DDL/other dangerous operations
+	// Block DML/DDL — strip comments first (§5.6)
+	stripped := stripSQLComments(upper)
 	dangerousPatterns := []string{
 		"INSERT ", "UPDATE ", "DELETE ", "DROP ", "ALTER ", "TRUNCATE ",
 		"CREATE ", "REPLACE ", "GRANT ", "REVOKE ", "LOAD_FILE",
 		"INTO OUTFILE", "INTO DUMPFILE", "BENCHMARK(", "SLEEP(",
 		"EXEC ", "EXECUTE ", "xp_", "sp_",
-		"--", "/*", "*/", // block comments
 	}
 	for _, pat := range dangerousPatterns {
-		if strings.Contains(upper, pat) {
+		if strings.Contains(stripped, pat) {
 			return fmt.Errorf("exploration query blocked: contains '%s'", pat)
 		}
 	}
 
-	// Count top-level keywords to determine query complexity
 	hasJoin := strings.Contains(upper, "JOIN")
 	hasSubquery := strings.Contains(upper, "(") && strings.Contains(strings.TrimPrefix(upper, "SELECT"), "SELECT")
 	hasUnion := strings.Contains(upper, "UNION")
@@ -700,36 +576,34 @@ func validateExplorationQuery(sqlQuery string, mode ExplorationSafetyMode) error
 
 	switch mode {
 	case ExplorationStrict:
-		if hasJoin {
-			return fmt.Errorf("strict mode: JOINs are not allowed in exploration queries")
-		}
-		if hasSubquery {
-			return fmt.Errorf("strict mode: subqueries are not allowed in exploration queries")
-		}
-		if hasUnion {
-			return fmt.Errorf("strict mode: UNION is not allowed in exploration queries")
-		}
-		if hasGroupBy {
-			return fmt.Errorf("strict mode: GROUP BY is not allowed in exploration queries")
-		}
-		if hasOrderBy {
-			return fmt.Errorf("strict mode: ORDER BY is not allowed in exploration queries")
+		if hasJoin || hasSubquery || hasUnion || hasGroupBy || hasOrderBy {
+			return fmt.Errorf("strict mode: only simple SELECT queries allowed")
 		}
 	case ExplorationModerate:
 		if hasSubquery {
-			return fmt.Errorf("moderate mode: subqueries are not allowed in exploration queries")
+			return fmt.Errorf("moderate mode: subqueries are not allowed")
 		}
 		if hasUnion {
-			return fmt.Errorf("moderate mode: UNION is not allowed in exploration queries")
+			return fmt.Errorf("moderate mode: UNION is not allowed")
 		}
-		// Check for multi-table JOIN (very rough: count FROM/JOIN keywords)
 		fromJoinCount := len(regexp.MustCompile(`\b(FROM|JOIN)\b`).FindAllString(upper, -1))
 		if fromJoinCount > 2 {
-			return fmt.Errorf("moderate mode: multi-table JOINs are not allowed in exploration queries")
+			return fmt.Errorf("moderate mode: multi-table JOINs are not allowed")
 		}
 	case ExplorationRelaxed:
-		// Only check for truly dangerous patterns (already covered above)
+		// Only DML/DDL blocked (above)
 	}
 
 	return nil
+}
+
+// stripSQLComments removes SQL line and block comments from the query text.
+func stripSQLComments(s string) string {
+	// Remove block comments
+	blockRe := regexp.MustCompile(`/\*.*?\*/`)
+	s = blockRe.ReplaceAllString(s, "")
+	// Remove line comments
+	lineRe := regexp.MustCompile(`--.*$`)
+	s = lineRe.ReplaceAllString(s, "")
+	return s
 }

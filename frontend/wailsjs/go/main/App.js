@@ -6,8 +6,12 @@ export function ArchiveConversation(arg1) {
   return window['go']['main']['App']['ArchiveConversation'](arg1);
 }
 
-export function CreateConversation(arg1, arg2, arg3, arg4, arg5) {
-  return window['go']['main']['App']['CreateConversation'](arg1, arg2, arg3, arg4, arg5);
+export function ClearConversationMessages(arg1) {
+  return window['go']['main']['App']['ClearConversationMessages'](arg1);
+}
+
+export function CreateConversation(arg1, arg2, arg3) {
+  return window['go']['main']['App']['CreateConversation'](arg1, arg2, arg3);
 }
 
 export function CreateDBConnection(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9) {
@@ -30,6 +34,10 @@ export function DeleteLLMProvider(arg1) {
   return window['go']['main']['App']['DeleteLLMProvider'](arg1);
 }
 
+export function DuplicateConversation(arg1) {
+  return window['go']['main']['App']['DuplicateConversation'](arg1);
+}
+
 export function ExecuteQuery(arg1, arg2) {
   return window['go']['main']['App']['ExecuteQuery'](arg1, arg2);
 }
@@ -46,16 +54,16 @@ export function GetSchemaPreview(arg1) {
   return window['go']['main']['App']['GetSchemaPreview'](arg1);
 }
 
-export function ListConversations(arg1, arg2) {
-  return window['go']['main']['App']['ListConversations'](arg1, arg2);
+export function ListConversations() {
+  return window['go']['main']['App']['ListConversations']();
 }
 
 export function ListDBConnections() {
   return window['go']['main']['App']['ListDBConnections']();
 }
 
-export function ListDiscussions(arg1, arg2) {
-  return window['go']['main']['App']['ListDiscussions'](arg1, arg2);
+export function ListDiscussions() {
+  return window['go']['main']['App']['ListDiscussions']();
 }
 
 export function ListLLMProviders() {
@@ -86,12 +94,24 @@ export function TestLLMProviderConnection(arg1) {
   return window['go']['main']['App']['TestLLMProviderConnection'](arg1);
 }
 
+export function UpdateConversationMaxMessages(arg1, arg2) {
+  return window['go']['main']['App']['UpdateConversationMaxMessages'](arg1, arg2);
+}
+
+export function UpdateConversationPinned(arg1, arg2) {
+  return window['go']['main']['App']['UpdateConversationPinned'](arg1, arg2);
+}
+
 export function UpdateConversationSettings(arg1, arg2, arg3) {
   return window['go']['main']['App']['UpdateConversationSettings'](arg1, arg2, arg3);
 }
 
 export function UpdateConversationTechDetails(arg1, arg2) {
   return window['go']['main']['App']['UpdateConversationTechDetails'](arg1, arg2);
+}
+
+export function UpdateConversationTitle(arg1, arg2) {
+  return window['go']['main']['App']['UpdateConversationTitle'](arg1, arg2);
 }
 
 export function UpdateDBConnection(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9) {

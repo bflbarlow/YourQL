@@ -5,7 +5,9 @@ import {main} from '../models';
 
 export function ArchiveConversation(arg1:number):Promise<void>;
 
-export function CreateConversation(arg1:number,arg2:number,arg3:string,arg4:any,arg5:any):Promise<models.Conversation>;
+export function ClearConversationMessages(arg1:number):Promise<void>;
+
+export function CreateConversation(arg1:string,arg2:any,arg3:any):Promise<models.Conversation>;
 
 export function CreateDBConnection(arg1:string,arg2:string,arg3:string,arg4:number,arg5:string,arg6:string,arg7:string,arg8:string,arg9:string):Promise<void>;
 
@@ -17,6 +19,8 @@ export function DeleteDBConnection(arg1:number):Promise<void>;
 
 export function DeleteLLMProvider(arg1:number):Promise<void>;
 
+export function DuplicateConversation(arg1:number):Promise<models.Conversation>;
+
 export function ExecuteQuery(arg1:number,arg2:string):Promise<main.QueryResult>;
 
 export function GetConversationMessages(arg1:number):Promise<Array<models.ConversationMessage>>;
@@ -25,11 +29,11 @@ export function GetGeneralSettings():Promise<main.GeneralSettings>;
 
 export function GetSchemaPreview(arg1:number):Promise<main.SchemaPreview>;
 
-export function ListConversations(arg1:number,arg2:number):Promise<Array<models.Conversation>>;
+export function ListConversations():Promise<Array<models.Conversation>>;
 
 export function ListDBConnections():Promise<Array<main.DBConnectionSetting>>;
 
-export function ListDiscussions(arg1:number,arg2:number):Promise<Array<string>>;
+export function ListDiscussions():Promise<Array<string>>;
 
 export function ListLLMProviders():Promise<Array<main.LLMProviderSetting>>;
 
@@ -45,9 +49,15 @@ export function TestDBConnection(arg1:number):Promise<string>;
 
 export function TestLLMProviderConnection(arg1:number):Promise<string>;
 
+export function UpdateConversationMaxMessages(arg1:number,arg2:number):Promise<void>;
+
+export function UpdateConversationPinned(arg1:number,arg2:boolean):Promise<void>;
+
 export function UpdateConversationSettings(arg1:number,arg2:any,arg3:any):Promise<void>;
 
 export function UpdateConversationTechDetails(arg1:number,arg2:boolean):Promise<void>;
+
+export function UpdateConversationTitle(arg1:number,arg2:string):Promise<models.Conversation>;
 
 export function UpdateDBConnection(arg1:number,arg2:string,arg3:string,arg4:string,arg5:string,arg6:string,arg7:string,arg8:number,arg9:string):Promise<void>;
 

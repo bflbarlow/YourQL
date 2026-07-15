@@ -1,4 +1,5 @@
 <script>
+  import { Settings, Pin, Search, ChevronRight, ChevronDown, MessageSquare } from 'lucide-svelte'
   let { 
     activeConversation, 
     conversationMessages = [], 
@@ -8,16 +9,17 @@
     messageError = null, 
     userMessage = '',
     showTechDetails = false,
+    maxMessages = 0,
     onSendMessage = () => {},
     onBack = () => {},
     onMessageChange = () => {},
     onTechDetailsToggle = () => {},
-    onGearClick = () => {}
+    onGearClick = () => {},
+    onMaxMessagesChange = () => {}
   } = $props()
   
   let localMessage = $state(userMessage)
   
-  // Sync localMessage when parent clears userMessage (e.g., after send)
   $effect(() => {
     localMessage = userMessage
   })
@@ -25,6 +27,10 @@
   function handleInput(e) {
     localMessage = e.target.value
     onMessageChange(localMessage)
+    // Auto-resize textarea
+    const el = e.target
+    el.style.height = 'auto'
+    el.style.height = Math.min(el.scrollHeight, 200) + 'px'
   }
   
   function handleKeyDown(e) {
@@ -36,7 +42,6 @@
     }
   }
   
-  // Parse payload from metadata
   function parsePayload(metadata) {
     if (!metadata) return null
     try {
@@ -46,7 +51,6 @@
     }
   }
 
-  // Enrich messages with parsed payloads
   let enrichedMessages = $derived(
     conversationMessages.map(m => ({
       ...m,
@@ -54,24 +58,67 @@
     }))
   )
 
-  // Filter messages based on tech details toggle
   let filteredMessages = $derived(
-    showTechDetails
-      ? enrichedMessages
-      : enrichedMessages.filter(m => m.role === 'user' || m.role === 'assistant')
+    (() => {
+      let msgs = showTechDetails
+        ? enrichedMessages
+        : enrichedMessages.filter(m => m.role === 'user' || m.role === 'assistant')
+      
+      // Apply max_messages limit — show last N messages
+      if (maxMessages > 0 && msgs.length > maxMessages) {
+        return msgs.slice(msgs.length - maxMessages)
+      }
+      return msgs
+    })()
   )
 
-  // Get exploration results for display
-  let explorationResults = $derived(
-    showTechDetails
-      ? enrichedMessages.filter(m => m.role === 'exploration')
-      : []
-  )
+  // Per-message payload toggles (§4.7)
+  let payloadToggles = $state({})
 
-  // State for payload toggles
-  let showRequest = $state(false)
-  let showResponse = $state(false)
-  let showMessages = $state(false)
+  function togglePayload(msgId, type) {
+    const key = `${msgId}-${type}`
+    payloadToggles[key] = !payloadToggles[key]
+  }
+
+  // Format relative timestamps (§4.8)
+  function formatTime(dateStr) {
+    const date = new Date(dateStr)
+    const now = new Date()
+    const diffMs = now - date
+    const diffMins = Math.floor(diffMs / 60000)
+    const diffHours = Math.floor(diffMs / 3600000)
+    
+    const timeStr = date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+    
+    if (diffMins < 1) return 'Just now'
+    if (diffMins < 60) return `${diffMins}m ago`
+    if (diffHours < 24) return timeStr
+    
+    const yesterday = new Date(now)
+    yesterday.setDate(yesterday.getDate() - 1)
+    if (date.toDateString() === yesterday.toDateString()) {
+      return `Yesterday ${timeStr}`
+    }
+    return date.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + timeStr
+  }
+
+  // Auto-scroll on new messages (§4.8)
+  let messagesEl
+
+  $effect(() => {
+    filteredMessages  // trigger on change
+    if (messagesEl) {
+      clearTimeout(autoScrollTimer)
+      autoScrollTimer = setTimeout(() => {
+        messagesEl.scrollTo({
+          top: messagesEl.scrollHeight,
+          behavior: 'instant'
+        })
+      }, 0)
+    }
+  })
+
+  let autoScrollTimer
 </script>
 
 <div class="conversation-view">
@@ -86,7 +133,6 @@
         {#if activeConversation?.db_connection_id}
           <span class="meta-tag">{dbConnections.find(c => c.id === activeConversation.db_connection_id)?.name || 'DB'}</span>
         {/if}
-        <span class="meta-tag">{conversationMessages.length} messages</span>
       </div>
     </div>
     <button 
@@ -101,63 +147,65 @@
       <span class="toggle-label">Tech</span>
     </button>
     
-    <button 
-      class="gear-btn-header" 
-      onclick={onGearClick}
-      title="Conversation settings"
-      type="button"
-    >
-      ⚙️
-    </button>
+    <button class="gear-btn-header" onclick={onGearClick} title="Conversation settings" type="button"><Settings size={16} /></button>
   </div>
   
-  <div class="messages-container">
+  <div class="messages-container" bind:this={messagesEl}>
+    {#if maxMessages > 0 && conversationMessages.length > maxMessages}
+      <div class="collapsed-messages-banner">
+        <span><Pin size={14} class="pin-icon" /> {conversationMessages.length - maxMessages} older message(s) hidden</span>
+        <button class="show-all-btn" onclick={() => onMaxMessagesChange(0)}>Show all</button>
+      </div>
+    {/if}
     {#if filteredMessages.length === 0}
       <div class="empty-conversation">
-        <p>No messages yet</p>
-        <p class="hint">Start the conversation by typing a message below</p>
+        <p>{conversationMessages.length === 0 ? 'No messages yet' : 'No messages match the current filter'}</p>
+        {#if conversationMessages.length === 0}
+          <p class="hint">Ask a question about your data, or type a question to get started.</p>
+        {/if}
       </div>
     {:else}
       {#each filteredMessages as message (message.id)}
         <div class="message {message.role}">
           <div class="message-content">
             {#if message.role === 'user'}
-              <div class="user-message">{message.content}</div>
+              <!-- §4.8: preserve line breaks -->
+              <div class="user-message" style="white-space: pre-wrap">{message.content}</div>
             {:else if message.role === 'exploration'}
               <div class="exploration-result">
                 <div class="exploration-header">
-                  <span class="exploration-icon">🔍</span>
+                  <span class="exploration-icon"><Search size={14} /></span>
                   <span class="exploration-title">{message.content}</span>
                 </div>
                 
                 {#if message.payload}
                   <div class="payload-section">
-                    <div class="payload-toggle" onclick={() => showRequest = !showRequest}>
-                      <span>📤 Request Payload</span>
-                      <span class="toggle-icon">{showRequest ? '▼' : '▶'}</span>
+                    <div class="payload-toggle" onclick={() => togglePayload(message.id, 'request')}>
+                      <span>up Request Payload</span>
+                      <span class="toggle-icon">{#if payloadToggles[message.id + '-request']}<ChevronDown size={12} />{:else}<ChevronRight size={12} />{/if}</span>
                     </div>
-                    {#if showRequest}
+                    {#if payloadToggles[message.id + '-request']}
                       <pre class="payload-content">{JSON.stringify(message.payload.request_json, null, 2)}</pre>
                     {/if}
                   </div>
                   
                   <div class="payload-section">
-                    <div class="payload-toggle" onclick={() => showResponse = !showResponse}>
-                      <span>📥 Response Payload</span>
-                      <span class="toggle-icon">{showResponse ? '▼' : '▶'}</span>
+                    <div class="payload-toggle" onclick={() => togglePayload(message.id, 'response')}>
+                      <span>down Response Payload</span>
+                      <span class="toggle-icon">{#if payloadToggles[message.id + '-response']}<ChevronDown size={12} />{:else}<ChevronRight size={12} />{/if}</span>
                     </div>
-                    {#if showResponse}
+                    {#if payloadToggles[message.id + '-response']}
                       <pre class="payload-content">{JSON.stringify(message.payload.response_json, null, 2)}</pre>
                     {/if}
                   </div>
                   
                   {#if message.payload.llm_messages}
                     <div class="payload-section">
-                      <div class="payload-toggle" onclick={() => showMessages = !showMessages}>
-                        <span>💬 LLM Messages ({message.payload.llm_messages.length})</span>
-                        <span class="toggle-icon">{showMessages ? '▼' : '▶'}</span>
+                      <div class="payload-toggle" onclick={() => togglePayload(message.id, 'messages')}>
+                        <span><MessageSquare size={12} /> LLM Messages ({message.payload.llm_messages.length})</span>
+                        <span class="toggle-icon">{#if payloadToggles[message.id + '-messages']}<ChevronDown size={12} />{:else}<ChevronRight size={12} />{/if}</span>
                       </div>
-                      {#if showMessages}
+                      {#if payloadToggles[message.id + '-messages']}
                         <pre class="payload-content">{JSON.stringify(message.payload.llm_messages, null, 2)}</pre>
                       {/if}
                     </div>
@@ -165,11 +213,12 @@
                 {/if}
               </div>
             {:else}
+              <!-- §4.8: assistant messages with HTML -->
               <div class="assistant-message">{@html message.content}</div>
             {/if}
           </div>
           <div class="message-time">
-            {new Date(message.created_at).toLocaleTimeString()}
+            {formatTime(message.created_at)}
           </div>
           {#if showTechDetails && message.llm_content}
             <div class="tech-details">
@@ -183,26 +232,20 @@
         </div>
       {/each}
       
-      {#if explorationResults.length > 0}
-        <div class="exploration-summary">
-          <strong>Exploration Summary:</strong> {explorationResults.length} intermediate query(ies) were run to explore the data before producing the final answer.
-        </div>
-      {/if}
-    {/if}
-    
-    {#if processingMessage}
-      <div class="message assistant">
-        <div class="message-content">
-          <div class="loading-indicator">
-            <div class="loading-dots">
-              <span></span>
-              <span></span>
-              <span></span>
+      {#if processingMessage}
+        <div class="message assistant">
+          <div class="message-content">
+            <div class="loading-indicator">
+              <div class="loading-dots">
+                <span></span>
+                <span></span>
+                <span></span>
+              </div>
+              <span>Processing...</span>
             </div>
-            <span>Processing...</span>
           </div>
         </div>
-      </div>
+      {/if}
     {/if}
   </div>
   
@@ -269,13 +312,8 @@
   }
   
   .tech-toggle.active {
-    background: #4fc3f7;
-    color: #ffffff;
-    border-color: #4fc3f7;
-  }
-  
-  .tech-toggle.active:hover {
     background: #0288d1;
+    color: #ffffff;
     border-color: #0288d1;
   }
   
@@ -294,14 +332,7 @@
     flex-shrink: 0;
   }
   
-  .gear-btn-header:hover {
-    background: #e0e0e0;
-    color: #000000;
-  }
-  
-  .toggle-label {
-    font-weight: 500;
-  }
+  .gear-btn-header:hover { background: #e0e0e0; color: #000000; }
   
   .back-btn {
     background: #f5f5f5;
@@ -314,32 +345,18 @@
     transition: all 0.2s ease;
   }
 
-  .back-btn:hover {
-    background: #e0e0e0;
-    color: #000000;
-  }
+  .back-btn:hover { background: #e0e0e0; color: #000000; }
 
-  .conversation-info {
-    flex: 1;
-  }
+  .conversation-info { flex: 1; }
+  .conversation-info h3 { margin: 0 0 5px; font-size: 18px; font-weight: 600; color: #000000; }
 
-  .conversation-info h3 {
-    margin: 0 0 5px;
-    font-size: 18px;
-    font-weight: 600;
-    color: #000000;
-  }
-
-  .conversation-meta {
-    display: flex;
-    gap: 8px;
-  }
+  .conversation-meta { display: flex; gap: 8px; }
 
   .meta-tag {
-    background: rgba(79, 195, 247, 0.1);
+    background: rgba(2, 136, 209, 0.1);
     color: #0288d1;
     padding: 2px 8px;
-    border-radius: 4px;
+    border-radius: 6px;
     font-size: 12px;
   }
 
@@ -355,40 +372,48 @@
     color: #cccccc;
   }
 
-  .empty-conversation p {
-    margin: 0 0 10px;
-    font-size: 16px;
-  }
+  .empty-conversation p { margin: 0 0 10px; font-size: 16px; }
+  .empty-conversation .hint { font-size: 14px; color: #bbbbbb; }
 
-  .empty-conversation .hint {
-    font-size: 14px;
-    color: #bbbbbb;
-  }
-
-  .message {
-    margin-bottom: 20px;
+  .collapsed-messages-banner {
     display: flex;
-    flex-direction: column;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    background: #f0f7ff;
+    border: 1px solid #d0e8ff;
+    border-radius: 6px;
+    margin-bottom: 16px;
+    font-size: 13px;
+    color: #0288d1;
   }
 
-  .message.user {
-    align-items: flex-end;
+  .show-all-btn {
+    padding: 4px 12px;
+    background: #0288d1;
+    color: #ffffff;
+    border: none;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.2s ease;
   }
 
-  .message.assistant {
-    align-items: flex-start;
+  .show-all-btn:hover {
+    background: #0288d1;
   }
 
-  .message-content {
-    max-width: 800px;
-    width: 100%;
-  }
+  .message { margin-bottom: 20px; display: flex; flex-direction: column; }
+  .message.user { align-items: flex-end; }
+  .message.assistant { align-items: flex-start; }
+
+  .message-content { max-width: 800px; width: 100%; }
 
   .user-message {
-    background: #4fc3f7;
+    background: #0288d1;
     color: #ffffff;
     padding: 12px 16px;
-    border-radius: 12px 12px 0 12px;
+    border-radius: 6px;
     font-size: 14px;
     line-height: 1.5;
   }
@@ -397,7 +422,7 @@
     background: #f9f9f9;
     color: #000000;
     padding: 16px 20px;
-    border-radius: 12px;
+    border-radius: 6px;
     border: 1px solid #e0e0e0;
     font-size: 14px;
     line-height: 1.6;
@@ -407,7 +432,7 @@
     background: #1e1e1e;
     color: #d4d4d4;
     padding: 16px;
-    border-radius: 8px;
+    border-radius: 6px;
     overflow-x: auto;
     font-family: 'Courier New', monospace;
     font-size: 13px;
@@ -417,38 +442,17 @@
   .assistant-message code {
     background: #f0f0f0;
     padding: 2px 6px;
-    border-radius: 4px;
+    border-radius: 6px;
     font-family: 'Courier New', monospace;
     font-size: 13px;
   }
 
-  .assistant-message table {
-    border-collapse: collapse;
-    width: 100%;
-    margin: 10px 0;
-  }
+  .assistant-message table { border-collapse: collapse; width: 100%; margin: 10px 0; }
+  .assistant-message th, .assistant-message td { border: 1px solid #e0e0e0; padding: 8px 12px; text-align: left; }
+  .assistant-message th { background: #f5f5f5; font-weight: 600; }
 
-  .assistant-message th,
-  .assistant-message td {
-    border: 1px solid #e0e0e0;
-    padding: 8px 12px;
-    text-align: left;
-  }
-
-  .assistant-message th {
-    background: #f5f5f5;
-    font-weight: 600;
-  }
-
-  .message-time {
-    font-size: 12px;
-    color: #999999;
-    margin-top: 5px;
-  }
-
-  .message.user .message-time {
-    text-align: right;
-  }
+  .message-time { font-size: 12px; color: #999999; margin-top: 5px; }
+  .message.user .message-time { text-align: right; }
 
   .loading-indicator {
     display: flex;
@@ -458,65 +462,40 @@
     font-size: 14px;
   }
 
-  .loading-dots {
-    display: flex;
-    gap: 4px;
-  }
-
+  .loading-dots { display: flex; gap: 4px; }
   .loading-dots span {
-    width: 8px;
-    height: 8px;
-    background: #4fc3f7;
-    border-radius: 50%;
+    width: 8px; height: 8px;
+    background: #0288d1;
+    border-radius: 6px;
     animation: loading 1.4s infinite ease-in-out;
   }
-
-  .loading-dots span:nth-child(1) {
-    animation-delay: -0.32s;
-  }
-
-  .loading-dots span:nth-child(2) {
-    animation-delay: -0.16s;
-  }
+  .loading-dots span:nth-child(1) { animation-delay: -0.32s; }
+  .loading-dots span:nth-child(2) { animation-delay: -0.16s; }
 
   @keyframes loading {
-    0%, 80%, 100% {
-      transform: scale(0.6);
-      opacity: 0.5;
-    }
-    40% {
-      transform: scale(1);
-      opacity: 1;
-    }
+    0%, 80%, 100% { transform: scale(0.6); opacity: 0.5; }
+    40% { transform: scale(1); opacity: 1; }
   }
 
-  .message-input-container {
-    padding: 20px 30px;
-    border-top: 1px solid #e0e0e0;
-    background: #ffffff;
-  }
+  .message-input-container { padding: 20px 30px; border-top: 1px solid #e0e0e0; background: #ffffff; }
 
   .error-message {
     background: rgba(239, 83, 80, 0.1);
     border: 1px solid #ef5350;
     color: #ef5350;
     padding: 12px 16px;
-    border-radius: 8px;
+    border-radius: 6px;
     font-size: 14px;
     margin-bottom: 15px;
   }
 
-  .message-input-wrapper {
-    display: flex;
-    gap: 10px;
-    align-items: flex-end;
-  }
+  .message-input-wrapper { display: flex; gap: 10px; align-items: flex-end; }
 
   .message-input-wrapper textarea {
     flex: 1;
     padding: 12px 16px;
     border: 1px solid #e0e0e0;
-    border-radius: 12px;
+    border-radius: 6px;
     font-size: 14px;
     color: #000000;
     background: #f9f9f9;
@@ -530,21 +509,18 @@
 
   .message-input-wrapper textarea:focus {
     outline: none;
-    border-color: #4fc3f7;
-    box-shadow: 0 0 0 3px rgba(79, 195, 247, 0.1);
+    border-color: #0288d1;
+    border: 2px solid #0288d1;
   }
 
-  .message-input-wrapper textarea::placeholder {
-    color: #cccccc;
-  }
+  .message-input-wrapper textarea::placeholder { color: #cccccc; }
 
   .send-btn {
-    background: #4fc3f7;
+    background: #0288d1;
     color: #ffffff;
     border: none;
-    border-radius: 12px;
-    width: 44px;
-    height: 44px;
+    border-radius: 6px;
+    width: 44px; height: 44px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -552,200 +528,85 @@
     transition: all 0.2s ease;
   }
 
-  .send-btn:hover:not(:disabled) {
-    background: #0288d1;
-  }
-
-  .send-btn:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
+  .send-btn:hover:not(:disabled) { background: #0288d1; }
+  .send-btn:disabled { opacity: 0.6; cursor: not-allowed; }
   
-  /* Exploration Results */
   .exploration-result {
     background: #f9f9f9;
     border: 1px solid #e0e0e0;
-    border-radius: 12px;
+    border-radius: 6px;
     padding: 16px 20px;
+  }
+
+  .sort-header {
+    cursor: pointer;
+    transition: background 0.2s ease;
+  }
+
+  .sort-header:hover {
+    background: #e8f0fe;
+  }
+
+  .sort-indicator {
+    font-size: 10px;
+    margin-left: 4px;
+    color: #ccc;
   }
   
   .exploration-header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 12px;
-    padding-bottom: 8px;
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 12px; padding-bottom: 8px;
     border-bottom: 1px solid #e0e0e0;
   }
   
-  .exploration-icon {
-    font-size: 16px;
-  }
+  .exploration-icon { font-size: 16px; }
+  .exploration-title { font-weight: 600; color: #0288d1; font-size: 14px; }
   
-  .exploration-title {
-    font-weight: 600;
-    color: #0288d1;
-    font-size: 14px;
-  }
-  
-  .exploration-sql {
-    margin-bottom: 12px;
-  }
-  
-  .exploration-sql strong {
-    display: block;
-    margin-bottom: 4px;
-    color: #333333;
-    font-size: 13px;
-  }
-  
-  .exploration-sql pre {
-    background: #1e1e1e;
-    color: #d4d4d4;
-    padding: 12px;
-    border-radius: 8px;
-    overflow-x: auto;
-    font-family: 'Courier New', monospace;
-    font-size: 12px;
-    margin: 4px 0;
-  }
-  
-  .exploration-results {
-    margin-top: 12px;
-  }
-  
-  .exploration-results strong {
-    display: block;
-    margin-bottom: 4px;
-    color: #333333;
-    font-size: 13px;
-  }
-  
-  .exploration-results table {
-    border-collapse: collapse;
-    width: 100%;
-    margin: 8px 0;
-    font-size: 12px;
-  }
-  
-  .exploration-results th,
-  .exploration-results td {
-    border: 1px solid #e0e0e0;
-    padding: 6px 10px;
-    text-align: left;
-  }
-  
-  .exploration-results th {
-    background: #f5f5f5;
-    font-weight: 600;
-  }
-  
-  .exploration-results td {
-    background: #ffffff;
-  }
-  
-  /* Technical Details */
   .tech-details {
-    margin-top: 12px;
-    padding: 12px;
-    background: #f5f5f5;
-    border: 1px solid #e0e0e0;
-    border-radius: 8px;
+    margin-top: 12px; padding: 12px;
+    background: #f5f5f5; border: 1px solid #e0e0e0;
+    border-radius: 6px;
   }
   
   .tech-details-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 8px;
-    font-size: 12px;
-    color: #666666;
-    font-weight: 500;
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 8px; font-size: 12px; color: #666666; font-weight: 500;
   }
   
   .copy-btn {
-    padding: 4px 8px;
-    background: #ffffff;
-    border: 1px solid #e0e0e0;
-    border-radius: 4px;
-    font-size: 11px;
-    cursor: pointer;
-    color: #666666;
-    transition: all 0.2s ease;
+    padding: 4px 8px; background: #ffffff; border: 1px solid #e0e0e0;
+    border-radius: 6px; font-size: 11px; cursor: pointer;
+    color: #666666; transition: all 0.2s ease;
   }
-  
-  .copy-btn:hover {
-    background: #e0e0e0;
-    color: #000000;
-  }
+  .copy-btn:hover { background: #e0e0e0; color: #000000; }
   
   .tech-details pre {
-    background: #1e1e1e;
-    color: #d4d4d4;
-    padding: 12px;
-    border-radius: 6px;
-    overflow-x: auto;
-    font-family: 'Courier New', monospace;
-    font-size: 11px;
-    line-height: 1.4;
-    margin: 0;
+    background: #1e1e1e; color: #d4d4d4; padding: 12px;
+    border-radius: 6px; overflow-x: auto;
+    font-family: 'Courier New', monospace; font-size: 11px;
+    line-height: 1.4; margin: 0;
   }
   
-  /* Exploration Summary */
-  .exploration-summary {
-    margin: 20px 0;
-    padding: 12px 16px;
-    background: rgba(79, 195, 247, 0.05);
-    border: 1px solid rgba(79, 195, 247, 0.2);
-    border-radius: 8px;
-    font-size: 13px;
-    color: #0288d1;
-  }
-  
-  .exploration-summary strong {
-    color: #0288d1;
-  }
-  
-  /* Payload Sections */
   .payload-section {
-    margin-top: 12px;
-    border: 1px solid #e0e0e0;
-    border-radius: 8px;
-    overflow: hidden;
+    margin-top: 12px; border: 1px solid #e0e0e0;
+    border-radius: 6px; overflow: hidden;
   }
   
   .payload-toggle {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 10px 14px;
-    background: #f5f5f5;
-    cursor: pointer;
-    font-size: 13px;
-    font-weight: 500;
-    color: #333333;
-    transition: background 0.2s ease;
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 10px 14px; background: #f5f5f5;
+    cursor: pointer; font-size: 13px; font-weight: 500;
+    color: #333333; transition: background 0.2s ease;
   }
-  
-  .payload-toggle:hover {
-    background: #e0e0e0;
-  }
-  
-  .toggle-icon {
-    font-size: 12px;
-    color: #666666;
-  }
+  .payload-toggle:hover { background: #e0e0e0; }
+  .toggle-icon { font-size: 12px; color: #666666; }
   
   .payload-content {
-    background: #1e1e1e;
-    color: #d4d4d4;
-    padding: 12px;
-    margin: 0;
-    font-family: 'Courier New', monospace;
-    font-size: 12px;
-    line-height: 1.5;
-    overflow-x: auto;
-    white-space: pre-wrap;
-    word-break: break-all;
+    background: #1e1e1e; color: #d4d4d4;
+    padding: 12px; margin: 0;
+    font-family: 'Courier New', monospace; font-size: 12px;
+    line-height: 1.5; overflow-x: auto;
+    white-space: pre-wrap; word-break: break-all;
+    max-height: 400px;
   }
 </style>

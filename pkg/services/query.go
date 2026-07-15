@@ -9,12 +9,11 @@ import (
 	"YourQL/pkg/models"
 )
 
-// CreateQuery creates a new query record.
-func CreateQuery(workspaceID, userID uint, conversationID *uint, question string, llmProviderID, dbConnectionID *uint) (*models.Query, error) {
+func CreateQuery(conversationID *uint, question string, llmProviderID, dbConnectionID *uint) (*models.Query, error) {
 	now := time.Now().UTC()
 	result, err := models.DB.Exec(
-		"INSERT INTO queries (workspace_id, user_id, conversation_id, question, original_query, llm_provider_id, db_connection_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		workspaceID, userID, conversationID, question, question, llmProviderID, dbConnectionID, "pending", now, now,
+		"INSERT INTO queries (conversation_id, question, original_query, llm_provider_id, db_connection_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+		conversationID, question, question, llmProviderID, dbConnectionID, "pending", now, now,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create query: %w", err)
@@ -28,17 +27,16 @@ func CreateQuery(workspaceID, userID uint, conversationID *uint, question string
 	return GetQueryByID(uint(id))
 }
 
-// GetQueryByID retrieves a query by ID.
 func GetQueryByID(id uint) (*models.Query, error) {
 	var q models.Query
 	var convID, llmID, dbConnID sql.NullInt64
 	var genSQL, resultSummary, errMsg, costEstimate sql.NullString
 	var execTime, tokensUsed sql.NullInt64
 	err := models.DB.QueryRow(
-		`SELECT id, workspace_id, user_id, conversation_id, question, generated_sql, db_connection_id, llm_provider_id, status, result_summary, error_message, execution_time_ms, tokens_used, cost_estimate, created_at, updated_at FROM queries WHERE id = ?`,
+		`SELECT id, conversation_id, question, generated_sql, db_connection_id, llm_provider_id, status, result_summary, error_message, execution_time_ms, tokens_used, cost_estimate, created_at, updated_at FROM queries WHERE id = ?`,
 		id,
 	).Scan(
-		&q.ID, &q.WorkspaceID, &q.UserID, &convID, &q.Question, &genSQL,
+		&q.ID, &convID, &q.Question, &genSQL,
 		&dbConnID, &llmID, &q.Status, &resultSummary, &errMsg,
 		&execTime, &tokensUsed, &costEstimate, &q.CreatedAt, &q.UpdatedAt,
 	)
@@ -87,7 +85,6 @@ func GetQueryByID(id uint) (*models.Query, error) {
 	return &q, nil
 }
 
-// UpdateQueryStatus updates a query's status and optional fields.
 func UpdateQueryStatus(id uint, status string, generatedSQL *string, resultSummary *string, errorMessage *string, executionTimeMS *int, tokensUsed *int, costEstimate *string) error {
 	updates := []string{"status = ?", "updated_at = ?"}
 	args := []interface{}{status, time.Now().UTC()}

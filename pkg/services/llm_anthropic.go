@@ -76,7 +76,7 @@ func NewAnthropicClient(provider *models.LLMProvider) (LLMClient, error) {
 
 // ChatCompletion sends a conversation to Anthropic's API and returns the assistant's reply.
 func (c *AnthropicClient) ChatCompletion(ctx context.Context, messages []ChatMessage) (string, error) {
-	startTime := time.Now()
+	_ = time.Now()
 
 	// Extract system message if present
 	var systemContent string
@@ -113,7 +113,7 @@ func (c *AnthropicClient) ChatCompletion(ctx context.Context, messages []ChatMes
 
 	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/v1/messages", bytes.NewBuffer(jsonData))
 	if err != nil {
-		logAnthropicIntegration(c.model, "outgoing", c.baseURL+"/v1/messages", startTime, string(jsonData), "", err)
+		// integration logging removed
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -122,7 +122,7 @@ func (c *AnthropicClient) ChatCompletion(ctx context.Context, messages []ChatMes
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		logAnthropicIntegration(c.model, "outgoing", c.baseURL+"/v1/messages", startTime, string(jsonData), "", err)
+		// integration logging removed
 		return "", fmt.Errorf("failed to send request: %w", err)
 	}
 	defer resp.Body.Close()
@@ -133,7 +133,7 @@ func (c *AnthropicClient) ChatCompletion(ctx context.Context, messages []ChatMes
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		logAnthropicIntegration(c.model, "incoming", c.baseURL+"/v1/messages", startTime, string(jsonData), string(body), fmt.Errorf("status %d: %s", resp.StatusCode, string(body)))
+		// integration logging removed
 		return "", fmt.Errorf("Anthropic API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -169,7 +169,7 @@ func (c *AnthropicClient) ChatCompletion(ctx context.Context, messages []ChatMes
 	}
 
 	// Log successful integration
-	logAnthropicIntegration(c.model, "incoming", c.baseURL+"/v1/messages", startTime, string(jsonData), reply, nil)
+	// integration logging removed
 
 	return reply, nil
 }
@@ -312,29 +312,3 @@ func floatPtr(f float64) *float64 {
 	return &f
 }
 
-// logAnthropicIntegration logs Anthropic integration events to the database.
-func logAnthropicIntegration(model string, direction string, endpoint string, startTime time.Time, request string, response string, err error) {
-	latencyMs := int(time.Since(startTime).Milliseconds())
-
-	entry := NewLLMLog().
-		WithModel(model).
-		WithEndpoint(endpoint).
-		WithDirection(direction).
-		WithLatency(latencyMs)
-
-	if err != nil {
-		entry.WithStatus("error").
-			WithErrorMessage(err.Error())
-	} else {
-		entry.WithStatus("success")
-	}
-
-	if request != "" {
-		entry.WithFullRequest(request)
-	}
-	if response != "" {
-		entry.WithFullResponse(response)
-	}
-
-	GlobalLog(entry)
-}
