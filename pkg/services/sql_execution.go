@@ -302,10 +302,10 @@ func (r *AssistantResponse) ToHTML() string {
 		sb.WriteString(fmt.Sprintf("<p>%s</p>\n", html.EscapeString(r.Explanation)))
 	}
 	if r.SQL != "" {
-		sb.WriteString(buildCollapsibleSQLBlockHTML(r.SQL))
+		// SQL is now shown in the results toolbar toggle, not as a separate block
 	}
 	if r.Result != nil {
-		sb.WriteString(formatResultsHTML(r.Result))
+		sb.WriteString(formatResultsHTML(r.Result, r.SQL))
 	}
 	if r.ExplorationHTML != "" {
 		sb.WriteString(r.ExplorationHTML)
@@ -314,7 +314,7 @@ func (r *AssistantResponse) ToHTML() string {
 }
 
 // formatResultsHTML converts QueryResult into an HTML table.
-func formatResultsHTML(result *QueryResult) string {
+func formatResultsHTML(result *QueryResult, sqlQuery string) string {
 	if result.RowCount == 0 {
 		return "<p>No rows returned.</p>"
 	}
@@ -324,6 +324,8 @@ func formatResultsHTML(result *QueryResult) string {
 		humanizedCols[i] = humanizeColumnName(col)
 	}
 
+	hash := sqlQueryHash(sqlQuery)
+
 	const defaultLimit = 100
 	showAll := result.RowCount <= defaultLimit
 	displayedRows := defaultLimit
@@ -332,22 +334,32 @@ func formatResultsHTML(result *QueryResult) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("<p><strong>%d row(s) returned</strong></p>\n", result.RowCount))
+	sb.WriteString(fmt.Sprintf("<div class=\"results-card\" style=\"margin:0.5rem 0;\">"))
 
-	// Toolbar – CSV button only (non-functional JS buttons removed per §3.8b)
-	sb.WriteString(`<div class="table-toolbar" style="margin-bottom:0.5rem; display:flex; gap:0.75rem; align-items:center;">`)
-	sb.WriteString(fmt.Sprintf(`<button class="table-toggle-btn" data-target="csv-%d" onclick="exportCSV(this, %d)">↓ CSV</button>
-`, result.RowCount, result.RowCount))
-	sb.WriteString(`</div>
-`)
+	// Compact toolbar: row count + SQL toggle + CSV button on one line
+	sb.WriteString(`<div class="results-toolbar" style="display:flex; align-items:center; gap:0.5rem; padding:6px 10px; background:#f8f9fa; border:1px solid #e8e8e8; border-radius:6px; margin-bottom:0.5rem; flex-wrap:wrap;">`)
 
+	// Row count
+	sb.WriteString(fmt.Sprintf(`<span class="row-count" style="font-size:0.85rem; color:#666; font-weight:500;">%d row(s)</span>`, result.RowCount))
+
+	// SQL toggle button
+	sb.WriteString(fmt.Sprintf(`<span class="sql-toggle" style="font-size:0.8rem; color:#666;"><button class="sql-toggle-btn" onclick="toggleSQLSection(this, 'sql-popover-%d')" style="cursor:pointer; padding:2px 8px; background:#fff; border:1px solid #ddd; border-radius:4px; font-size:0.75rem; color:#666; user-select:none;">SQL</button></span>`, hash))
+
+	// CSV button
+	sb.WriteString(fmt.Sprintf(`<button class="csv-btn" onclick="exportCSV(this, %d)" style="font-size:0.8rem; padding:4px 10px; border:1px solid #e8e8e8; border-radius:4px; background:white; cursor:pointer; color:#666;">↓ CSV</button>`, result.RowCount))
+
+	// SQL code (hidden by default, expands below buttons)
+	sb.WriteString(fmt.Sprintf(`<div id="sql-popover-%d" style="display:none; width:100%%; margin-top:0.5rem; padding:0.75rem 1rem; background:#fff; border:1px solid #e8e8e8; border-radius:6px;"><pre style="margin:0; padding:0; font-size:0.8rem; overflow-x:auto;"><code id="sql-code-%d">%s</code></pre><button class="copy-sql-btn" onclick="copySQL('sql-code-%d')" style="margin:0.5rem 0 0 0; font-size:0.75rem; padding:4px 10px; border:1px solid #ddd; border-radius:4px; background:white; cursor:pointer; color:#666;">Copy</button></div>`, hash, hash, html.EscapeString(sqlQuery), hash))
+	sb.WriteString(`</div>`)
+
+	// Table
 	sb.WriteString(`<div class="table-container" style="overflow-x: auto;">`)
 	// Encode raw data for client-side sorting
 	dataJSON, _ := json.Marshal(map[string]interface{}{
 		"columns": result.Columns,
 		"rows":    result.Rows,
 	})
-	sb.WriteString(fmt.Sprintf(`<table class="result-table sortable" data-sort-rows="%s" style="border-collapse: collapse; width: 100%;">`, html.EscapeString(string(dataJSON))))
+	sb.WriteString(fmt.Sprintf(`<table class="result-table sortable" data-sort-rows="%s" style="border-collapse: collapse; width: 100%%;">`, html.EscapeString(string(dataJSON))))
 
 	sb.WriteString(`<thead><tr>`)
 	for i := range result.Columns {

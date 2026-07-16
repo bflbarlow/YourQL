@@ -37,11 +37,11 @@ func CreateConversation(title string, llmProviderID, dbConnectionID *uint) (*mod
 func GetConversationByID(id uint) (*models.Conversation, error) {
 	var c models.Conversation
 	err := models.DB.QueryRow(
-		"SELECT id, title, llm_provider_id, db_connection_id, status, max_messages, pinned, created_at, updated_at, tech_details FROM conversations WHERE id = ? LIMIT 1",
+		"SELECT id, title, llm_provider_id, db_connection_id, status, max_messages, max_context_messages, pinned, created_at, updated_at, tech_details, context_details FROM conversations WHERE id = ? LIMIT 1",
 		id,
 	).Scan(
 		&c.ID, &c.Title, &c.LLMProviderID, &c.DBConnectionID,
-		&c.Status, &c.MaxMessages, &c.Pinned, &c.CreatedAt, &c.UpdatedAt, &c.TechDetails,
+		&c.Status, &c.MaxMessages, &c.MaxContextMessages, &c.Pinned, &c.CreatedAt, &c.UpdatedAt, &c.TechDetails, &c.ContextDetails,
 	)
 	if err == sql.ErrNoRows {
 		return nil, errors.New("conversation not found")
@@ -54,7 +54,7 @@ func GetConversationByID(id uint) (*models.Conversation, error) {
 
 func ListConversationsByUser() ([]*models.Conversation, error) {
 	rows, err := models.DB.Query(
-		"SELECT id, title, llm_provider_id, db_connection_id, status, max_messages, pinned, created_at, updated_at, tech_details FROM conversations WHERE status != 'deleted' ORDER BY pinned DESC, updated_at DESC",
+		"SELECT id, title, llm_provider_id, db_connection_id, status, max_messages, max_context_messages, pinned, created_at, updated_at, tech_details, context_details FROM conversations WHERE status != 'deleted' ORDER BY pinned DESC, updated_at DESC",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list conversations: %w", err)
@@ -66,7 +66,7 @@ func ListConversationsByUser() ([]*models.Conversation, error) {
 		var c models.Conversation
 		err := rows.Scan(
 			&c.ID, &c.Title, &c.LLMProviderID, &c.DBConnectionID,
-			&c.Status, &c.MaxMessages, &c.Pinned, &c.CreatedAt, &c.UpdatedAt, &c.TechDetails,
+			&c.Status, &c.MaxMessages, &c.MaxContextMessages, &c.Pinned, &c.CreatedAt, &c.UpdatedAt, &c.TechDetails, &c.ContextDetails,
 		)
 		if err != nil {
 			continue
@@ -166,6 +166,17 @@ func UpdateConversationTechDetails(id uint, showTechDetails bool) error {
 	return nil
 }
 
+func UpdateConversationContextDetails(id uint, showContextDetails bool) error {
+	_, err := models.DB.Exec(
+		"UPDATE conversations SET context_details = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+		showContextDetails, id,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update conversation context_details: %w", err)
+	}
+	return nil
+}
+
 func UpdateConversationTitle(id uint, title string) (*models.Conversation, error) {
 	_, err := GetConversationByID(id)
 	if err != nil {
@@ -192,6 +203,17 @@ func UpdateConversationMaxMessages(id uint, maxMessages int) error {
 	return nil
 }
 
+func UpdateConversationMaxContextMessages(id uint, maxContextMessages int) error {
+	_, err := models.DB.Exec(
+		"UPDATE conversations SET max_context_messages = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+		maxContextMessages, id,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update conversation max_context_messages: %w", err)
+	}
+	return nil
+}
+
 func UpdateConversationPinned(id uint, pinned bool) error {
 	_, err := models.DB.Exec(
 		"UPDATE conversations SET pinned = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -212,8 +234,8 @@ func DuplicateConversation(id uint) (*models.Conversation, error) {
 	newTitle := *c.Title + " (copy)"
 	now := time.Now().UTC()
 	result, err := models.DB.Exec(
-		"INSERT INTO conversations (title, llm_provider_id, db_connection_id, status, max_messages, pinned, tech_details, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?)",
-		newTitle, c.LLMProviderID, c.DBConnectionID, c.MaxMessages, c.Pinned, c.TechDetails, now, now,
+		"INSERT INTO conversations (title, llm_provider_id, db_connection_id, status, max_messages, max_context_messages, pinned, tech_details, context_details, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)",
+		newTitle, c.LLMProviderID, c.DBConnectionID, c.MaxMessages, c.MaxContextMessages, c.Pinned, c.TechDetails, c.ContextDetails, now, now,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to duplicate conversation: %w", err)

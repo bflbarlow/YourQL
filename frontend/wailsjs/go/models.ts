@@ -200,6 +200,7 @@ export namespace models {
 	    db_connection_id?: number;
 	    status: string;
 	    max_messages: number;
+	    max_context_messages: number;
 	    pinned: boolean;
 	    // Go type: time
 	    created_at: any;
@@ -208,6 +209,7 @@ export namespace models {
 	    // Go type: time
 	    deleted_at?: any;
 	    tech_details: boolean;
+	    context_details: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Conversation(source);
@@ -221,11 +223,13 @@ export namespace models {
 	        this.db_connection_id = source["db_connection_id"];
 	        this.status = source["status"];
 	        this.max_messages = source["max_messages"];
+	        this.max_context_messages = source["max_context_messages"];
 	        this.pinned = source["pinned"];
 	        this.created_at = this.convertValues(source["created_at"], null);
 	        this.updated_at = this.convertValues(source["updated_at"], null);
 	        this.deleted_at = this.convertValues(source["deleted_at"], null);
 	        this.tech_details = source["tech_details"];
+	        this.context_details = source["context_details"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

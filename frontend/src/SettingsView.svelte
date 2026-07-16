@@ -426,6 +426,7 @@
       <div class="settings-section">
         <h3>Model Configurations</h3>
         <p class="section-desc">Configure your LLM providers (OpenAI, Anthropic, Ollama, etc.)</p>
+        <div class="safety-hint">The models you configure will have access to the databases you configure.</div>
         
         <div class="form-card">
           <h4>Add New Provider</h4>
@@ -734,6 +735,7 @@
           {:else}
             <!-- List View -->
             <div class="db-list-view">
+              <div class="safety-hint">The models you configure will have access to the databases you configure.</div>
               <h4>Configured Connections</h4>
               <button class="btn btn-primary" onclick={() => showDBEditModal = true}>+ Add Connection</button>
               
@@ -1224,6 +1226,7 @@
   .safety-hint {
     margin-top: 8px;
     padding: 12px 16px;
+    margin-bottom: 8px;
     background: #f8f9fa;
     border: 1px solid #e8e8e8;
     border-radius: 6px;

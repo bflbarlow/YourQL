@@ -49,6 +49,10 @@ export function TestDBConnection(arg1:number):Promise<string>;
 
 export function TestLLMProviderConnection(arg1:number):Promise<string>;
 
+export function UpdateConversationContextDetails(arg1:number,arg2:boolean):Promise<void>;
+
+export function UpdateConversationMaxContextMessages(arg1:number,arg2:number):Promise<void>;
+
 export function UpdateConversationMaxMessages(arg1:number,arg2:number):Promise<void>;
 
 export function UpdateConversationPinned(arg1:number,arg2:boolean):Promise<void>;

@@ -101,7 +101,7 @@ func truncateString(s string, maxLen int) string {
 }
 
 // ProcessUserMessage processes a user message in a conversation.
-func ProcessUserMessage(conversationID uint, userMessage string) (err error) {
+func ProcessUserMessage(conversationID uint, userMessage string, onPhase func(string)) (err error) {
 	log.Printf("[DiscussionEngine] Processing conversation %d, message: %s", conversationID, userMessage)
 
 	// Step 1: Get conversation details
@@ -203,11 +203,16 @@ func ProcessUserMessage(conversationID uint, userMessage string) (err error) {
 		}
 	}
 
-	// Step 9: Build LLM messages
+	// Step 9: Limit conversation history sent to the LLM
+	if conversation.MaxContextMessages > 0 && len(history) > conversation.MaxContextMessages {
+		history = history[len(history)-conversation.MaxContextMessages:]
+	}
+
+	// Step 10: Build LLM messages
 	llmMessages := buildLlmMessages(userMessage, history, schema, dbConnection)
 	log.Printf("[DiscussionEngine] Message count for LLM: %d", len(llmMessages))
 
-	// Step 10: Call LLM
+	// Step 11: Call LLM
 	client, err := NewLLMClient(llmProvider)
 	if err != nil {
 		_ = UpdateQueryStatus(query.ID, "error", nil, nil, stringPtr(fmt.Sprintf("Failed to create LLM client: %v", err)), nil, nil, nil)
@@ -220,6 +225,11 @@ func ProcessUserMessage(conversationID uint, userMessage string) (err error) {
 	var explorationResults []ExplorationResult
 	var llmResp LLMResponse
 	var actionRetries int
+
+	// Phase: LLM processing
+	if onPhase != nil {
+		onPhase("Thinking with LLM...")
+	}
 
 	// Exploration loop
 	for round := 0; round < maxRounds; round++ {
@@ -325,6 +335,10 @@ func ProcessUserMessage(conversationID uint, userMessage string) (err error) {
 				continue
 			}
 
+			if onPhase != nil {
+				onPhase("Exploring data...")
+			}
+
 			er := ExplorationResult{
 				SQL:     llmResp.SQLQuery,
 				Result:  result,
@@ -358,6 +372,11 @@ func ProcessUserMessage(conversationID uint, userMessage string) (err error) {
 		Role:    "system",
 		Content: fmt.Sprintf("You have reached the exploration limit of %d rounds. You must now produce a final 'sql_query' action.", maxRounds),
 	})
+
+	// Phase: final LLM call
+	if onPhase != nil {
+		onPhase("Thinking with LLM...")
+	}
 
 	responseText, requestJSON, responseJSON, err := client.ChatCompletionWithPayload(ctx, llmMessages)
 	if err != nil {
@@ -393,8 +412,18 @@ func ProcessUserMessage(conversationID uint, userMessage string) (err error) {
 		return fmt.Errorf("no database connection for SQL query")
 	}
 
+	// Phase: SQL execution
+	if onPhase != nil {
+		onPhase("Running query...")
+	}
+
 	executeFinalQueryWithRetry(ctx, query, finalResp, client, llmMessages, dbConnection, conversationID, explorationResults, maxFinalRetries)
 	assistantMessageSaved = true
+
+	// Phase: finalizing
+	if onPhase != nil {
+		onPhase("Analyzing results...")
+	}
 	return nil
 }
 

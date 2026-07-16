@@ -1,5 +1,6 @@
 import { mount } from 'svelte'
 import App from './App.svelte'
+import { EventsOn } from '../wailsjs/runtime/runtime.js'
 
 mount(App, {
   target: document.getElementById('app')
@@ -136,6 +137,25 @@ function copySQL(codeId) {
     console.error('Failed to copy SQL:', err)
   })
 }
+
+// Toggle SQL popover visibility
+function toggleSQLPopover(btn, popoverId) {
+  const popover = document.getElementById(popoverId)
+  if (!popover) return
+  if (popover.style.display === 'none') {
+    popover.style.display = 'block'
+    btn.style.background = '#e8f0fe'
+    btn.style.borderColor = '#0288d1'
+  } else {
+    popover.style.display = 'none'
+    btn.style.background = '#fff'
+    btn.style.borderColor = '#ddd'
+  }
+}
+
+// Make functions globally accessible for inline onclick handlers
+window.toggleSQLPopover = toggleSQLPopover
+window.copySQL = copySQL
 
 // Show/hide copy button when SQL details are opened/closed
 function setupSQLBlockListeners() {

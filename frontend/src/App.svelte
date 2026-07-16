@@ -1,5 +1,15 @@
 <script>
-  import { ListConversations, CreateConversation, GetConversationMessages, ProcessUserMessage, DeleteConversation, UpdateConversationTechDetails, ArchiveConversation, RestoreConversation, UpdateConversationSettings, ListLLMProviders, ListDBConnections, UpdateConversationTitle, UpdateConversationMaxMessages, UpdateConversationPinned, DuplicateConversation, ClearConversationMessages } from '../wailsjs/go/main/App.js'
+  import { EventsOn } from '../wailsjs/runtime/runtime.js'
+
+  // ==================== Processing Phase Listener ====================
+  EventsOn('processingPhase', (phase) => {
+    processingMessage = phase
+  })
+  EventsOn('processingComplete', () => {
+    processingMessage = ''
+  })
+
+  import { ListConversations, CreateConversation, GetConversationMessages, ProcessUserMessage, DeleteConversation, UpdateConversationTechDetails, ArchiveConversation, RestoreConversation, UpdateConversationSettings, ListLLMProviders, ListDBConnections, UpdateConversationTitle, UpdateConversationMaxMessages, UpdateConversationMaxContextMessages, UpdateConversationPinned, DuplicateConversation, ClearConversationMessages, UpdateConversationContextDetails } from '../wailsjs/go/main/App.js'
   import { MessageSquare, Settings, X, Copy, Trash2, Pin, ChevronRight, ChevronLeft, Plus } from 'lucide-svelte'
   import SettingsView from './SettingsView.svelte'
   import ConversationView from './ConversationView.svelte'
@@ -33,9 +43,10 @@
   let activeConversation = $state(null)
   let conversationMessages = $state([])
   let userMessage = $state('')
-  let processingMessage = $state(false)
+  let processingMessage = $state('')
   let messageError = $state(null)
   let showTechDetails = $state(false)
+  let showContextDetails = $state(false)
   let selectedConversation = $state(null)
   let showGearPopover = $state(false)
 
@@ -109,6 +120,7 @@
     activeConversation = conversation
     activeView = 'conversation'
     showTechDetails = conversation.tech_details ?? false
+    showContextDetails = conversation.context_details ?? false
 
     try {
       conversationMessages = await GetConversationMessages(conversation.id)
@@ -150,17 +162,31 @@
   async function handleSendMessage() {
     if (!userMessage.trim() || !activeConversation) return
 
-    processingMessage = true
+    processingMessage = 'Thinking...'
     messageError = null
 
+    // Optimistically add user message to the thread for smooth animation
+    const tempId = -(Date.now())
+    const optimisticMsg = {
+      id: tempId,
+      role: 'user',
+      content: userMessage.trim(),
+      created_at: new Date().toISOString(),
+      metadata: null
+    }
+    conversationMessages = [...conversationMessages, optimisticMsg]
+    const msgToSend = userMessage.trim()
+    userMessage = ''
+
     try {
-      await ProcessUserMessage(activeConversation.id, userMessage.trim())
-      userMessage = ''
+      await ProcessUserMessage(activeConversation.id, msgToSend)
       conversationMessages = await GetConversationMessages(activeConversation.id)
     } catch (e) {
       messageError = e.toString()
+      // Remove optimistic message on error
+      conversationMessages = conversationMessages.filter(m => m.id !== tempId)
     } finally {
-      processingMessage = false
+      processingMessage = ''
     }
   }
 
@@ -233,6 +259,18 @@
     }
   }
 
+  async function handleSetMaxContextMessages(maxContextMessages) {
+    if (!selectedConversation) return
+    try {
+      await UpdateConversationMaxContextMessages(selectedConversation.id, maxContextMessages)
+      if (activeConversation && activeConversation.id === selectedConversation.id) {
+        activeConversation.max_context_messages = maxContextMessages
+      }
+    } catch (e) {
+      console.error('Failed to set max context messages:', e)
+    }
+  }
+
   async function handleSetPinned(pinned) {
     if (!selectedConversation) return
     try {
@@ -250,6 +288,17 @@
       }
     } catch (e) {
       console.error('Failed to toggle tech details:', e)
+    }
+  }
+
+  async function handleToggleContextDetails(id) {
+    try {
+      await UpdateConversationContextDetails(id, true)
+      if (activeConversation && activeConversation.id === id) {
+        activeConversation.context_details = true
+      }
+    } catch (e) {
+      console.error('Failed to toggle context details:', e)
     }
   }
 
@@ -396,15 +445,6 @@
                     </div>
                   </button>
                   <button
-                    class="delete-discussion-btn"
-                    onclick={(e) => { e.stopPropagation(); requestDeleteConversation(conv.id, conv.title) }}
-                    title="Delete discussion"
-                    type="button"
-                    disabled={deleting}
-                  >
-                    <X size={14} />
-                  </button>
-                  <button
                     class="gear-btn"
                     onclick={() => { selectedConversation = conv; showGearPopover = !showGearPopover }}
                     title="Conversation settings"
@@ -428,6 +468,7 @@
         {messageError}
         userMessage={userMessage}
         showTechDetails={showTechDetails}
+        showContextDetails={showContextDetails}
         maxMessages={activeConversation?.max_messages || 0}
         onMaxMessagesChange={handleSetMaxMessages}
         onSendMessage={handleSendMessage}
@@ -450,6 +491,12 @@
           <h2>YourQL</h2>
           <p class="version">Version {appVersion}</p>
           <p class="description">{appDescription}</p>
+
+          <div class="about-disclaimer">
+            <h3>Disclaimer</h3>
+            <p>The models you configure will have access to the databases you configure. Databases with sensitive data should be used responsibly. If you are in doubt about the sensitivity of the data you have access to in your database, then do not use this application.</p>
+            <p>This application can be quarantined in an environment such that the models and databases are local and no data leaves the network environment it is in, but this requires technical knowledge and execution.</p>
+          </div>
 
           <div class="about-section">
             <h3>What is YourQL?</h3>
@@ -576,6 +623,31 @@
         </div>
       </div>
 
+      <!-- Context Messages -->
+      <div class="gear-popover-section">
+        <label>Messages in LLM Context</label>
+        <div class="message-limit-group">
+          <button
+            class="msg-limit-btn {selectedConversation.max_context_messages === 0 ? 'active' : ''}"
+            onclick={() => handleSetMaxContextMessages(0)}
+          >All</button>
+          <input
+            type="number"
+            value={selectedConversation.max_context_messages || ''}
+            placeholder="e.g. 20"
+            min="1"
+            max="500"
+            oninput={(e) => {
+              const val = parseInt(e.target.value)
+              if (val >= 1 && val <= 500) {
+                selectedConversation.max_context_messages = val
+              }
+            }}
+            onblur={() => handleSetMaxContextMessages(selectedConversation.max_context_messages || 0)}
+          />
+        </div>
+      </div>
+
       <!-- Pin -->
       <div class="gear-popover-section">
         <label>
@@ -589,6 +661,14 @@
         <label>
           <input type="checkbox" bind:checked={selectedConversation.tech_details} onchange={() => handleToggleTechDetails(selectedConversation.id)} />
           Show technical details by default
+        </label>
+      </div>
+
+      <!-- Context Details -->
+      <div class="gear-popover-section">
+        <label>
+          <input type="checkbox" bind:checked={selectedConversation.context_details} onchange={() => handleToggleContextDetails(selectedConversation.id)} />
+          Show context &amp; token details
         </label>
       </div>
 
@@ -616,6 +696,10 @@
           showGearPopover = false
           selectedConversation = null
         }}>Archive</button>
+        <button class="gear-action-btn delete" onclick={() => {
+          requestDeleteConversation(selectedConversation.id, selectedConversation.title || 'Untitled')
+          showGearPopover = false
+        }}>Delete</button>
       </div>
     </div>
   {/if}
@@ -1218,7 +1302,11 @@
 
   .gear-popover-overlay {
     position: fixed;
-    top: 0; left: 0; right: 0; bottom: 0;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
     z-index: 19999;
   }
 
@@ -1246,7 +1334,7 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 14px 18px;
+    padding: 10px 18px;
     border-bottom: 1px solid #f0f0f0;
     font-weight: 600;
     font-size: 14px;
@@ -1267,7 +1355,7 @@
   }
 
   .gear-popover-section {
-    padding: 14px 18px;
+    padding: 8px 18px;
   }
 
   .gear-popover-section label {
@@ -1277,12 +1365,12 @@
     color: #666666;
     text-transform: uppercase;
     letter-spacing: 0.5px;
-    margin-bottom: 8px;
+    margin-bottom: 4px;
   }
 
   .gear-popover-section select {
     width: 100%;
-    padding: 10px 12px;
+    padding: 8px 12px;
     border: 1px solid #e0e0e0;
     border-radius: 6px;
     font-size: 14px;
@@ -1299,7 +1387,7 @@
 
   .gear-popover-section input[type="text"] {
     width: 100%;
-    padding: 10px 12px;
+    padding: 8px 12px;
     border: 1px solid #e0e0e0;
     border-radius: 6px;
     font-size: 14px;
@@ -1344,7 +1432,7 @@
 
   .message-limit-group input[type="number"] {
     flex: 1;
-    padding: 8px 10px;
+    padding: 6px 10px;
     border: 1px solid #e0e0e0;
     border-radius: 6px;
     font-size: 14px;
@@ -1437,6 +1525,18 @@
     color: #ffffff;
   }
 
+  .gear-action-btn.delete {
+    background: #ffffff;
+    color: #d32f2f;
+    border-color: #d32f2f;
+    font-weight: 600;
+  }
+
+  .gear-action-btn.delete:hover {
+    background: #d32f2f;
+    color: #ffffff;
+  }
+
   .gear-popover-divider {
     height: 1px;
     background: #f0f0f0;
@@ -1446,7 +1546,7 @@
   .gear-popover-actions {
     display: flex;
     gap: 8px;
-    padding: 14px 18px;
+    padding: 10px 18px;
     border-top: 1px solid #f0f0f0;
     flex-wrap: wrap;
   }
@@ -1485,6 +1585,18 @@
     color: #ffffff;
   }
 
+  .gear-action-btn.delete {
+    background: #ffffff;
+    color: #d32f2f;
+    border-color: #d32f2f;
+    font-weight: 600;
+  }
+
+  .gear-action-btn.delete:hover {
+    background: #d32f2f;
+    color: #ffffff;
+  }
+
   /* About View */
   .about-view {
     flex: 1;
@@ -1520,6 +1632,28 @@
 
   .about-section {
     margin-bottom: 2.5rem;
+  }
+
+  .about-disclaimer {
+    margin-bottom: 2.5rem;
+    padding: 20px 24px;
+    background: rgba(239, 83, 80, 0.08);
+    border: 1px solid rgba(239, 83, 80, 0.25);
+    border-radius: 6px;
+  }
+
+  .about-disclaimer h3 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: #c62828;
+    margin-bottom: 0.75rem;
+  }
+
+  .about-disclaimer p {
+    font-size: 0.95rem;
+    color: #5d4037;
+    line-height: 1.6;
+    margin-bottom: 0.5rem;
   }
 
   .about-section h3 {
