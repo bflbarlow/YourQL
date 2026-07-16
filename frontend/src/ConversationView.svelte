@@ -5,10 +5,11 @@
     conversationMessages = [], 
     llmProviders = [], 
     dbConnections = [],
-    processingMessage = false, 
+    processingMessage = '', 
     messageError = null, 
     userMessage = '',
     showTechDetails = false,
+    showContextDetails = false,
     maxMessages = 0,
     onSendMessage = () => {},
     onBack = () => {},
@@ -75,9 +76,79 @@
   // Per-message payload toggles (§4.7)
   let payloadToggles = $state({})
 
+  // Token counting from message payloads
+  let tokenSummary = $derived.by(() => {
+    let promptTotal = 0
+    let completionTotal = 0
+    let msgCount = 0
+    for (const m of conversationMessages) {
+      const payload = parsePayload(m.metadata)
+      if (!payload || !payload.response_json) continue
+      try {
+        const resp = typeof payload.response_json === 'string'
+          ? JSON.parse(payload.response_json)
+          : payload.response_json
+        const usage = resp.usage || resp.usage_info
+        if (usage) {
+          // OpenAI format
+          if (usage.prompt_tokens) promptTotal += usage.prompt_tokens
+          if (usage.completion_tokens) completionTotal += usage.completion_tokens
+          // Anthropic format
+          if (usage.input_tokens) promptTotal += usage.input_tokens
+          if (usage.output_tokens) completionTotal += usage.output_tokens
+          msgCount++
+        }
+      } catch {}
+    }
+    return { promptTotal, completionTotal, msgCount }
+  })
+
   function togglePayload(msgId, type) {
     const key = `${msgId}-${type}`
     payloadToggles[key] = !payloadToggles[key]
+  }
+
+  function fmtTokens(n) {
+    if (n >= 1000) return (n / 1000).toFixed(1) + 'K'
+    return String(n)
+  }
+
+  // Global functions for inline HTML event handlers in assistant messages
+  window.toggleSQLSection = function(btn, sectionId) {
+    const section = document.getElementById(sectionId)
+    if (!section) return
+    const isVisible = section.style.display === 'block'
+    section.style.display = isVisible ? 'none' : 'block'
+  }
+
+  window.copySQL = function(codeId) {
+    const code = document.getElementById(codeId)
+    if (!code) return
+    navigator.clipboard.writeText(code.textContent).then(() => {
+      const btn = code.parentElement?.parentElement?.querySelector('.copy-sql-btn')
+      if (btn) {
+        const orig = btn.textContent
+        btn.textContent = 'Copied!'
+        setTimeout(() => { btn.textContent = orig }, 1500)
+      }
+    })
+  }
+
+  window.exportCSV = function(btn, rowCount) {
+    const table = btn.closest('.results-card')?.querySelector('.result-table')
+    if (!table) return
+    const headers = [...table.querySelectorAll('thead th')].map(th => th.textContent.trim())
+    const rows = [...table.querySelectorAll('tbody tr')].map(tr =>
+      [...tr.querySelectorAll('td')].map(td => '"' + td.textContent.replace(/"/g, '""') + '"')
+    )
+    const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n')
+    const blob = new Blob([csv], { type: 'text/csv' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'query-results.csv'
+    a.click()
+    URL.revokeObjectURL(url)
   }
 
   // Format relative timestamps (§4.8)
@@ -132,6 +203,14 @@
         {/if}
         {#if activeConversation?.db_connection_id}
           <span class="meta-tag">{dbConnections.find(c => c.id === activeConversation.db_connection_id)?.name || 'DB'}</span>
+        {/if}
+        {#if showContextDetails && tokenSummary.msgCount > 0}
+          <span class="meta-tag context-tag">
+            {fmtTokens(tokenSummary.promptTotal)}&uarr; {fmtTokens(tokenSummary.completionTotal)}&darr; tokens
+          </span>
+          <span class="meta-tag context-tag">
+            {conversationMessages.length} msg{conversationMessages.length !== 1 ? 's' : ''}
+          </span>
         {/if}
       </div>
     </div>
@@ -241,7 +320,7 @@
                 <span></span>
                 <span></span>
               </div>
-              <span>Processing...</span>
+              <span>{processingMessage || 'Processing...'}</span>
             </div>
           </div>
         </div>
@@ -359,6 +438,12 @@
     border-radius: 6px;
     font-size: 12px;
   }
+  
+  .context-tag {
+    background: rgba(102, 102, 102, 0.08);
+    color: #666666;
+    font-variant-numeric: tabular-nums;
+  }
 
   .messages-container {
     flex: 1;
@@ -403,7 +488,12 @@
     background: #0288d1;
   }
 
-  .message { margin-bottom: 20px; display: flex; flex-direction: column; }
+  .message {
+    margin-bottom: 20px;
+    display: flex;
+    flex-direction: column;
+    animation: messageSlideIn 0.35s ease-out;
+  }
   .message.user { align-items: flex-end; }
   .message.assistant { align-items: flex-start; }
 
@@ -426,6 +516,7 @@
     border: 1px solid #e0e0e0;
     font-size: 14px;
     line-height: 1.6;
+    position: relative;
   }
 
   .assistant-message pre {
@@ -475,6 +566,17 @@
   @keyframes loading {
     0%, 80%, 100% { transform: scale(0.6); opacity: 0.5; }
     40% { transform: scale(1); opacity: 1; }
+  }
+  
+  @keyframes messageSlideIn {
+    from {
+      opacity: 0;
+      transform: translateY(16px) scale(0.97);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
   }
 
   .message-input-container { padding: 20px 30px; border-top: 1px solid #e0e0e0; background: #ffffff; }

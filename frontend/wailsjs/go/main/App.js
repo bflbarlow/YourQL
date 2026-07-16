@@ -94,6 +94,14 @@ export function TestLLMProviderConnection(arg1) {
   return window['go']['main']['App']['TestLLMProviderConnection'](arg1);
 }
 
+export function UpdateConversationContextDetails(arg1, arg2) {
+  return window['go']['main']['App']['UpdateConversationContextDetails'](arg1, arg2);
+}
+
+export function UpdateConversationMaxContextMessages(arg1, arg2) {
+  return window['go']['main']['App']['UpdateConversationMaxContextMessages'](arg1, arg2);
+}
+
 export function UpdateConversationMaxMessages(arg1, arg2) {
   return window['go']['main']['App']['UpdateConversationMaxMessages'](arg1, arg2);
 }

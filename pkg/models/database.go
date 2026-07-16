@@ -91,8 +91,10 @@ func migrate() error {
 			title TEXT,
 			status TEXT DEFAULT 'active',
 			max_messages INTEGER DEFAULT 0,
+			max_context_messages INTEGER DEFAULT 10,
 			pinned INTEGER DEFAULT 0,
 			tech_details INTEGER DEFAULT 0,
+		context_details INTEGER DEFAULT 0,
 			deleted_at DATETIME,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -144,7 +146,11 @@ func migrate() error {
 	// Ensure columns exist on older databases
 	ensureColumn("conversations", "deleted_at", "DATETIME")
 	ensureColumn("conversations", "tech_details", "INTEGER DEFAULT 0")
+	ensureColumn("conversations", "context_details", "INTEGER DEFAULT 0")
 	ensureColumn("conversations", "max_messages", "INTEGER DEFAULT 0")
+	ensureColumn("conversations", "max_context_messages", "INTEGER DEFAULT 10")
+	// Migrate existing conversations: set default to 10 if still 0
+	_, _ = DB.Exec("UPDATE conversations SET max_context_messages = 10 WHERE max_context_messages = 0")
 	ensureColumn("conversations", "pinned", "INTEGER DEFAULT 0")
 	ensureColumn("conversation_messages", "llm_content", "TEXT")
 	ensureColumn("conversation_messages", "sql_results", "TEXT")

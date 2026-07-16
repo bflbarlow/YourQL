@@ -8,6 +8,7 @@ import (
 
 	"YourQL/pkg/models"
 	"YourQL/pkg/services"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // App struct
@@ -60,7 +61,15 @@ func (a *App) GetConversationMessages(conversationID uint) ([]*models.Conversati
 }
 
 func (a *App) ProcessUserMessage(conversationID uint, userMessage string) error {
-	return services.ProcessUserMessage(conversationID, userMessage)
+	err := services.ProcessUserMessage(conversationID, userMessage, func(phase string) {
+		if a.ctx != nil {
+			runtime.EventsEmit(a.ctx, "processingPhase", phase)
+		}
+	})
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "processingComplete")
+	}
+	return err
 }
 
 func (a *App) DeleteConversation(id uint) error {
@@ -69,6 +78,10 @@ func (a *App) DeleteConversation(id uint) error {
 
 func (a *App) UpdateConversationTechDetails(id uint, showTechDetails bool) error {
 	return services.UpdateConversationTechDetails(id, showTechDetails)
+}
+
+func (a *App) UpdateConversationContextDetails(id uint, showContextDetails bool) error {
+	return services.UpdateConversationContextDetails(id, showContextDetails)
 }
 
 func (a *App) UpdateConversationSettings(id uint, llmProviderID *uint, dbConnectionID *uint) error {
@@ -82,6 +95,10 @@ func (a *App) UpdateConversationTitle(id uint, title string) (*models.Conversati
 
 func (a *App) UpdateConversationMaxMessages(id uint, maxMessages int) error {
 	return services.UpdateConversationMaxMessages(id, maxMessages)
+}
+
+func (a *App) UpdateConversationMaxContextMessages(id uint, maxContextMessages int) error {
+	return services.UpdateConversationMaxContextMessages(id, maxContextMessages)
 }
 
 func (a *App) UpdateConversationPinned(id uint, pinned bool) error {

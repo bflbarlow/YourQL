@@ -79,6 +79,7 @@ The backend of YourQL is built on a robust set of services that work together to
 - **Context Management**: Automatically injects database schema into the LLM context via `buildSystemPrompt`.
 - **System Prompt Capping**: If the system prompt exceeds 16KB, it is truncated to prevent context window overflow.
 - **Retry Logic**: Handles LLM clarification responses and retry scenarios for final query generation.
+- **Context Message Limiting**: Each conversation can specify a maximum number of history messages sent to the LLM (default: 10). Only the last N messages are included in the context, preventing context window overflow on long conversations.
 
 #### 2. LLM Client (`pkg/services/llm_client.go`)
 - A unified interface for interacting with different LLM providers.
@@ -92,6 +93,7 @@ The backend of YourQL is built on a robust set of services that work together to
 #### 3. SQL Execution (`pkg/services/sql_execution.go`)
 - Handles the execution of SQL queries against the configured database connection.
 - Includes retry logic for transient errors and provides a mechanism to feed error messages back to the LLM for self-correction.
+- **Inline SQL Display**: Generated SQL appears as an expandable section below the results, with a copy button, rather than as a floating popover.
 
 #### 4. Database Introspection (`pkg/services/database_introspection.go`)
 - Automatically fetches the schema of the connected database (tables, columns, indexes, foreign keys).
@@ -153,6 +155,18 @@ Regenerate bindings after adding new Go methods:
 - **Exploration Results**: Displays intermediate SQL queries and their results when tech details are enabled
 - **Raw LLM Payloads**: Shows full request/response JSON with copy button when tech details are enabled
 
+#### Discussion Settings Popover
+Each discussion has a settings popover (gear icon) with a darkened backdrop overlay, accessible from both the discussion list and the conversation header:
+- **LLM Provider**: Select the LLM provider for this discussion
+- **DB Connection**: Select the database connection for this discussion
+- **Rename**: Edit the discussion title (auto-saves on blur or Enter)
+- **Visible Messages**: Limit how many messages are shown in the UI ("Show All" or a specific number)
+- **Messages in LLM Context**: Limit how many recent messages are sent to the LLM as context (default: 10, "All" to send everything)
+- **Pin**: Pin the discussion to the top of the list
+- **Tech Details**: Toggle technical details on by default
+- **Context Details**: Toggle context/token details on by default
+- **Actions**: Duplicate, clear messages, archive/restore, and delete
+
 #### Settings View (`SettingsView.svelte`)
 
 **Model Configurations Tab**
@@ -209,6 +223,7 @@ type LLMClient interface {
 ```
 - `ChatCompletionWithPayload` captures full request/response JSON for debugging
 - Payloads are stored in `conversation_messages` as metadata for `exploration`-role messages
+- Inline HTML event handlers (`onclick="toggleSQLSection(...)"`, `onclick="copySQL(...)"`, `onclick="exportCSV(...)"`) are exposed as global `window` functions in `ConversationView.svelte`
 
 ### Exploration Queries
 Per-connection configuration stored as JSON in `db_connections.config`:
@@ -231,6 +246,13 @@ Per-discussion boolean stored in `tech_details` column:
 
 ### Soft Delete
 Discussions are soft-deleted via `status = 'deleted'` and `deleted_at = CURRENT_TIMESTAMP`. List queries filter on `status != 'deleted'` (safe column that always exists).
+
+### Conversations Table Columns
+- `max_messages`: UI limit for displayed messages (0 = show all)
+- `max_context_messages`: LLM context limit — only the last N messages are sent to the LLM (default: 10, 0 = all)
+- `pinned`: Whether the discussion is pinned to the top of the list
+- `tech_details`: Whether technical details are shown by default
+- `context_details`: Whether context/token details are shown by default
 
 ---
 
