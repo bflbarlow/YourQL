@@ -62,21 +62,23 @@ jobs:
           path: build/bin/YourQL-windows-amd64.exe
 
   build-linux:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with: { go-version: '1.24' }
       - uses: actions/setup-node@v4
         with: { node-version: '20' }
+      - run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgtk-3-dev libwebkit2gtk-4.0-dev
       - run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
-      - run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config build-essential
-      - run: wails doctor
-      - run: |
-          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 wails build -platform linux/amd64 -f
-          mv build/bin/YourQL build/bin/YourQL-linux-amd64 || true
+      - name: Build
+        run: |
+          export PATH="$HOME/go/bin:$PATH"
+          CGO_ENABLED=1 wails build -platform linux/amd64
+          ls -la build/bin/
+          mv build/bin/YourQL build/bin/YourQL-linux-amd64
       - uses: actions/upload-artifact@v4
         with:
           name: YourQL-linux-amd64
@@ -84,7 +86,7 @@ jobs:
 
   build-appimage:
     needs: build-linux
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -94,8 +96,8 @@ jobs:
 
       - name: Create AppDir
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-0 libwebkit2gtk-4.1-0 imagemagick
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgtk-3-0 libwebkit2gtk-4.0-0 imagemagick
 
           mkdir -p AppDir/usr/bin
           mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
@@ -157,7 +159,7 @@ jobs:
           path: YourQL-x86_64.AppImage
 
   release:
-    needs: [build-macos-arm64, build-macos-amd64, build-windows, build-linux, build-appimage]
+    needs: [build-macos-arm64, build-macos-amd64, build-windows, build-linux]
     if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
