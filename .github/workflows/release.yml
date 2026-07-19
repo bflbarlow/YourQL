@@ -11,87 +11,98 @@ on:
         required: true
 
 jobs:
-  build:
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            goos: linux
-            arch: amd64
-            ext: ""
-            cc: gcc
-            appimage: true
-
-          - os: windows-latest
-            goos: windows
-            arch: amd64
-            ext: ".exe"
-            cc: gcc
-            appimage: false
-
-          - os: macos-latest
-            goos: darwin
-            arch: amd64
-            ext: ""
-            cc: clang
-            appimage: false
-
-          - os: macos-latest
-            goos: darwin
-            arch: arm64
-            ext: ""
-            cc: clang
-            appimage: false
-
-    runs-on: ${{ matrix.os }}
+  build-macos-arm64:
+    runs-on: macos-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.24' }
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+      - run: |
+          wails build -platform darwin/arm64 -f
+          cd build/bin && zip -r YourQL-darwin-arm64.zip YourQL.app
+      - uses: actions/upload-artifact@v4
         with:
-          go-version: '1.24'
+          name: YourQL-darwin-arm64
+          path: build/bin/YourQL-darwin-arm64.zip
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+  build-macos-amd64:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.24' }
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+      - run: |
+          wails build -platform darwin/amd64 -f
+          cd build/bin && zip -r YourQL-darwin-amd64.zip YourQL.app
+      - uses: actions/upload-artifact@v4
         with:
-          node-version: '20'
+          name: YourQL-darwin-amd64
+          path: build/bin/YourQL-darwin-amd64.zip
 
-      - name: Install Wails
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.24' }
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+      - run: wails build -platform windows/amd64 -o YourQL-windows-amd64.exe -tags native_webview2loader -f
+        shell: bash
+      - uses: actions/upload-artifact@v4
+        with:
+          name: YourQL-windows-amd64.exe
+          path: build/bin/YourQL-windows-amd64.exe
 
-      - name: Install Linux deps
-        if: matrix.os == 'ubuntu-latest'
-        run: |
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.24' }
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+      - run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
-
-      - name: Build binary
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.arch }}
-          CGO_ENABLED: 1
-          CC: ${{ matrix.cc }}
-        run: |
-          wails build -platform ${{ matrix.goos }}/${{ matrix.arch }} -o YourQL-${{ matrix.goos }}-${{ matrix.arch }}
-
-      - name: Upload raw binary
-        uses: actions/upload-artifact@v4
+      - run: |
+          wails build -platform linux/amd64 -f
+          mv build/bin/YourQL build/bin/YourQL-linux-amd64 || true
+      - uses: actions/upload-artifact@v4
         with:
-          name: YourQL-${{ matrix.goos }}-${{ matrix.arch }}
-          path: build/bin/YourQL-${{ matrix.goos }}-${{ matrix.arch }}${{ matrix.ext }}
+          name: YourQL-linux-amd64
+          path: build/bin/YourQL-linux-amd64
 
-      # --- AppImage packaging (Linux only) ---
+  build-appimage:
+    needs: build-linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: YourQL-linux-amd64
+          path: .
+
       - name: Create AppDir
-        if: matrix.appimage
         run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-0 libwebkit2gtk-4.1-0 imagemagick
+
           mkdir -p AppDir/usr/bin
           mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
           mkdir -p AppDir/usr/share/applications
 
-          # Binary
-          cp build/bin/YourQL-linux-amd64 AppDir/usr/bin/yourql
+          # Copy binary
+          cp YourQL-linux-amd64 AppDir/usr/bin/yourql
+          chmod +x AppDir/usr/bin/yourql
 
           # Desktop entry
           cat > AppDir/usr/share/applications/yourql.desktop << 'DESKTOP'
@@ -106,19 +117,17 @@ jobs:
           DESKTOP
           ln -s usr/share/applications/yourql.desktop AppDir/yourql.desktop
 
-          # Icon (generate a simple 256x256 PNG)
-          sudo apt-get install -y imagemagick
+          # Generate icon
           convert -size 256x256 xc:'#1a1a1a' \
-            -fill '#0288d1' -draw 'roundrectangle 48,48 208,208 20,20' \
-            -fill white -font Helvetica-Bold -pointsize 120 -gravity center -annotate 0 'YQ' \
+            -fill '#0288d1' -draw 'roundrectangle 48,48 208,208 24,24' \
+            -fill white -font Helvetica-Bold -pointsize 110 -gravity center -annotate 0 'YQ' \
             AppDir/usr/share/icons/hicolor/256x256/apps/yourql.png
           ln -s usr/share/icons/hicolor/256x256/apps/yourql.png AppDir/yourql.png
 
-          # AppRun launcher
+          # AppRun
           cat > AppDir/AppRun << 'APPRUN'
           #!/bin/bash
-          SELF="$(readlink -f "$0")"
-          HERE="${SELF%/*}"
+          HERE="$(dirname "$(readlink -f "$0")")"
           export PATH="$HERE/usr/bin:$PATH"
           export LD_LIBRARY_PATH="$HERE/usr/lib:$LD_LIBRARY_PATH"
           exec "$HERE/usr/bin/yourql" "$@"
@@ -126,34 +135,36 @@ jobs:
           chmod +x AppDir/AppRun
 
       - name: Build AppImage
-        if: matrix.appimage
         run: |
-          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          # Download linuxdeploy + GTK plugin
+          wget -q -O linuxdeploy.AppImage \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
           wget -q https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/master/linuxdeploy-plugin-gtk.sh
-          chmod +x linuxdeploy-x86_64.AppImage linuxdeploy-plugin-gtk.sh
-          ./linuxdeploy-x86_64.AppImage \
+          chmod +x linuxdeploy.AppImage linuxdeploy-plugin-gtk.sh
+
+          # Set output name
+          export LDAI_OUTPUT="YourQL-x86_64.AppImage"
+
+          ./linuxdeploy.AppImage \
             --appdir AppDir \
             --plugin gtk \
             --output appimage
 
-      - name: Upload AppImage
-        if: matrix.appimage
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: YourQL-linux-x86_64-AppImage
-          path: YourQL-*.AppImage
+          name: YourQL-x86_64.AppImage
+          path: YourQL-x86_64.AppImage
 
   release:
-    needs: build
+    needs: [build-macos-arm64, build-macos-amd64, build-windows, build-linux, build-appimage]
     if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           path: artifacts
 
-      - name: List artifacts
+      - name: Show artifacts
         run: find artifacts -type f -ls
 
       - name: Create Release
@@ -161,10 +172,7 @@ jobs:
         with:
           tag_name: ${{ github.event.inputs.version || github.ref_name }}
           files: |
-            artifacts/YourQL-darwin-arm64/YourQL-darwin-arm64
-            artifacts/YourQL-darwin-amd64/YourQL-darwin-amd64
-            artifacts/YourQL-linux-x86_64-AppImage/*.AppImage
-            artifacts/YourQL-windows-amd64/YourQL-windows-amd64.exe
+            artifacts/**/*
           draft: true
           generate_release_notes: true
         env:
