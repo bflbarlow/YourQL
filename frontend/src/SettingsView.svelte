@@ -1,4 +1,5 @@
 <script>
+  import { untrack } from 'svelte'
   import {
     CreateLLMProvider,
     UpdateLLMProvider,
@@ -38,10 +39,10 @@
     localStorage.setItem('yourql-ui-scale', scale)
   }
 
-  // Load skills when the Skills tab is selected
+  // Load skills when the Skills tab is selected (untracked to avoid infinite loop)
   $effect(() => {
     if (activeSettingsTab === 'skills') {
-      loadSkills()
+      untrack(() => { loadSkills() })
     }
   })
 
