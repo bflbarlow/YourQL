@@ -18,6 +18,7 @@ type LLMResponse struct {
 	SQLQuery              string `json:"sql_query,omitempty"`
 	ClarificationQuestion string `json:"clarification_question,omitempty"`
 	Explanation           string `json:"explanation,omitempty"`
+	Trailer               string `json:"trailer,omitempty"` // text appended to the visible message (used by skills)
 	VizConfig             string `json:"viz_config,omitempty"` // raw JSON for Chart.js (contains $column refs)
 }
 
@@ -256,9 +257,6 @@ func ProcessUserMessage(conversationID uint, userMessage string, onPhase func(st
 		log.Printf("[DiscussionEngine] Round %d — Raw LLM response: %s", round+1, responseText)
 		cleanedResponse := extractJSONFromResponse(responseText)
 		llmResp, err = parseLLMResponse(cleanedResponse)
-		if err != nil {
-			return fmt.Errorf("failed to parse LLM response: %w", err)
-		}
 
 		log.Printf("[DiscussionEngine] Round %d — action=%s", round+1, llmResp.Action)
 
@@ -668,6 +666,9 @@ func handleClarification(query *models.Query, resp LLMResponse, conversationID u
 	if resp.Explanation != "" {
 		message = fmt.Sprintf("%s\n\n*(%s)*", resp.ClarificationQuestion, resp.Explanation)
 	}
+	if resp.Trailer != "" {
+		message += "\n\n" + resp.Trailer
+	}
 
 	llmContentJSON, _ := json.Marshal(resp)
 	llmContent := string(llmContentJSON)
@@ -850,6 +851,7 @@ func buildSystemPrompt(schema *DataSchema, hasDB bool, dbConnection *models.Data
 	sb.WriteString("   - \"sql_query\": if action is \"sql_query\" or \"sql_exploration\", provide a valid SELECT query.\n")
 	sb.WriteString("   - \"clarification_question\": if action is \"clarification\", ask a concise clarifying question.\n")
 	sb.WriteString("   - \"explanation\": optional short explanation of your reasoning.\n")
+	sb.WriteString("   - \"trailer\": optional text appended to the end of the visible message (use if Additional Context asks for a signature, disclaimer, etc.).\n")
 	dbTypeHint := "SQL"
 	if dbConnection != nil {
 		driver, driverErr := GetDriver(dbConnection.Type)
@@ -909,14 +911,14 @@ func buildSystemPrompt(schema *DataSchema, hasDB bool, dbConnection *models.Data
 		sb.WriteString("- The viz_config must be a valid JSON string (double-quote all keys and values, escape internal quotes)\n\n")
 	}
 
-	// User-defined skill context (appended after viz instructions)
+	// User-defined skill context (appended after viz instructions, before the final instruction)
 	if skillsContent != "" {
 		sb.WriteString("\n## Additional Context (from Skills)\n")
 		sb.WriteString(skillsContent)
 		sb.WriteString("\n")
 	}
 
-	sb.WriteString("Your response must be a valid JSON object, no additional text.\n")
+	sb.WriteString("Your response must be a valid JSON object with only the fields listed above.\n")
 
 	prompt := sb.String()
 	if len(prompt) > 16384 {
@@ -941,6 +943,15 @@ func renderSQLResults(query *models.Query, resp LLMResponse, dbConnection *model
 			explanation = fmt.Sprintf("I explored the data before formulating this query. %s", explanation)
 		} else if explanation == "" {
 			explanation = fmt.Sprintf("I ran %d intermediate query(ies) to explore the data before formulating this query.", len(explorationResults))
+		}
+	}
+
+	// Append skill trailer (if any) to the visible explanation
+	if resp.Trailer != "" {
+		if explanation != "" {
+			explanation += "\n\n" + resp.Trailer
+		} else {
+			explanation = resp.Trailer
 		}
 	}
 
