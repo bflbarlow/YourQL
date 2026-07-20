@@ -62,7 +62,7 @@ func (d *ExcelFileDriver) OpenDriver() string { return "sqlite" }
 func (d *ExcelFileDriver) DisplayName() string { return "Excel File" }
 func (d *ExcelFileDriver) DefaultPort() int   { return 0 }
 func (d *ExcelFileDriver) SQLDialectHint() string {
-	return "SQLite — data loaded from Excel file (first sheet). The table is named 'data'."
+	return "SQLite — data loaded from Excel file. Each sheet becomes a separate table named after the sheet."
 }
 func (d *ExcelFileDriver) BuildDSN(conn *models.DataSource) (string, error) {
 	return "file::memory:?cache=shared", nil
@@ -150,7 +150,7 @@ func introspectCSV(filePath string) (*DataSchema, error) {
 	}, nil
 }
 
-// introspectExcel reads the first sheet of an Excel file and returns a DataSchema.
+// introspectExcel reads all sheets of an Excel file and returns a DataSchema.
 func introspectExcel(filePath string) (*DataSchema, error) {
 	f, err := excelize.OpenFile(filePath)
 	if err != nil {
@@ -158,51 +158,55 @@ func introspectExcel(filePath string) (*DataSchema, error) {
 	}
 	defer f.Close()
 
-	sheet := f.GetSheetName(0)
-	rows, err := f.GetRows(sheet)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read Excel rows: %w", err)
+	sheets := f.GetSheetList()
+	if len(sheets) == 0 {
+		return nil, fmt.Errorf("Excel file has no sheets")
 	}
 
-	if len(rows) == 0 {
-		return nil, fmt.Errorf("Excel file has no data")
-	}
-
-	headers := rows[0]
-	cleanHeaders := make([]string, len(headers))
-	for i, h := range headers {
-		cleanHeaders[i] = sanitizeColumnName(h)
-	}
-
-	dataRows := make([][]string, 0, len(rows)-1)
-	for i := 1; i < len(rows); i++ {
-		row := rows[i]
-		for len(row) < len(headers) {
-			row = append(row, "")
+	var tables []TableInfo
+	for _, sheet := range sheets {
+		rows, err := f.GetRows(sheet)
+		if err != nil || len(rows) == 0 {
+			continue
 		}
-		dataRows = append(dataRows, row)
-	}
 
-	colTypes := inferTypes(cleanHeaders, dataRows)
-
-	columns := make([]ColumnInfo, len(headers))
-	for i, h := range cleanHeaders {
-		columns[i] = ColumnInfo{
-			Name:       h,
-			DataType:   colTypes[i],
-			IsNullable: true,
+		headers := rows[0]
+		cleanHeaders := make([]string, len(headers))
+		for i, h := range headers {
+			cleanHeaders[i] = sanitizeColumnName(h)
 		}
+
+		dataRows := make([][]string, 0, len(rows)-1)
+		for i := 1; i < len(rows); i++ {
+			row := rows[i]
+			for len(row) < len(headers) {
+				row = append(row, "")
+			}
+			dataRows = append(dataRows, row)
+		}
+
+		colTypes := inferTypes(cleanHeaders, dataRows)
+		columns := make([]ColumnInfo, len(headers))
+		for i, h := range cleanHeaders {
+			columns[i] = ColumnInfo{
+				Name:       h,
+				DataType:   colTypes[i],
+				IsNullable: true,
+			}
+		}
+
+		tableName := sanitizeColumnName(sheet)
+		if tableName == "" {
+			tableName = "sheet"
+		}
+		tables = append(tables, TableInfo{
+			Name:     tableName,
+			Columns:  columns,
+			RowCount: int64(len(dataRows)),
+		})
 	}
 
-	return &DataSchema{
-		Tables: []TableInfo{
-			{
-				Name:     "data",
-				Columns:  columns,
-				RowCount: int64(len(dataRows)),
-			},
-		},
-	}, nil
+	return &DataSchema{Tables: tables}, nil
 }
 
 // queryCSVFile loads a CSV into in-memory SQLite and runs the query.
@@ -256,38 +260,41 @@ func queryExcelFile(filePath, query string) ([]string, [][]interface{}, error) {
 	}
 	defer f.Close()
 
-	sheet := f.GetSheetName(0)
-	rows, err := f.GetRows(sheet)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to read Excel: %w", err)
-	}
-
-	if len(rows) == 0 {
-		return nil, nil, fmt.Errorf("Excel file has no data")
-	}
-
-	headers := rows[0]
-	cleanHeaders := make([]string, len(headers))
-	for i, h := range headers {
-		cleanHeaders[i] = sanitizeColumnName(h)
-	}
-
 	db, err := sql.Open("sqlite", "file::memory:?cache=shared")
 	if err != nil {
 		return nil, nil, err
 	}
 	defer db.Close()
 
-	if err := createTable(db, "data", cleanHeaders); err != nil {
-		return nil, nil, err
-	}
-
-	for i := 1; i < len(rows); i++ {
-		row := rows[i]
-		for len(row) < len(headers) {
-			row = append(row, "")
+	sheets := f.GetSheetList()
+	for _, sheet := range sheets {
+		rows, err := f.GetRows(sheet)
+		if err != nil || len(rows) == 0 {
+			continue
 		}
-		_ = insertRow(db, "data", cleanHeaders, row[:len(headers)])
+
+		headers := rows[0]
+		cleanHeaders := make([]string, len(headers))
+		for i, h := range headers {
+			cleanHeaders[i] = sanitizeColumnName(h)
+		}
+
+		tableName := sanitizeColumnName(sheet)
+		if tableName == "" {
+			tableName = "sheet"
+		}
+
+		if err := createTable(db, tableName, cleanHeaders); err != nil {
+			continue
+		}
+
+		for i := 1; i < len(rows); i++ {
+			row := rows[i]
+			for len(row) < len(headers) {
+				row = append(row, "")
+			}
+			_ = insertRow(db, tableName, cleanHeaders, row[:len(headers)])
+		}
 	}
 
 	return runQuery(db, query)
