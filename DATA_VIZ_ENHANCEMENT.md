@@ -63,6 +63,60 @@ Message stored in SQLite with metadata JSON
 
 ## Phase 1: LLM Prompt Enhancement
 
+### Prompt Placement Strategy
+
+`buildSystemPrompt()` in `discussion_engine.go` has two zones:
+
+```
+Zone A: Custom prompt (if set in data source config) — replaces base persona
+        ↓
+Zone B: Operational sections appended AFTER Zone A (always present):
+        - Database Schema
+        - SQL dialect instructions
+        - Safety & security rules
+        - Visualization instructions  ← NEW
+```
+
+**Key design decision:** Viz instructions live in Zone B, so they are never overridden
+by a user's custom system prompt. They are operational — like schema, safety rules,
+and dialect hints — not persona-defining.
+
+### Viz Toggle in Discussion Settings
+
+Add a `viz_enabled` boolean to the `Conversation` model, mirroring `tech_details`,
+`context_details`, and `summarize`:
+
+**Go model** (`pkg/models/conversation.go`):
+```go
+type Conversation struct {
+    // ... existing fields ...
+    Summarize       bool  `json:"summarize"`
+    VizEnabled      bool  `json:"viz_enabled"`  // NEW: allow/disallow data visualizations
+}
+```
+
+**SQL migration** (`pkg/models/database.go`):
+```go
+ensureColumn("conversations", "viz_enabled", "INTEGER DEFAULT 1")
+```
+
+**buildSystemPrompt signature update**:
+```go
+func buildSystemPrompt(schema *DataSchema, hasDB bool, dbConnection *models.DataSource, vizEnabled bool) string
+```
+
+When `vizEnabled` is `false`, the viz instructions section is omitted entirely from the
+system prompt. The `<visualization>` block parser still runs (in case an older message
+has one), but the LLM won't generate new viz blocks.
+
+**Frontend** — add checkbox in the discussion settings panel:
+```svelte
+<label>
+  <input type="checkbox" bind:checked={discussionSettings.vizEnabled} />
+  Allow data visualizations (charts)
+</label>
+```
+
 ### System Prompt Addition
 
 The `buildSystemPrompt()` function in `discussion_engine.go` gets a new section:
@@ -262,19 +316,31 @@ The `conversation_messages` table already has a `metadata TEXT` column (JSON). W
 ### Processing Flow in `discussion_engine.go`
 
 ```
+buildSystemPrompt(schema, hasDB, dbConnection, conversation.VizEnabled):
+  1. Zone A: Custom prompt (if set) or default persona
+  2. Zone B (always appended):
+     a. Database Schema (tables, columns, indexes, FKs)
+     b. SQL dialect hints
+     c. Safety & security rules
+     d. IF vizEnabled: Visualization instructions ← NEW
+```
+
+
+```
 ProcessUserMessage():
-  1. Build system prompt (with viz instructions)
+  1. Build system prompt (with viz instructions IF conversation.VizEnabled)
   2. Call LLM
   3. Extract SQL from ```sql blocks
   4. Extract <visualization> block
   5. Execute SQL → get columns + rows
-  6. If viz block exists:
+  6. If viz block exists AND conversation.VizEnabled:
      a. Resolve $column_name references → real data arrays
      b. Validate chart type (must be in [bar, line, pie, doughnut, scatter, radar, polarArea])
      c. Set default responsive:true if missing
      d. Store resolved config in message.metadata
-  7. Store message
-  8. Return to frontend
+  7. If viz block exists BUT vizEnabled is false: ignore it, log warning
+  8. Store message
+  9. Return to frontend
 ```
 
 ---
@@ -483,15 +549,19 @@ func sampleDataForChart(rows [][]interface{}, maxPoints int) [][]interface{} {
 
 | Step | Phase | Effort | Depends On |
 |------|-------|--------|------------|
-| 1. Add viz section to system prompt | Phase 1 | Small | — |
-| 2. Parse `<visualization>` blocks from LLM response | Phase 2 | Small | Step 1 |
-| 3. Implement `$column` reference resolution | Phase 2 | Medium | Step 2 |
-| 4. Store chart_config in message metadata | Phase 2 | Small | Step 3 |
-| 5. Install chart.js & create VizChart.svelte | Phase 3 | Small | — |
-| 6. Wire VizChart into ConversationView | Phase 3 | Medium | Steps 4, 5 |
-| 7. Add table/chart toggle | Phase 3 | Small | Step 6 |
-| 8. Validation & error handling | Phase 5 | Small | Step 4 |
-| 9. Test with various chart types | Testing | Medium | All |
+| 1. Add `viz_enabled` to Conversation model | Phase 1 | Small | — |
+| 2. Add SQL migration for viz_enabled column | Phase 1 | Small | Step 1 |
+| 3. Add viz section to system prompt (Zone B) | Phase 1 | Small | Step 1 |
+| 4. Update buildSystemPrompt signature + wiring | Phase 1 | Small | Steps 2, 3 |
+| 5. Parse `<visualization>` blocks from LLM response | Phase 2 | Small | Step 4 |
+| 6. Implement `$column` reference resolution | Phase 2 | Medium | Step 5 |
+| 7. Store chart_config in message metadata | Phase 2 | Small | Step 6 |
+| 8. Install chart.js & create VizChart.svelte | Phase 3 | Small | — |
+| 9. Wire VizChart into ConversationView | Phase 3 | Medium | Steps 7, 8 |
+| 10. Add viz toggle to discussion settings UI | Phase 1 | Small | Step 3 |
+| 11. Add table/chart toggle button | Phase 3 | Small | Step 9 |
+| 12. Validation & error handling | Phase 5 | Small | Step 7 |
+| 13. Test with various chart types | Testing | Medium | All |
 
 ### Total Effort Estimate
 
@@ -513,8 +583,10 @@ func sampleDataForChart(rows [][]interface{}, maxPoints int) [][]interface{} {
 | Storage | `chart_config` in `conversation_messages.metadata` JSON |
 | Rendering | New `VizChart.svelte` component with `<canvas>` |
 | Toggle | User can switch between chart and table view |
+| Discussion setting | `viz_enabled` boolean — disables viz instructions in prompt + ignores viz blocks |
+| Prompt placement | Zone B (operational) — never overridden by custom data source prompt |
 | Error handling | Graceful fallback to table on any viz failure |
 | Chart types | bar, line, pie, doughnut, scatter, radar, polarArea |
-| Go changes | ~3 files modified, ~200 lines |
-| Frontend changes | ~2 files (1 new, 1 modified), ~100 lines |
+| Go changes | ~4 files modified, ~250 lines |
+| Frontend changes | ~3 files (1 new, 2 modified), ~130 lines |
 | Dependencies | 1 npm package, 0 Go packages |
