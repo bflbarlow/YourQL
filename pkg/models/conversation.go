@@ -9,7 +9,7 @@ type Conversation struct {
 	ID             uint       `json:"id"`
 	Title          *string    `json:"title,omitempty"`
 	LLMProviderID  *uint      `json:"llm_provider_id,omitempty"`
-	DBConnectionID *uint      `json:"db_connection_id,omitempty"`
+	DataSourceID  *uint      `json:"data_source_id,omitempty"`
 	Status         string     `json:"status"` // active, archived, deleted
 	MaxMessages      int        `json:"max_messages"`
 	MaxContextMessages int      `json:"max_context_messages"`

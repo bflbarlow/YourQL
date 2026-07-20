@@ -1,6 +1,6 @@
 export namespace main {
 	
-	export class DBConnectionSetting {
+	export class DataSourceSetting {
 	    id: number;
 	    name: string;
 	    type: string;
@@ -18,7 +18,7 @@ export namespace main {
 	    extra?: string;
 	
 	    static createFrom(source: any = {}) {
-	        return new DBConnectionSetting(source);
+	        return new DataSourceSetting(source);
 	    }
 	
 	    constructor(source: any = {}) {
@@ -199,7 +199,7 @@ export namespace models {
 	    id: number;
 	    title?: string;
 	    llm_provider_id?: number;
-	    db_connection_id?: number;
+	    data_source_id?: number;
 	    status: string;
 	    max_messages: number;
 	    max_context_messages: number;
@@ -223,7 +223,7 @@ export namespace models {
 	        this.id = source["id"];
 	        this.title = source["title"];
 	        this.llm_provider_id = source["llm_provider_id"];
-	        this.db_connection_id = source["db_connection_id"];
+	        this.data_source_id = source["data_source_id"];
 	        this.status = source["status"];
 	        this.max_messages = source["max_messages"];
 	        this.max_context_messages = source["max_context_messages"];

@@ -5,18 +5,18 @@
     DeleteLLMProvider,
     SetDefaultLLMProvider,
     TestLLMProviderConnection,
-    CreateDBConnection,
-    UpdateDBConnection,
-    DeleteDBConnection,
-    SetDefaultDBConnection,
-    TestDBConnection,
+    CreateDataSource,
+    UpdateDataSource,
+    DeleteDataSource,
+    SetDefaultDataSource,
+    TestDataSource,
     GetSchemaPreview,
     GetSupportedDBTypes
   } from '../wailsjs/go/main/App.js'
 
   let {
     llmProviders = [],
-    dbConnections = [],
+    dataSources = [],
     onUpdate = () => {}
   } = $props()
 
@@ -44,7 +44,7 @@
   let isNewConnection = $state(false)
 
   // DB List → Detail navigation
-  let selectedDBConnection = $state(null)
+  let selectedDataSource = $state(null)
   let showDBDetail = $state(false)
 
   // DB Detail form state
@@ -255,14 +255,14 @@
     }
     tempBusinessRules = ''
     isNewConnection = true
-    selectedDBConnection = null
+    selectedDataSource = null
     showDBDetail = true
     schemaData = null
     dbStatus = ''
   }
 
   // ==================== DB Detail View Handlers ====================
-  function openDBDetail(connection) {
+  function openSourceDetail(connection) {
     // Build default config
     let config = {
       system_prompt: '',
@@ -318,7 +318,7 @@
     dbDetailConfig = config
     tempBusinessRules = (config.business_rules || []).join('\n')
 
-    selectedDBConnection = connection
+    selectedDataSource = connection
     showDBDetail = true
     schemaData = null
     dbStatus = ''
@@ -326,7 +326,7 @@
 
   function closeDBDetail() {
     showDBDetail = false
-    selectedDBConnection = null
+    selectedDataSource = null
     isNewConnection = false
     schemaData = null
     dbStatus = ''
@@ -361,7 +361,7 @@
       const configStr = JSON.stringify(config)
 
       if (isNewConnection) {
-        await CreateDBConnection(
+        await CreateDataSource(
           dbDetailForm.name,
           dbDetailForm.type,
           dbDetailForm.host,
@@ -377,14 +377,14 @@
         // Refresh connection list and find the new connection to switch to edit mode
         await onUpdate()
         // Find the newly created connection by name
-        const newConn = dbConnections.find(c => c.name === dbDetailForm.name)
+        const newConn = dataSources.find(c => c.name === dbDetailForm.name)
         if (newConn) {
-          selectedDBConnection = newConn
+          selectedDataSource = newConn
           isNewConnection = false
         }
       } else {
-        await UpdateDBConnection(
-          selectedDBConnection.id,
+        await UpdateDataSource(
+          selectedDataSource.id,
           dbDetailForm.name,
           dbDetailForm.host,
           dbDetailForm.database,
@@ -410,7 +410,7 @@
     }
     dbStatus = 'Testing connection...'
     try {
-      const result = await TestNewDBConnection(
+      const result = await TestNewDataSource(
         dbDetailForm.name,
         dbDetailForm.type,
         dbDetailForm.host,
@@ -427,10 +427,10 @@
     }
   }
 
-  async function handleTestDB(id) {
+  async function handleTestSource(id) {
     dbStatus = 'Testing connection...'
     try {
-      const result = await TestDBConnection(id)
+      const result = await TestDataSource(id)
       dbStatus = result
     } catch (e) {
       dbStatus = 'Error: ' + e.toString()
@@ -450,12 +450,12 @@
     }
   }
 
-  async function handleDeleteDB(id) {
+  async function handleDeleteSource(id) {
     if (!confirm('Are you sure you want to delete this connection?')) return
     try {
-      await DeleteDBConnection(id)
+      await DeleteDataSource(id)
       dbStatus = 'Connection deleted'
-      if (showDBDetail && selectedDBConnection && selectedDBConnection.id === id) {
+      if (showDBDetail && selectedDataSource && selectedDataSource.id === id) {
         closeDBDetail()
       }
       onUpdate()
@@ -567,7 +567,7 @@
     {:else if activeSettingsTab === 'databases'}
       <div class="settings-section">
         <div class="db-tab-content">
-          {#if showDBDetail && (selectedDBConnection || isNewConnection)}
+          {#if showDBDetail && (selectedDataSource || isNewConnection)}
             <!-- Detail View -->
             <div class="db-detail-view">
               <div class="db-detail-header">
@@ -791,13 +791,13 @@
                 <div class="db-detail-actions">
                   <div class="db-actions-left">
                     <button class="btn btn-primary" onclick={handleSaveDBDetail}>Save</button>
-                    <button class="btn btn-secondary" onclick={() => isNewConnection ? handleTestNewConnection() : handleTestDB(selectedDBConnection.id)}>Test Connection</button>
+                    <button class="btn btn-secondary" onclick={() => isNewConnection ? handleTestNewConnection() : handleTestSource(selectedDataSource.id)}>Test Connection</button>
                     {#if !isNewConnection}
-                      <button class="btn btn-secondary" onclick={() => handleViewSchema(selectedDBConnection.id)}>Load Schema</button>
+                      <button class="btn btn-secondary" onclick={() => handleViewSchema(selectedDataSource.id)}>Load Schema</button>
                     {/if}
                   </div>
                   {#if !isNewConnection}
-                    <button class="btn btn-danger" onclick={() => handleDeleteDB(selectedDBConnection.id)}>Delete</button>
+                    <button class="btn btn-danger" onclick={() => handleDeleteSource(selectedDataSource.id)}>Delete</button>
                   {/if}
                 </div>
 
@@ -896,32 +896,34 @@
               <h4>Configured Connections</h4>
               <button class="btn btn-primary" onclick={openNewConnection}>+ Add Connection</button>
 
-              {#if dbConnections.length === 0}
+              {#if dataSources.length === 0}
                 <p class="empty-hint">No database connections configured</p>
               {:else}
-                {#each dbConnections as connection}
-                  <div class="db-connection-item">
-                    <div class="db-connection-info">
-                      <span class="db-connection-name">{connection.name}</span>
-                      <span class="db-connection-type">{connection.type.toUpperCase()}</span>
-                      {#if ['snowflake', 'bigquery', 'redshift'].includes(connection.type)}
-                        <span class="badge wip">WIP</span>
-                      {/if}
+                {#each dataSources as connection}
+                  <div class="data-source-item">
+                    <div class="data-source-left">
+                      <div class="data-source-info">
+                        <span class="data-source-name">{connection.name}</span>
+                        <span class="data-source-type">{connection.type.toUpperCase()}</span>
+                        {#if ['snowflake', 'bigquery', 'redshift'].includes(connection.type)}
+                          <span class="badge wip">WIP</span>
+                        {/if}
+                      </div>
+                      <div class="data-source-details">
+                        <span class="detail">{connection.host}:{connection.port}/{connection.database}</span>
+                        {#if connection.is_default}
+                          <span class="badge default">Default</span>
+                        {/if}
+                        {#if connection.exploration_allowed}
+                          <span class="badge exploration">Exploration</span>
+                        {/if}
+                      </div>
                     </div>
-                    <div class="db-connection-details">
-                      <span class="detail">{connection.host}:{connection.port}/{connection.database}</span>
-                      {#if connection.is_default}
-                        <span class="badge default">Default</span>
-                      {/if}
-                      {#if connection.exploration_allowed}
-                        <span class="badge exploration">Exploration</span>
-                      {/if}
-                    </div>
-                    <div class="db-connection-actions">
-                      <button class="btn btn-small" onclick={() => openDBDetail(connection)}>Edit</button>
-                      <button class="btn btn-small" onclick={() => handleTestDB(connection.id)}>Test</button>
+                    <div class="data-source-actions">
+                      <button class="btn btn-small" onclick={() => openSourceDetail(connection)}>Edit</button>
+                      <button class="btn btn-small" onclick={() => handleTestSource(connection.id)}>Test</button>
                       <button class="btn btn-small" onclick={() => handleViewSchema(connection.id)}>Schema</button>
-                      <button class="btn btn-small btn-danger" onclick={() => handleDeleteDB(connection.id)}>Delete</button>
+                      <button class="btn btn-small btn-danger" onclick={() => handleDeleteSource(connection.id)}>Delete</button>
                     </div>
                   </div>
                 {/each}
@@ -1220,7 +1222,7 @@
 
   .provider-card,
   .connection-card,
-  .db-connection-item {
+  .data-source-item {
     background: #f9f9f9;
     padding: var(--space-2xl);
     border-radius: var(--radius-md);
@@ -1228,40 +1230,69 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: var(--space-2xl);
     border: 1px solid #e0e0e0;
   }
 
-  .provider-info,
-  .connection-info,
-  .db-connection-info {
+  .data-source-left {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
+  .provider-info {
     display: flex;
     align-items: center;
     gap: var(--space-lg);
   }
 
-  .provider-name,
-  .connection-name,
-  .db-connection-name {
+  .data-source-info {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+
+  .provider-name {
     font-weight: 600;
     color: #000000;
   }
 
+  .data-source-name {
+    font-weight: 600;
+    color: #000000;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 280px;
+  }
+
   .provider-type,
-  .connection-type,
-  .db-connection-type {
+  .data-source-type {
     font-size: var(--font-sm);
     color: #999999;
     background: #e0e0e0;
     padding: 3px var(--space-md);
     border-radius: var(--radius-md);
+    white-space: nowrap;
+    flex-shrink: 0;
   }
 
-  .provider-details,
-  .connection-details,
-  .db-connection-details {
+  .provider-details {
     display: flex;
     align-items: center;
     gap: var(--space-lg);
+  }
+
+  .data-source-details {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+    flex-wrap: wrap;
+    min-width: 0;
   }
 
   .detail {
@@ -1295,11 +1326,16 @@
     border: 1px solid rgba(129, 236, 236, 0.3);
   }
 
-  .provider-actions,
-  .connection-actions,
-  .db-connection-actions {
+  .provider-actions {
     display: flex;
     gap: var(--space-md);
+  }
+
+  .data-source-actions {
+    display: flex;
+    gap: var(--space-md);
+    flex-shrink: 0;
+    flex-wrap: nowrap;
   }
 
   .empty-hint {

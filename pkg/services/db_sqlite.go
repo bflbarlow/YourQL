@@ -24,14 +24,14 @@ func (d *SQLiteDriver) SQLDialectHint() string {
 	return "SQLite — double-quote \"identifier\" quoting, LIMIT for row limits, limited ALTER TABLE support"
 }
 
-func (d *SQLiteDriver) BuildDSN(conn *models.DBConnection) (string, error) {
+func (d *SQLiteDriver) BuildDSN(conn *models.DataSource) (string, error) {
 	if conn.Database == nil || *conn.Database == "" {
 		return "", fmt.Errorf("database path is required for SQLite")
 	}
 	return *conn.Database + "?_busy_timeout=5000&_journal_mode=WAL", nil
 }
 
-func (d *SQLiteDriver) GetSchema(conn *models.DBConnection) (*DatabaseSchema, error) {
+func (d *SQLiteDriver) GetSchema(conn *models.DataSource) (*DataSchema, error) {
 	if conn.Database == nil || *conn.Database == "" {
 		return nil, fmt.Errorf("database path is required for SQLite")
 	}
@@ -72,11 +72,11 @@ func (d *SQLiteDriver) GetSchema(conn *models.DBConnection) (*DatabaseSchema, er
 		tables = append(tables, *table)
 	}
 
-	return &DatabaseSchema{Tables: tables}, nil
+	return &DataSchema{Tables: tables}, nil
 }
 
 // getSQLiteTableInfo retrieves column information for a SQLite table.
-func getSQLiteTableInfo(db *sql.DB, tableName string, config *models.DBConnectionConfig) (*TableInfo, error) {
+func getSQLiteTableInfo(db *sql.DB, tableName string, config *models.DataSourceConfig) (*TableInfo, error) {
 	colRows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", tableName))
 	if err != nil {
 		return nil, fmt.Errorf("failed to query columns: %w", err)

@@ -25,7 +25,7 @@ func (d *MariaDBDriver) SQLDialectHint() string {
 	return "MariaDB — backtick `identifier` quoting, LIMIT, RETURNING clause on INSERT/UPDATE/DELETE, sequences via CREATE SEQUENCE, ENGINE=Aria/ColumnStore options"
 }
 
-func (d *MariaDBDriver) BuildDSN(conn *models.DBConnection) (string, error) {
+func (d *MariaDBDriver) BuildDSN(conn *models.DataSource) (string, error) {
 	if conn.Database == nil {
 		return "", fmt.Errorf("database name is required")
 	}
@@ -57,7 +57,7 @@ func (d *MariaDBDriver) BuildDSN(conn *models.DBConnection) (string, error) {
 	return dsn, nil
 }
 
-func (d *MariaDBDriver) GetSchema(conn *models.DBConnection) (*DatabaseSchema, error) {
+func (d *MariaDBDriver) GetSchema(conn *models.DataSource) (*DataSchema, error) {
 	if conn.Database == nil {
 		return nil, fmt.Errorf("database name is required")
 	}

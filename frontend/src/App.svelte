@@ -9,7 +9,7 @@
     processingMessage = ''
   })
 
-  import { ListConversations, CreateConversation, GetConversationMessages, ProcessUserMessage, DeleteConversation, UpdateConversationTechDetails, ArchiveConversation, RestoreConversation, UpdateConversationSettings, ListLLMProviders, ListDBConnections, UpdateConversationTitle, UpdateConversationMaxMessages, UpdateConversationMaxContextMessages, UpdateConversationPinned, DuplicateConversation, ClearConversationMessages, UpdateConversationContextDetails, UpdateConversationSummarize } from '../wailsjs/go/main/App.js'
+  import { ListConversations, CreateConversation, GetConversationMessages, ProcessUserMessage, DeleteConversation, UpdateConversationTechDetails, ArchiveConversation, RestoreConversation, UpdateConversationSettings, ListLLMProviders, ListDataSources, UpdateConversationTitle, UpdateConversationMaxMessages, UpdateConversationMaxContextMessages, UpdateConversationPinned, DuplicateConversation, ClearConversationMessages, UpdateConversationContextDetails, UpdateConversationSummarize } from '../wailsjs/go/main/App.js'
   import { MessageSquare, Settings, X, Copy, Trash2, Pin, ChevronRight, ChevronLeft, Plus } from 'lucide-svelte'
   import SettingsView from './SettingsView.svelte'
   import ConversationView from './ConversationView.svelte'
@@ -17,7 +17,7 @@
   let activeView = $state('discussions')
   let conversations = $state([])
   let llmProviders = $state([])
-  let dbConnections = $state([])
+  let dataSources = $state([])
   let sidebarCollapsed = $state(false)
 
   const appVersion = '0.1.0'
@@ -26,8 +26,8 @@
   let llmNameByID = $derived(
     Object.fromEntries(llmProviders.map(p => [p.id, p.name]))
   )
-  let dbNameByID = $derived(
-    Object.fromEntries(dbConnections.map(c => [c.id, c.name]))
+  let dataSourceNameByID = $derived(
+    Object.fromEntries(dataSources.map(c => [c.id, c.name]))
   )
 
   let status = $state("Ready")
@@ -36,7 +36,7 @@
   let showNewDiscussion = $state(false)
   let newDiscussionTitle = $state('')
   let selectedLLMProvider = $state(null)
-  let selectedDBConnection = $state(null)
+  let selectedDataSource = $state(null)
   let creating = $state(false)
   let createError = $state(null)
 
@@ -72,8 +72,8 @@
       const llmRes = await ListLLMProviders()
       llmProviders = llmRes || []
 
-      const dbRes = await ListDBConnections()
-      dbConnections = dbRes || []
+      const dbRes = await ListDataSources()
+      dataSources = dbRes || []
 
       status = "Loaded successfully"
     } catch (e) {
@@ -95,14 +95,14 @@
 
     try {
       const llmProviderID = selectedLLMProvider ? selectedLLMProvider.id : null
-      const dbConnectionID = selectedDBConnection ? selectedDBConnection.id : null
+      const dataSourceID = selectedDataSource ? selectedDataSource.id : null
 
-      const conversation = await CreateConversation(newDiscussionTitle.trim(), llmProviderID, dbConnectionID)
+      const conversation = await CreateConversation(newDiscussionTitle.trim(), llmProviderID, dataSourceID)
 
       showNewDiscussion = false
       newDiscussionTitle = ''
       selectedLLMProvider = null
-      selectedDBConnection = null
+      selectedDataSource = null
 
       await loadData()
 
@@ -207,12 +207,12 @@
     }
   }
 
-  async function handleUpdateConversationSettings(llmProviderID, dbConnectionID) {
+  async function handleUpdateConversationSettings(llmProviderID, dataSourceID) {
     if (!activeConversation) return
     try {
-      await UpdateConversationSettings(activeConversation.id, llmProviderID, dbConnectionID)
+      await UpdateConversationSettings(activeConversation.id, llmProviderID, dataSourceID)
       if (llmProviderID !== null) activeConversation.llm_provider_id = llmProviderID
-      if (dbConnectionID !== null) activeConversation.db_connection_id = dbConnectionID
+      if (dataSourceID !== null) activeConversation.data_source_id = dataSourceID
       activeConversation.updated_at = new Date().toISOString()
       const convRes = await ListConversations()
       conversations = (convRes || []).filter(c => showArchived || c.status !== 'archived')
@@ -453,8 +453,8 @@
                       {#if conv.llm_provider_id}
                         <span class="conversation-model">{llmNameByID[conv.llm_provider_id] || 'LLM'}</span>
                       {/if}
-                      {#if conv.db_connection_id}
-                        <span class="conversation-db">{dbNameByID[conv.db_connection_id] || 'DB'}</span>
+                      {#if conv.data_source_id}
+                        <span class="conversation-db">{dataSourceNameByID[conv.data_source_id] || 'DB'}</span>
                       {/if}
                     </div>
                   </button>
@@ -477,7 +477,7 @@
         {activeConversation}
         {conversationMessages}
         {llmProviders}
-        {dbConnections}
+        {dataSources}
         {processingMessage}
         {messageError}
         userMessage={userMessage}
@@ -496,7 +496,7 @@
     {:else if activeView === 'settings'}
       <SettingsView
         {llmProviders}
-        {dbConnections}
+        {dataSources}
         onUpdate={loadData}
       />
     {:else if activeView === 'about'}
@@ -563,7 +563,7 @@
           value={selectedConversation.llm_provider_id || ''}
           onchange={(e) => {
             const val = e.target.value ? parseInt(e.target.value) : null
-            handleUpdateConversationSettings(val, selectedConversation.db_connection_id || null)
+            handleUpdateConversationSettings(val, selectedConversation.data_source_id || null)
           }}
         >
           <option value="">(none)</option>
@@ -577,14 +577,14 @@
       <div class="gear-popover-section">
         <label>DB Connection</label>
         <select
-          value={selectedConversation.db_connection_id || ''}
+          value={selectedConversation.data_source_id || ''}
           onchange={(e) => {
             const val = e.target.value ? parseInt(e.target.value) : null
             handleUpdateConversationSettings(selectedConversation.llm_provider_id || null, val)
           }}
         >
           <option value="">(none)</option>
-          {#each dbConnections as conn}
+          {#each dataSources as conn}
             <option value="{conn.id}">{conn.name}</option>
           {/each}
         </select>
@@ -759,9 +759,9 @@
 
           <div class="form-group">
             <label>Database Connection (optional)</label>
-            <select bind:value={selectedDBConnection}>
+            <select bind:value={selectedDataSource}>
               <option value={null}>Default</option>
-              {#each dbConnections as conn}
+              {#each dataSources as conn}
                 <option value={conn}>{conn.name} ({conn.type})</option>
               {/each}
             </select>

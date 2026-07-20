@@ -35,7 +35,7 @@ type SQLServerExtra struct {
 	Instance               string `json:"instance,omitempty"`
 }
 
-func parseSQLServerExtra(conn *models.DBConnection) SQLServerExtra {
+func parseSQLServerExtra(conn *models.DataSource) SQLServerExtra {
 	if conn.Extra == nil || *conn.Extra == "" {
 		return SQLServerExtra{Encrypt: true}
 	}
@@ -46,7 +46,7 @@ func parseSQLServerExtra(conn *models.DBConnection) SQLServerExtra {
 	return extra
 }
 
-func (d *SQLServerDriver) BuildDSN(conn *models.DBConnection) (string, error) {
+func (d *SQLServerDriver) BuildDSN(conn *models.DataSource) (string, error) {
 	if conn.Database == nil {
 		return "", fmt.Errorf("database name is required")
 	}
@@ -98,7 +98,7 @@ func (d *SQLServerDriver) BuildDSN(conn *models.DBConnection) (string, error) {
 	return u.String(), nil
 }
 
-func (d *SQLServerDriver) GetSchema(conn *models.DBConnection) (*DatabaseSchema, error) {
+func (d *SQLServerDriver) GetSchema(conn *models.DataSource) (*DataSchema, error) {
 	if conn.Database == nil {
 		return nil, fmt.Errorf("database name is required")
 	}
@@ -144,10 +144,10 @@ func (d *SQLServerDriver) GetSchema(conn *models.DBConnection) (*DatabaseSchema,
 		tables = append(tables, *table)
 	}
 
-	return &DatabaseSchema{Tables: tables}, nil
+	return &DataSchema{Tables: tables}, nil
 }
 
-func getSQLServerTableInfo(db *sql.DB, tableName string, config *models.DBConnectionConfig) (*TableInfo, error) {
+func getSQLServerTableInfo(db *sql.DB, tableName string, config *models.DataSourceConfig) (*TableInfo, error) {
 	colRows, err := db.Query(`
 		SELECT
 			c.COLUMN_NAME,

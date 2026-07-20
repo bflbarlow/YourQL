@@ -6,8 +6,8 @@ import (
 	"YourQL/pkg/models"
 )
 
-// DatabaseSchema represents the schema of a database.
-type DatabaseSchema struct {
+// DataSchema represents the schema of a database.
+type DataSchema struct {
 	Tables []TableInfo `json:"tables"`
 }
 
@@ -48,9 +48,9 @@ type ForeignKeyInfo struct {
 	OnUpdate  string `json:"on_update,omitempty"`
 }
 
-// GetDatabaseSchema introspects the database connected via the given DBConnection
+// GetDataSchema introspects the data source connected via the given DataSource
 // and returns its schema.
-func GetDatabaseSchema(conn *models.DBConnection) (*DatabaseSchema, error) {
+func GetDataSchema(conn *models.DataSource) (*DataSchema, error) {
 	driver, err := GetDriver(conn.Type)
 	if err != nil {
 		return nil, fmt.Errorf("unsupported database type: %s", conn.Type)

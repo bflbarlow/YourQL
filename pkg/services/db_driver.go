@@ -10,11 +10,11 @@ type DBDriver interface {
 	// OpenDriver returns the name passed to sql.Open() (e.g., "mysql", "pgx", "sqlite").
 	OpenDriver() string
 
-	// BuildDSN builds a connection string from a DBConnection.
-	BuildDSN(conn *models.DBConnection) (string, error)
+	// BuildDSN builds a connection string from a DataSource.
+	BuildDSN(conn *models.DataSource) (string, error)
 
 	// GetSchema introspects the database and returns its schema.
-	GetSchema(conn *models.DBConnection) (*DatabaseSchema, error)
+	GetSchema(conn *models.DataSource) (*DataSchema, error)
 
 	// DisplayName returns a human-readable name for UI and prompts (e.g., "PostgreSQL").
 	DisplayName() string
@@ -30,7 +30,7 @@ type DBDriver interface {
 // without using database/sql (e.g., BigQuery). If a driver implements this,
 // sql_execution.go will use QueryRowsNative instead of sql.Open/Query.
 type NativeQuerier interface {
-	QueryRowsNative(conn *models.DBConnection, query string) ([]string, [][]interface{}, error)
-	PingNative(conn *models.DBConnection) error
-	CloseNative(conn *models.DBConnection) error
+	QueryRowsNative(conn *models.DataSource, query string) ([]string, [][]interface{}, error)
+	PingNative(conn *models.DataSource) error
+	CloseNative(conn *models.DataSource) error
 }

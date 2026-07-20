@@ -34,7 +34,7 @@ type PostgresExtra struct {
 	SearchPath string `json:"search_path,omitempty"` // e.g., "public,my_schema"
 }
 
-func parsePostgresExtra(conn *models.DBConnection) PostgresExtra {
+func parsePostgresExtra(conn *models.DataSource) PostgresExtra {
 	if conn.Extra == nil || *conn.Extra == "" {
 		return PostgresExtra{SSLMode: "require"}
 	}
@@ -48,7 +48,7 @@ func parsePostgresExtra(conn *models.DBConnection) PostgresExtra {
 	return extra
 }
 
-func (d *PostgresDriver) BuildDSN(conn *models.DBConnection) (string, error) {
+func (d *PostgresDriver) BuildDSN(conn *models.DataSource) (string, error) {
 	if conn.Database == nil {
 		return "", fmt.Errorf("database name is required")
 	}
@@ -96,7 +96,7 @@ func (d *PostgresDriver) BuildDSN(conn *models.DBConnection) (string, error) {
 	return u.String(), nil
 }
 
-func (d *PostgresDriver) GetSchema(conn *models.DBConnection) (*DatabaseSchema, error) {
+func (d *PostgresDriver) GetSchema(conn *models.DataSource) (*DataSchema, error) {
 	if conn.Database == nil {
 		return nil, fmt.Errorf("database name is required")
 	}
@@ -142,10 +142,10 @@ func (d *PostgresDriver) GetSchema(conn *models.DBConnection) (*DatabaseSchema, 
 		tables = append(tables, *table)
 	}
 
-	return &DatabaseSchema{Tables: tables}, nil
+	return &DataSchema{Tables: tables}, nil
 }
 
-func getPostgresTableInfo(db *sql.DB, tableName string, config *models.DBConnectionConfig) (*TableInfo, error) {
+func getPostgresTableInfo(db *sql.DB, tableName string, config *models.DataSourceConfig) (*TableInfo, error) {
 	colRows, err := db.Query(`
 		SELECT column_name, data_type, is_nullable,
 			CASE WHEN column_name IN (

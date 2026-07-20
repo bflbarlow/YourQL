@@ -4,7 +4,7 @@
     activeConversation, 
     conversationMessages = [], 
     llmProviders = [], 
-    dbConnections = [],
+    dataSources = [],
     processingMessage = '', 
     messageError = null, 
     userMessage = '',
@@ -201,8 +201,8 @@
         {#if activeConversation?.llm_provider_id}
           <span class="meta-tag">{llmProviders.find(p => p.id === activeConversation.llm_provider_id)?.name || 'LLM'}</span>
         {/if}
-        {#if activeConversation?.db_connection_id}
-          <span class="meta-tag">{dbConnections.find(c => c.id === activeConversation.db_connection_id)?.name || 'DB'}</span>
+        {#if activeConversation?.data_source_id}
+          <span class="meta-tag">{dataSources.find(c => c.id === activeConversation.data_source_id)?.name || 'DB'}</span>
         {/if}
         {#if showContextDetails && tokenSummary.msgCount > 0}
           <span class="meta-tag context-tag">

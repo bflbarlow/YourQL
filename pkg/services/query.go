@@ -9,11 +9,11 @@ import (
 	"YourQL/pkg/models"
 )
 
-func CreateQuery(conversationID *uint, question string, llmProviderID, dbConnectionID *uint) (*models.Query, error) {
+func CreateQuery(conversationID *uint, question string, llmProviderID, dataSourceID *uint) (*models.Query, error) {
 	now := time.Now().UTC()
 	result, err := models.DB.Exec(
-		"INSERT INTO queries (conversation_id, question, original_query, llm_provider_id, db_connection_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-		conversationID, question, question, llmProviderID, dbConnectionID, "pending", now, now,
+		"INSERT INTO queries (conversation_id, question, original_query, llm_provider_id, data_source_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+		conversationID, question, question, llmProviderID, dataSourceID, "pending", now, now,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create query: %w", err)
@@ -33,7 +33,7 @@ func GetQueryByID(id uint) (*models.Query, error) {
 	var genSQL, resultSummary, errMsg, costEstimate sql.NullString
 	var execTime, tokensUsed sql.NullInt64
 	err := models.DB.QueryRow(
-		`SELECT id, conversation_id, question, generated_sql, db_connection_id, llm_provider_id, status, result_summary, error_message, execution_time_ms, tokens_used, cost_estimate, created_at, updated_at FROM queries WHERE id = ?`,
+		`SELECT id, conversation_id, question, generated_sql, data_source_id, llm_provider_id, status, result_summary, error_message, execution_time_ms, tokens_used, cost_estimate, created_at, updated_at FROM queries WHERE id = ?`,
 		id,
 	).Scan(
 		&q.ID, &convID, &q.Question, &genSQL,
@@ -56,7 +56,7 @@ func GetQueryByID(id uint) (*models.Query, error) {
 	}
 	if dbConnID.Valid {
 		dbid := uint(dbConnID.Int64)
-		q.DBConnectionID = &dbid
+		q.DataSourceID = &dbid
 	}
 	if genSQL.Valid {
 		s := genSQL.String

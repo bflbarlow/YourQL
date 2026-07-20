@@ -196,8 +196,8 @@ func (a *App) TestLLMProviderConnection(id uint) (string, error) {
 
 // ==================== Database Connection Settings ====================
 
-// DBConnectionSetting represents a database connection configuration for the frontend
-type DBConnectionSetting struct {
+// DataSourceSetting represents a database connection configuration for the frontend
+type DataSourceSetting struct {
 	ID                   uint   `json:"id"`
 	Name                 string `json:"name"`
 	Type                 string `json:"type"`
@@ -215,13 +215,13 @@ type DBConnectionSetting struct {
 	Extra                string `json:"extra,omitempty"`
 }
 
-func (a *App) ListDBConnections() ([]DBConnectionSetting, error) {
-	connections, err := services.ListDBConnectionsByWorkspace()
+func (a *App) ListDataSources() ([]DataSourceSetting, error) {
+	connections, err := services.ListDataSourcesByWorkspace()
 	if err != nil {
 		return nil, err
 	}
 
-	settings := make([]DBConnectionSetting, 0, len(connections))
+	settings := make([]DataSourceSetting, 0, len(connections))
 	for _, c := range connections {
 		host := ""
 		if c.Host != nil {
@@ -250,7 +250,7 @@ func (a *App) ListDBConnections() ([]DBConnectionSetting, error) {
 		var configStr string
 		if c.Config != nil && *c.Config != "" {
 			configStr = *c.Config
-			var config models.DBConnectionConfig
+			var config models.DataSourceConfig
 			if err := json.Unmarshal([]byte(*c.Config), &config); err == nil {
 				explorationAllowed = config.ExplorationAllowed
 				if config.MaxExplorationRounds > 0 {
@@ -267,7 +267,7 @@ func (a *App) ListDBConnections() ([]DBConnectionSetting, error) {
 			extraStr = *c.Extra
 		}
 
-		settings = append(settings, DBConnectionSetting{
+		settings = append(settings, DataSourceSetting{
 			ID:                   c.ID,
 			Name:                 c.Name,
 			Type:                 c.Type,
@@ -288,13 +288,13 @@ func (a *App) ListDBConnections() ([]DBConnectionSetting, error) {
 	return settings, nil
 }
 
-func (a *App) CreateDBConnection(name, dbType, host string, port int, database, username, password, sslMode, config, extra string) error {
-	_, err := services.CreateDBConnection(name, dbType, host, port, database, username, password, sslMode, config, extra)
+func (a *App) CreateDataSource(name, dbType, host string, port int, database, username, password, sslMode, config, extra string) error {
+	_, err := services.CreateDataSource(name, dbType, host, port, database, username, password, sslMode, config, extra)
 	return err
 }
 
-func (a *App) UpdateDBConnection(id uint, name, host, database, username, password, sslMode string, port int, config, extra string) error {
-	_, err := services.UpdateDBConnection(id, &name, &host, &port, &database, &username, &password, &sslMode, &config, &extra)
+func (a *App) UpdateDataSource(id uint, name, host, database, username, password, sslMode string, port int, config, extra string) error {
+	_, err := services.UpdateDataSource(id, &name, &host, &port, &database, &username, &password, &sslMode, &config, &extra)
 	return err
 }
 
@@ -303,30 +303,30 @@ func (a *App) GetSupportedDBTypes() []services.DBTypeInfo {
 	return services.GetSupportedDBTypes()
 }
 
-func (a *App) DeleteDBConnection(id uint) error {
-	return services.DeleteDBConnection(id)
+func (a *App) DeleteDataSource(id uint) error {
+	return services.DeleteDataSource(id)
 }
 
-func (a *App) SetDefaultDBConnection(id uint) error {
-	return services.SetDefaultDBConnection(id)
+func (a *App) SetDefaultDataSource(id uint) error {
+	return services.SetDefaultDataSource(id)
 }
 
-func (a *App) TestDBConnection(id uint) (string, error) {
-	conn, err := services.GetDBConnectionByID(id)
+func (a *App) TestDataSource(id uint) (string, error) {
+	conn, err := services.GetDataSourceByID(id)
 	if err != nil {
 		return "", err
 	}
 
-	if err := services.TestDBConnection(conn); err != nil {
+	if err := services.TestDataSource(conn); err != nil {
 		return fmt.Sprintf("Connection failed: %v", err), nil
 	}
 
 	return "Connection successful.", nil
 }
 
-// TestNewDBConnection tests a new connection using form fields without saving first.
-func (a *App) TestNewDBConnection(name, dbType, host string, port int, database, username, password, sslMode, extra string) (string, error) {
-	conn := &models.DBConnection{
+// TestNewDataSource tests a new connection using form fields without saving first.
+func (a *App) TestNewDataSource(name, dbType, host string, port int, database, username, password, sslMode, extra string) (string, error) {
+	conn := &models.DataSource{
 		Name:     name,
 		Type:     dbType,
 		Host:     &host,
@@ -337,7 +337,7 @@ func (a *App) TestNewDBConnection(name, dbType, host string, port int, database,
 		SSLMode:  &sslMode,
 		Extra:    &extra,
 	}
-	if err := services.TestDBConnection(conn); err != nil {
+	if err := services.TestDataSource(conn); err != nil {
 		return fmt.Sprintf("Connection failed: %v", err), nil
 	}
 	return "Connection successful.", nil
@@ -366,12 +366,12 @@ type SchemaColumnPreview struct {
 }
 
 func (a *App) GetSchemaPreview(id uint) (*SchemaPreview, error) {
-	conn, err := services.GetDBConnectionByID(id)
+	conn, err := services.GetDataSourceByID(id)
 	if err != nil {
 		return nil, err
 	}
 
-	schema, err := services.GetDatabaseSchema(conn)
+	schema, err := services.GetDataSchema(conn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch schema: %w", err)
 	}
@@ -413,7 +413,7 @@ type QueryResult struct {
 
 // ExecuteQuery runs a SQL query against a configured database connection
 func (a *App) ExecuteQuery(connID uint, query string) (*QueryResult, error) {
-	conn, err := services.GetDBConnectionByID(connID)
+	conn, err := services.GetDataSourceByID(connID)
 	if err != nil {
 		return nil, err
 	}

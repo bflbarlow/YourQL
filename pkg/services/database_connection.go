@@ -19,7 +19,7 @@ func openDriverName(dbType string) string {
 }
 
 // BuildDSN builds a connection string based on the database type.
-func BuildDSN(conn *models.DBConnection) (string, error) {
+func BuildDSN(conn *models.DataSource) (string, error) {
 	driver, err := GetDriver(conn.Type)
 	if err != nil {
 		return "", err
@@ -27,8 +27,8 @@ func BuildDSN(conn *models.DBConnection) (string, error) {
 	return driver.BuildDSN(conn)
 }
 
-// TestDBConnection tests if a database connection is valid and reachable.
-func TestDBConnection(conn *models.DBConnection) error {
+// TestDataSource tests if a database connection is valid and reachable.
+func TestDataSource(conn *models.DataSource) error {
 	// Use NativeQuerier if available (e.g., BigQuery)
 	driver, _ := GetDriver(conn.Type)
 	if nq, ok := driver.(NativeQuerier); ok {

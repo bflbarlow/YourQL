@@ -33,7 +33,7 @@ type RedshiftExtra struct {
 	SearchPath string `json:"search_path,omitempty"`
 }
 
-func parseRedshiftExtra(conn *models.DBConnection) RedshiftExtra {
+func parseRedshiftExtra(conn *models.DataSource) RedshiftExtra {
 	if conn.Extra == nil || *conn.Extra == "" {
 		return RedshiftExtra{SSLMode: "require"}
 	}
@@ -44,7 +44,7 @@ func parseRedshiftExtra(conn *models.DBConnection) RedshiftExtra {
 	return extra
 }
 
-func (d *RedshiftDriver) BuildDSN(conn *models.DBConnection) (string, error) {
+func (d *RedshiftDriver) BuildDSN(conn *models.DataSource) (string, error) {
 	if conn.Database == nil {
 		return "", fmt.Errorf("database name is required")
 	}
@@ -94,7 +94,7 @@ func (d *RedshiftDriver) BuildDSN(conn *models.DBConnection) (string, error) {
 	return u.String(), nil
 }
 
-func (d *RedshiftDriver) GetSchema(conn *models.DBConnection) (*DatabaseSchema, error) {
+func (d *RedshiftDriver) GetSchema(conn *models.DataSource) (*DataSchema, error) {
 	// Reuse the PostgreSQL driver's GetSchema — identical INFORMATION_SCHEMA.
 	pgDriver := &PostgresDriver{}
 	return pgDriver.GetSchema(conn)

@@ -86,14 +86,14 @@ func migrate() error {
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
 
-		// Database Connections
-		`CREATE TABLE IF NOT EXISTS db_connections (
+		// Data Sources
+		`CREATE TABLE IF NOT EXISTS data_sources (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL,
 			type TEXT NOT NULL,
 			host TEXT,
 			port INTEGER,
-			database TEXT,
+			database_name TEXT,
 			username TEXT,
 			password TEXT,
 			ssl_mode TEXT,
@@ -101,6 +101,8 @@ func migrate() error {
 			is_active INTEGER DEFAULT 1,
 			config TEXT,
 			extra TEXT,
+			file_path TEXT DEFAULT '',
+			file_type TEXT DEFAULT '',
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
@@ -108,7 +110,7 @@ func migrate() error {
 		// Conversations
 		`CREATE TABLE IF NOT EXISTS conversations (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			db_connection_id INTEGER,
+			data_source_id INTEGER,
 			llm_provider_id INTEGER,
 			title TEXT,
 			status TEXT DEFAULT 'active',
@@ -121,7 +123,7 @@ func migrate() error {
 			deleted_at DATETIME,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			FOREIGN KEY (db_connection_id) REFERENCES db_connections(id) ON DELETE SET NULL,
+			FOREIGN KEY (data_source_id) REFERENCES data_sources(id) ON DELETE SET NULL,
 			FOREIGN KEY (llm_provider_id) REFERENCES llm_providers(id) ON DELETE SET NULL
 		)`,
 
@@ -144,10 +146,10 @@ func migrate() error {
 			conversation_id INTEGER,
 			question TEXT NOT NULL,
 			llm_provider_id INTEGER,
-			db_connection_id INTEGER,
+			data_source_id INTEGER,
 			original_query TEXT,
 			generated_sql TEXT,
-			db_connection_name TEXT,
+			data_source_name TEXT,
 			status TEXT DEFAULT 'pending',
 			result_summary TEXT,
 			error_message TEXT,
@@ -179,7 +181,51 @@ func migrate() error {
 	ensureColumn("conversation_messages", "llm_content", "TEXT")
 	ensureColumn("conversation_messages", "sql_results", "TEXT")
 	ensureColumn("conversation_messages", "metadata", "TEXT")
-	ensureColumn("db_connections", "extra", "TEXT")
+
+	// Migration: rename db_connections → data_sources (v0.3.0)
+	_ = runMigration("rename_db_connections_to_data_sources", func() error {
+		// Check if old table exists
+		var count int
+		DB.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='db_connections'").Scan(&count)
+		if count == 0 {
+			return nil // already migrated or fresh install
+		}
+		log.Println("Migrating: db_connections → data_sources")
+
+		// Rename table (SQLite auto-updates FK references)
+		if _, err := DB.Exec("ALTER TABLE db_connections RENAME TO data_sources"); err != nil {
+			return fmt.Errorf("rename table: %w", err)
+		}
+
+		// Rename database column to database_name
+		if _, err := DB.Exec("ALTER TABLE data_sources RENAME COLUMN \"database\" TO database_name"); err != nil {
+			log.Printf("Warning: could not rename database column (may already be renamed): %v", err)
+		}
+
+		// Add file columns
+		ensureColumn("data_sources", "file_path", "TEXT DEFAULT ''")
+		ensureColumn("data_sources", "file_type", "TEXT DEFAULT ''")
+
+		// Rename FK columns in conversations
+		if _, err := DB.Exec("ALTER TABLE conversations RENAME COLUMN db_connection_id TO data_source_id"); err != nil {
+			log.Printf("Warning: could not rename db_connection_id in conversations: %v", err)
+		}
+
+		// Rename FK columns in queries
+		if _, err := DB.Exec("ALTER TABLE queries RENAME COLUMN db_connection_id TO data_source_id"); err != nil {
+			log.Printf("Warning: could not rename db_connection_id in queries: %v", err)
+		}
+		if _, err := DB.Exec("ALTER TABLE queries RENAME COLUMN db_connection_name TO data_source_name"); err != nil {
+			log.Printf("Warning: could not rename db_connection_name in queries: %v", err)
+		}
+
+		log.Println("Migration complete: db_connections → data_sources")
+		return nil
+	})
+
+	ensureColumn("data_sources", "extra", "TEXT")
+	ensureColumn("data_sources", "file_path", "TEXT DEFAULT ''")
+	ensureColumn("data_sources", "file_type", "TEXT DEFAULT ''")
 
 	// Remove legacy user_id column if it exists (from older schemas)
 	dropColumnIfExists("conversations", "user_id")

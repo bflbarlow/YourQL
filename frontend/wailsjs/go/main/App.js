@@ -14,8 +14,8 @@ export function CreateConversation(arg1, arg2, arg3) {
   return window['go']['main']['App']['CreateConversation'](arg1, arg2, arg3);
 }
 
-export function CreateDBConnection(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10) {
-  return window['go']['main']['App']['CreateDBConnection'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10);
+export function CreateDataSource(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10) {
+  return window['go']['main']['App']['CreateDataSource'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10);
 }
 
 export function CreateLLMProvider(arg1, arg2, arg3, arg4, arg5) {
@@ -26,8 +26,8 @@ export function DeleteConversation(arg1) {
   return window['go']['main']['App']['DeleteConversation'](arg1);
 }
 
-export function DeleteDBConnection(arg1) {
-  return window['go']['main']['App']['DeleteDBConnection'](arg1);
+export function DeleteDataSource(arg1) {
+  return window['go']['main']['App']['DeleteDataSource'](arg1);
 }
 
 export function DeleteLLMProvider(arg1) {
@@ -62,8 +62,8 @@ export function ListConversations() {
   return window['go']['main']['App']['ListConversations']();
 }
 
-export function ListDBConnections() {
-  return window['go']['main']['App']['ListDBConnections']();
+export function ListDataSources() {
+  return window['go']['main']['App']['ListDataSources']();
 }
 
 export function ListDiscussions() {
@@ -82,24 +82,24 @@ export function RestoreConversation(arg1) {
   return window['go']['main']['App']['RestoreConversation'](arg1);
 }
 
-export function SetDefaultDBConnection(arg1) {
-  return window['go']['main']['App']['SetDefaultDBConnection'](arg1);
+export function SetDefaultDataSource(arg1) {
+  return window['go']['main']['App']['SetDefaultDataSource'](arg1);
 }
 
 export function SetDefaultLLMProvider(arg1) {
   return window['go']['main']['App']['SetDefaultLLMProvider'](arg1);
 }
 
-export function TestDBConnection(arg1) {
-  return window['go']['main']['App']['TestDBConnection'](arg1);
+export function TestDataSource(arg1) {
+  return window['go']['main']['App']['TestDataSource'](arg1);
 }
 
 export function TestLLMProviderConnection(arg1) {
   return window['go']['main']['App']['TestLLMProviderConnection'](arg1);
 }
 
-export function TestNewDBConnection(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9) {
-  return window['go']['main']['App']['TestNewDBConnection'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9);
+export function TestNewDataSource(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9) {
+  return window['go']['main']['App']['TestNewDataSource'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9);
 }
 
 export function UpdateConversationContextDetails(arg1, arg2) {
@@ -134,8 +134,8 @@ export function UpdateConversationTitle(arg1, arg2) {
   return window['go']['main']['App']['UpdateConversationTitle'](arg1, arg2);
 }
 
-export function UpdateDBConnection(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10) {
-  return window['go']['main']['App']['UpdateDBConnection'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10);
+export function UpdateDataSource(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10) {
+  return window['go']['main']['App']['UpdateDataSource'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10);
 }
 
 export function UpdateGeneralSettings(arg1) {

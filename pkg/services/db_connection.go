@@ -11,7 +11,7 @@ import (
 	"YourQL/pkg/models"
 )
 
-func CreateDBConnection(name, dbType, host string, port int, database, username, password, sslMode string, configJSON, extraJSON string) (*models.DBConnection, error) {
+func CreateDataSource(name, dbType, host string, port int, database, username, password, sslMode string, configJSON, extraJSON string) (*models.DataSource, error) {
 	now := time.Now().UTC()
 	isActive := true
 
@@ -28,7 +28,7 @@ func CreateDBConnection(name, dbType, host string, port int, database, username,
 	}
 
 	result, err := models.DB.Exec(
-		"INSERT INTO db_connections (name, type, host, port, `database`, username, password, ssl_mode, is_default, is_active, config, extra, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		"INSERT INTO data_sources (name, type, host, port, database_name, username, password, ssl_mode, is_default, is_active, config, extra, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		name, dbType, host, port, database, username, password, sslMode, false, isActive, configArg, extraArg, now, now,
 	)
 	if err != nil {
@@ -40,7 +40,7 @@ func CreateDBConnection(name, dbType, host string, port int, database, username,
 		return nil, fmt.Errorf("failed to get database connection ID: %w", err)
 	}
 
-	conn := &models.DBConnection{
+	conn := &models.DataSource{
 		ID:       uint(id),
 		Name:     name,
 		Type:     dbType,
@@ -52,13 +52,13 @@ func CreateDBConnection(name, dbType, host string, port int, database, username,
 	return conn, nil
 }
 
-func GetDBConnectionByID(id uint) (*models.DBConnection, error) {
-	var c models.DBConnection
+func GetDataSourceByID(id uint) (*models.DataSource, error) {
+	var c models.DataSource
 	var hostNull, databaseNull, usernameNull, passwordNull, sslModeNull sql.NullString
 	var configNull, extraNull []byte
 	var portNull sql.NullInt64
 	err := models.DB.QueryRow(
-		"SELECT id, name, type, host, port, `database`, username, password, ssl_mode, is_default, is_active, config, extra, created_at, updated_at FROM db_connections WHERE id = ? LIMIT 1",
+		"SELECT id, name, type, host, port, database_name, username, password, ssl_mode, is_default, is_active, config, extra, created_at, updated_at FROM data_sources WHERE id = ? LIMIT 1",
 		id,
 	).Scan(
 		&c.ID, &c.Name, &c.Type, &hostNull, &portNull,
@@ -101,18 +101,18 @@ func GetDBConnectionByID(id uint) (*models.DBConnection, error) {
 	return &c, nil
 }
 
-func ListDBConnectionsByWorkspace() ([]*models.DBConnection, error) {
+func ListDataSourcesByWorkspace() ([]*models.DataSource, error) {
 	rows, err := models.DB.Query(
-		"SELECT id, name, type, host, port, `database`, username, password, ssl_mode, is_default, is_active, config, extra, created_at, updated_at FROM db_connections ORDER BY is_default DESC, created_at DESC",
+		"SELECT id, name, type, host, port, database_name, username, password, ssl_mode, is_default, is_active, config, extra, created_at, updated_at FROM data_sources ORDER BY is_default DESC, created_at DESC",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list database connections: %w", err)
 	}
 	defer rows.Close()
 
-	var connections []*models.DBConnection
+	var connections []*models.DataSource
 	for rows.Next() {
-		var c models.DBConnection
+		var c models.DataSource
 		var hostNull, databaseNull, usernameNull, passwordNull, sslModeNull sql.NullString
 		var configNull, extraNull []byte
 		var portNull sql.NullInt64
@@ -156,8 +156,8 @@ func ListDBConnectionsByWorkspace() ([]*models.DBConnection, error) {
 	return connections, nil
 }
 
-func UpdateDBConnection(id uint, name *string, host *string, port *int, database *string, username *string, password *string, sslMode *string, configJSON *string, extraJSON *string) (*models.DBConnection, error) {
-	c, err := GetDBConnectionByID(id)
+func UpdateDataSource(id uint, name *string, host *string, port *int, database *string, username *string, password *string, sslMode *string, configJSON *string, extraJSON *string) (*models.DataSource, error) {
+	c, err := GetDataSourceByID(id)
 	if err != nil {
 		return nil, err
 	}
@@ -178,7 +178,7 @@ func UpdateDBConnection(id uint, name *string, host *string, port *int, database
 		args = append(args, *port)
 	}
 	if database != nil {
-		updates = append(updates, "`database` = ?")
+		updates = append(updates, "database_name = ?")
 		args = append(args, *database)
 	}
 	if username != nil {
@@ -215,17 +215,17 @@ func UpdateDBConnection(id uint, name *string, host *string, port *int, database
 	}
 
 	args = append(args, id)
-	query := fmt.Sprintf("UPDATE db_connections SET %s, updated_at = CURRENT_TIMESTAMP WHERE id = ?", strings.Join(updates, ", "))
+	query := fmt.Sprintf("UPDATE data_sources SET %s, updated_at = CURRENT_TIMESTAMP WHERE id = ?", strings.Join(updates, ", "))
 	_, err = models.DB.Exec(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to update database connection: %w", err)
 	}
 
-	return GetDBConnectionByID(id)
+	return GetDataSourceByID(id)
 }
 
-func DeleteDBConnection(id uint) error {
-	c, err := GetDBConnectionByID(id)
+func DeleteDataSource(id uint) error {
+	c, err := GetDataSourceByID(id)
 	if err != nil {
 		return err
 	}
@@ -236,7 +236,7 @@ func DeleteDBConnection(id uint) error {
 
 	var count int
 	err = models.DB.QueryRow(
-		"SELECT COUNT(*) FROM conversations WHERE db_connection_id = ? AND status = 'active'",
+		"SELECT COUNT(*) FROM conversations WHERE data_source_id = ? AND status = 'active'",
 		id,
 	).Scan(&count)
 	if err != nil {
@@ -246,17 +246,17 @@ func DeleteDBConnection(id uint) error {
 		return fmt.Errorf("cannot delete: %d active conversations reference this connection", count)
 	}
 
-	_, err = models.DB.Exec("DELETE FROM db_connections WHERE id = ?", id)
+	_, err = models.DB.Exec("DELETE FROM data_sources WHERE id = ?", id)
 	if err != nil {
 		return fmt.Errorf("failed to delete database connection: %w", err)
 	}
 	return nil
 }
 
-func SetDefaultDBConnection(connectionID uint) error {
+func SetDefaultDataSource(connectionID uint) error {
 	var exists bool
 	err := models.DB.QueryRow(
-		"SELECT EXISTS(SELECT 1 FROM db_connections WHERE id = ?)",
+		"SELECT EXISTS(SELECT 1 FROM data_sources WHERE id = ?)",
 		connectionID,
 	).Scan(&exists)
 	if err != nil {
@@ -266,12 +266,12 @@ func SetDefaultDBConnection(connectionID uint) error {
 		return errors.New("connection not found")
 	}
 
-	_, err = models.DB.Exec("UPDATE db_connections SET is_default = 0")
+	_, err = models.DB.Exec("UPDATE data_sources SET is_default = 0")
 	if err != nil {
 		return fmt.Errorf("failed to unset previous defaults: %w", err)
 	}
 
-	_, err = models.DB.Exec("UPDATE db_connections SET is_default = 1 WHERE id = ?", connectionID)
+	_, err = models.DB.Exec("UPDATE data_sources SET is_default = 1 WHERE id = ?", connectionID)
 	if err != nil {
 		return fmt.Errorf("failed to set default: %w", err)
 	}
@@ -279,13 +279,13 @@ func SetDefaultDBConnection(connectionID uint) error {
 	return nil
 }
 
-func GetDefaultDBConnection() (*models.DBConnection, error) {
-	var c models.DBConnection
+func GetDefaultDataSource() (*models.DataSource, error) {
+	var c models.DataSource
 	var hostNull, databaseNull, usernameNull, passwordNull, sslModeNull sql.NullString
 	var configNull, extraNull []byte
 	var portNull sql.NullInt64
 	err := models.DB.QueryRow(
-		"SELECT id, name, type, host, port, `database`, username, password, ssl_mode, is_default, is_active, config, extra, created_at, updated_at FROM db_connections WHERE is_default = 1 LIMIT 1",
+		"SELECT id, name, type, host, port, database_name, username, password, ssl_mode, is_default, is_active, config, extra, created_at, updated_at FROM data_sources WHERE is_default = 1 LIMIT 1",
 	).Scan(
 		&c.ID, &c.Name, &c.Type, &hostNull, &portNull,
 		&databaseNull, &usernameNull, &passwordNull, &sslModeNull,
@@ -297,7 +297,7 @@ func GetDefaultDBConnection() (*models.DBConnection, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get default database connection: %w", err)
 	}
-	log.Printf("[db_connection] Found default DB connection ID %d", c.ID)
+	log.Printf("[data_source] Found default data source ID %d", c.ID)
 	if hostNull.Valid {
 		c.Host = &hostNull.String
 	}

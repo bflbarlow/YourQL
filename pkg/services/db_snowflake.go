@@ -36,7 +36,7 @@ type SnowflakeExtra struct {
 	Authenticator string `json:"authenticator,omitempty"` // snowflake, oauth, externalbrowser
 }
 
-func parseSnowflakeExtra(conn *models.DBConnection) SnowflakeExtra {
+func parseSnowflakeExtra(conn *models.DataSource) SnowflakeExtra {
 	if conn.Extra == nil || *conn.Extra == "" {
 		return SnowflakeExtra{}
 	}
@@ -47,7 +47,7 @@ func parseSnowflakeExtra(conn *models.DBConnection) SnowflakeExtra {
 	return extra
 }
 
-func (d *SnowflakeDriver) BuildDSN(conn *models.DBConnection) (string, error) {
+func (d *SnowflakeDriver) BuildDSN(conn *models.DataSource) (string, error) {
 	if conn.Database == nil {
 		return "", fmt.Errorf("database name is required")
 	}
@@ -99,7 +99,7 @@ func (d *SnowflakeDriver) BuildDSN(conn *models.DBConnection) (string, error) {
 	return dsn, nil
 }
 
-func (d *SnowflakeDriver) GetSchema(conn *models.DBConnection) (*DatabaseSchema, error) {
+func (d *SnowflakeDriver) GetSchema(conn *models.DataSource) (*DataSchema, error) {
 	if conn.Database == nil {
 		return nil, fmt.Errorf("database name is required")
 	}
@@ -162,10 +162,10 @@ func (d *SnowflakeDriver) GetSchema(conn *models.DBConnection) (*DatabaseSchema,
 
 	log.Printf("[snowflake] GetSchema found %d tables in %d scanned", len(tables), tableCount)
 
-	return &DatabaseSchema{Tables: tables}, nil
+	return &DataSchema{Tables: tables}, nil
 }
 
-func getSnowflakeTableInfo(db *sql.DB, dbName, schemaName, tableName string, config *models.DBConnectionConfig) (*TableInfo, error) {
+func getSnowflakeTableInfo(db *sql.DB, dbName, schemaName, tableName string, config *models.DataSourceConfig) (*TableInfo, error) {
 	fullName := fmt.Sprintf("%s.%s.%s", dbName, schemaName, tableName)
 
 	// Use SELECT * LIMIT 0 to get column names and types via result metadata.

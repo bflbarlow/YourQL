@@ -38,7 +38,7 @@ type BigQueryExtra struct {
 	ServiceAccountKey string `json:"service_account_key,omitempty"` // JSON key content
 }
 
-func parseBigQueryExtra(conn *models.DBConnection) BigQueryExtra {
+func parseBigQueryExtra(conn *models.DataSource) BigQueryExtra {
 	if conn.Extra == nil || *conn.Extra == "" {
 		return BigQueryExtra{}
 	}
@@ -49,14 +49,14 @@ func parseBigQueryExtra(conn *models.DBConnection) BigQueryExtra {
 	return extra
 }
 
-func (d *BigQueryDriver) BuildDSN(conn *models.DBConnection) (string, error) {
+func (d *BigQueryDriver) BuildDSN(conn *models.DataSource) (string, error) {
 	// BigQuery doesn't use traditional DSNs. Return a placeholder.
 	extra := parseBigQueryExtra(conn)
 	log.Printf("[bigquery] BuildDSN for project %s, dataset %s", extra.ProjectID, extra.Dataset)
 	return fmt.Sprintf("bigquery://%s/%s", extra.ProjectID, extra.Dataset), nil
 }
 
-func (d *BigQueryDriver) getClient(conn *models.DBConnection) (*bigquery.Client, error) {
+func (d *BigQueryDriver) getClient(conn *models.DataSource) (*bigquery.Client, error) {
 	extra := parseBigQueryExtra(conn)
 	if extra.ProjectID == "" {
 		return nil, fmt.Errorf("BigQuery project_id is required (set in extra.project_id)")
@@ -75,7 +75,7 @@ func (d *BigQueryDriver) getClient(conn *models.DBConnection) (*bigquery.Client,
 	return client, nil
 }
 
-func (d *BigQueryDriver) PingNative(conn *models.DBConnection) error {
+func (d *BigQueryDriver) PingNative(conn *models.DataSource) error {
 	client, err := d.getClient(conn)
 	if err != nil {
 		return err
@@ -95,12 +95,12 @@ func (d *BigQueryDriver) PingNative(conn *models.DBConnection) error {
 	return nil
 }
 
-func (d *BigQueryDriver) CloseNative(conn *models.DBConnection) error {
+func (d *BigQueryDriver) CloseNative(conn *models.DataSource) error {
 	// BigQuery client is created per-query, closed by the caller
 	return nil
 }
 
-func (d *BigQueryDriver) QueryRowsNative(conn *models.DBConnection, query string) ([]string, [][]interface{}, error) {
+func (d *BigQueryDriver) QueryRowsNative(conn *models.DataSource, query string) ([]string, [][]interface{}, error) {
 	client, err := d.getClient(conn)
 	if err != nil {
 		return nil, nil, err
@@ -173,7 +173,7 @@ func formatBigQueryValue(v bigquery.Value) interface{} {
 }
 
 // GetSchema for BigQuery uses the INFORMATION_SCHEMA views.
-func (d *BigQueryDriver) GetSchema(conn *models.DBConnection) (*DatabaseSchema, error) {
+func (d *BigQueryDriver) GetSchema(conn *models.DataSource) (*DataSchema, error) {
 	extra := parseBigQueryExtra(conn)
 	if extra.ProjectID == "" {
 		return nil, fmt.Errorf("BigQuery project_id is required")
@@ -232,10 +232,10 @@ func (d *BigQueryDriver) GetSchema(conn *models.DBConnection) (*DatabaseSchema, 
 		}
 	}
 
-	return &DatabaseSchema{Tables: tables}, nil
+	return &DataSchema{Tables: tables}, nil
 }
 
-func getBigQueryTableInfo(client *bigquery.Client, extra BigQueryExtra, tableName string, config *models.DBConnectionConfig, ctx context.Context) (*TableInfo, error) {
+func getBigQueryTableInfo(client *bigquery.Client, extra BigQueryExtra, tableName string, config *models.DataSourceConfig, ctx context.Context) (*TableInfo, error) {
 	columnsQuery := fmt.Sprintf(`
 		SELECT column_name, data_type, is_nullable,
 			CASE WHEN column_name IN (

@@ -26,7 +26,7 @@ func (d *MySQLDriver) SQLDialectHint() string {
 	return "MySQL — backtick `identifier` quoting, LIMIT for row limits, INFORMATION_SCHEMA for metadata"
 }
 
-func (d *MySQLDriver) BuildDSN(conn *models.DBConnection) (string, error) {
+func (d *MySQLDriver) BuildDSN(conn *models.DataSource) (string, error) {
 	if conn.Database == nil {
 		return "", fmt.Errorf("database name is required")
 	}
@@ -68,7 +68,7 @@ func (d *MySQLDriver) BuildDSN(conn *models.DBConnection) (string, error) {
 	return dsn, nil
 }
 
-func (d *MySQLDriver) GetSchema(conn *models.DBConnection) (*DatabaseSchema, error) {
+func (d *MySQLDriver) GetSchema(conn *models.DataSource) (*DataSchema, error) {
 	if conn.Database == nil {
 		return nil, fmt.Errorf("database name is required")
 	}
@@ -117,11 +117,11 @@ func (d *MySQLDriver) GetSchema(conn *models.DBConnection) (*DatabaseSchema, err
 		tables = append(tables, *table)
 	}
 
-	return &DatabaseSchema{Tables: tables}, nil
+	return &DataSchema{Tables: tables}, nil
 }
 
 // getMySQLTableInfo retrieves column information, row count, indexes, and foreign keys for a MySQL table.
-func getMySQLTableInfo(db *sql.DB, dbName, tableName string, config *models.DBConnectionConfig) (*TableInfo, error) {
+func getMySQLTableInfo(db *sql.DB, dbName, tableName string, config *models.DataSourceConfig) (*TableInfo, error) {
 	colRows, err := db.Query(`
 		SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_KEY, COLUMN_DEFAULT
 		FROM INFORMATION_SCHEMA.COLUMNS

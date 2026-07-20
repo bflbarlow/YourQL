@@ -5,11 +5,11 @@ import (
 	"time"
 )
 
-// DBConnection represents a database connection.
-type DBConnection struct {
+// DataSource represents a data connection (database, file, etc.).
+type DataSource struct {
 	ID         uint      `json:"id"`
 	Name       string    `json:"name"`
-	Type       string    `json:"type"` // mysql, postgres, sqlite
+	Type       string    `json:"type"` // mysql, postgres, sqlite, csv, xlsx
 	Host       *string   `json:"host,omitempty"`
 	Port       *int      `json:"port,omitempty"`
 	Database   *string   `json:"database,omitempty"`
@@ -20,12 +20,14 @@ type DBConnection struct {
 	IsActive   bool      `json:"is_active"`
 	Config     *string   `json:"config,omitempty"`
 	Extra      *string   `json:"extra,omitempty"`
+	FilePath   *string   `json:"file_path,omitempty"`
+	FileType   *string   `json:"file_type,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
 }
 
-// DBConnectionConfig holds additional configuration for a database connection.
-type DBConnectionConfig struct {
+// DataSourceConfig holds additional configuration for a data source.
+type DataSourceConfig struct {
 	SystemPrompt         string            `json:"system_prompt,omitempty"`
 	BusinessRules        []string          `json:"business_rules,omitempty"`
 	TableDescriptions    map[string]string `json:"table_descriptions,omitempty"`
@@ -43,18 +45,18 @@ type DBConnectionConfig struct {
 	QueryLengthThreshold int               `json:"query_length_threshold,omitempty"`
 }
 
-func (c *DBConnection) ParseConfig() (*DBConnectionConfig, error) {
+func (c *DataSource) ParseConfig() (*DataSourceConfig, error) {
 	if c.Config == nil || *c.Config == "" {
-		return &DBConnectionConfig{}, nil
+		return &DataSourceConfig{}, nil
 	}
-	var config DBConnectionConfig
+	var config DataSourceConfig
 	if err := json.Unmarshal([]byte(*c.Config), &config); err != nil {
 		return nil, err
 	}
 	return &config, nil
 }
 
-func (c *DBConnection) SetConfig(config *DBConnectionConfig) error {
+func (c *DataSource) SetConfig(config *DataSourceConfig) error {
 	if config == nil {
 		c.Config = nil
 		return nil

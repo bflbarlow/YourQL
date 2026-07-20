@@ -148,14 +148,14 @@ func ProcessUserMessage(conversationID uint, userMessage string, onPhase func(st
 	}
 
 	// Step 5: Determine database connection
-	var dbConnection *models.DBConnection
-	if conversation.DBConnectionID != nil {
-		dbConnection, err = GetDBConnectionByID(*conversation.DBConnectionID)
+	var dbConnection *models.DataSource
+	if conversation.DataSourceID != nil {
+		dbConnection, err = GetDataSourceByID(*conversation.DataSourceID)
 		if err != nil {
 			return fmt.Errorf("failed to get DB connection: %w", err)
 		}
 	} else {
-		dbConnection, err = GetDefaultDBConnection()
+		dbConnection, err = GetDefaultDataSource()
 		if err != nil {
 			return fmt.Errorf("failed to get default DB connection: %w", err)
 		}
@@ -167,14 +167,14 @@ func ProcessUserMessage(conversationID uint, userMessage string, onPhase func(st
 		return fmt.Errorf("failed to create query record: %w", err)
 	}
 	if dbConnection != nil {
-		query.DBConnectionID = &dbConnection.ID
-		_, _ = models.DB.Exec("UPDATE queries SET db_connection_id = ? WHERE id = ?", dbConnection.ID, query.ID)
+		query.DataSourceID = &dbConnection.ID
+		_, _ = models.DB.Exec("UPDATE queries SET data_source_id = ? WHERE id = ?", dbConnection.ID, query.ID)
 	}
 
 	// Step 7: Build context (database schema)
-	var schema *DatabaseSchema
+	var schema *DataSchema
 	if dbConnection != nil {
-		schema, err = GetDatabaseSchema(dbConnection)
+		schema, err = GetDataSchema(dbConnection)
 		if err != nil {
 			log.Printf("Failed to fetch schema for %s: %v", dbConnection.Type, err)
 			_ = UpdateQueryStatus(query.ID, "error", nil, nil, stringPtr(fmt.Sprintf("Failed to fetch database schema: %v", err)), nil, nil, nil)
@@ -473,7 +473,7 @@ func storePayload(conversationID uint, round any, label, requestJSON, responseJS
 }
 
 // buildLlmMessages constructs the message list for the LLM.
-func buildLlmMessages(userMessage string, history []*models.ConversationMessage, schema *DatabaseSchema, dbConnection *models.DBConnection) []ChatMessage {
+func buildLlmMessages(userMessage string, history []*models.ConversationMessage, schema *DataSchema, dbConnection *models.DataSource) []ChatMessage {
 	messages := []ChatMessage{}
 
 	hasDB := dbConnection != nil
@@ -570,7 +570,7 @@ func (er *ExplorationResult) ToMessageContent() string {
 }
 
 // executeFinalQueryWithRetry wraps SQL execution in a retry loop.
-func executeFinalQueryWithRetry(ctx context.Context, query *models.Query, resp LLMResponse, client LLMClient, llmMessages []ChatMessage, dbConnection *models.DBConnection, conversation *models.Conversation, userMessage string, explorationResults []ExplorationResult, maxRetries int) {
+func executeFinalQueryWithRetry(ctx context.Context, query *models.Query, resp LLMResponse, client LLMClient, llmMessages []ChatMessage, dbConnection *models.DataSource, conversation *models.Conversation, userMessage string, explorationResults []ExplorationResult, maxRetries int) {
 	lastSQL := ""
 	var lastErr error
 
@@ -748,7 +748,7 @@ func formatSQLResultsForLLM(sqlResultsJSON string) string {
 }
 
 // buildSystemPrompt creates the system prompt with schema and instructions.
-func buildSystemPrompt(schema *DatabaseSchema, hasDB bool, dbConnection *models.DBConnection) string {
+func buildSystemPrompt(schema *DataSchema, hasDB bool, dbConnection *models.DataSource) string {
 	var sb strings.Builder
 	
 	if dbConnection != nil {
@@ -774,7 +774,7 @@ func buildSystemPrompt(schema *DatabaseSchema, hasDB bool, dbConnection *models.
 
 	if hasDB && schema != nil && len(schema.Tables) > 0 {
 		sb.WriteString("## Database Schema\n")
-		var config *models.DBConnectionConfig
+		var config *models.DataSourceConfig
 		var configErr error
 		if dbConnection != nil {
 			config, configErr = dbConnection.ParseConfig()
@@ -894,7 +894,7 @@ func buildSystemPrompt(schema *DatabaseSchema, hasDB bool, dbConnection *models.
 }
 
 // renderSQLResults renders a successful SQL query result as an assistant message.
-func renderSQLResults(query *models.Query, resp LLMResponse, dbConnection *models.DBConnection, conversationID uint, explorationResults []ExplorationResult, results *QueryResult, summary *string) {
+func renderSQLResults(query *models.Query, resp LLMResponse, dbConnection *models.DataSource, conversationID uint, explorationResults []ExplorationResult, results *QueryResult, summary *string) {
 	resultSummary := formatResults(results)
 
 	var explanation string
@@ -1036,7 +1036,7 @@ func formatSQLResultsForLLMFromQueryResult(result *QueryResult) string {
 }
 
 // renderSQLError renders a failed SQL query as an assistant message.
-func renderSQLError(query *models.Query, resp LLMResponse, dbConnection *models.DBConnection, conversationID uint, explorationResults []ExplorationResult, lastErr error) {
+func renderSQLError(query *models.Query, resp LLMResponse, dbConnection *models.DataSource, conversationID uint, explorationResults []ExplorationResult, lastErr error) {
 	if lastErr != nil {
 		_ = UpdateQueryStatus(query.ID, "error", &resp.SQLQuery, nil, stringPtr(lastErr.Error()), nil, nil, nil)
 	}

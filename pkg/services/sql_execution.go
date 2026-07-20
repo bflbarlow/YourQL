@@ -48,7 +48,7 @@ func humanizeColumnName(col string) string {
 var wordRegex = regexp.MustCompile(`([A-Z]+[a-z]*|[a-z]+|\d+)`)
 
 // applyDefaultLimit appends a LIMIT clause if not already present and query exceeds threshold.
-func applyDefaultLimit(sqlQuery string, conn *models.DBConnection, isExploration bool) string {
+func applyDefaultLimit(sqlQuery string, conn *models.DataSource, isExploration bool) string {
 	trimmed := strings.TrimSpace(sqlQuery)
 	upper := strings.ToUpper(trimmed)
 
@@ -156,12 +156,12 @@ type QueryResult struct {
 }
 
 // executeSQL connects to the external database and runs the given SQL query.
-func executeSQL(conn *models.DBConnection, sqlQuery string) (*QueryResult, error) {
+func executeSQL(conn *models.DataSource, sqlQuery string) (*QueryResult, error) {
 	return executeSQLWithMode(conn, sqlQuery, false)
 }
 
 // executeNativeQuery runs a query via the NativeQuerier interface (used by BigQuery etc.).
-func executeNativeQuery(nq NativeQuerier, conn *models.DBConnection, sqlQuery string) (*QueryResult, error) {
+func executeNativeQuery(nq NativeQuerier, conn *models.DataSource, sqlQuery string) (*QueryResult, error) {
 	columns, rows, err := nq.QueryRowsNative(conn, sqlQuery)
 	if err != nil {
 		return nil, fmt.Errorf("query execution failed: %w", err)
@@ -176,7 +176,7 @@ func executeNativeQuery(nq NativeQuerier, conn *models.DBConnection, sqlQuery st
 }
 
 // executeSQLWithMode is like executeSQL but allows specifying exploration mode.
-func executeSQLWithMode(conn *models.DBConnection, sqlQuery string, isExploration bool) (*QueryResult, error) {
+func executeSQLWithMode(conn *models.DataSource, sqlQuery string, isExploration bool) (*QueryResult, error) {
 	sqlQuery = applyDefaultLimit(sqlQuery, conn, isExploration)
 
 	trimmed := strings.TrimSpace(sqlQuery)
