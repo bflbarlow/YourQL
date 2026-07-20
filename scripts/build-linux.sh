@@ -39,7 +39,7 @@ git pull
 
 # Build the binary
 go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
-wails build -platform linux/amd64
+wails build -platform linux/amd64 -tags webkit2_41
 
 # ---- 5. Package as AppImage ----
 echo "[5/5] Packaging AppImage..."
