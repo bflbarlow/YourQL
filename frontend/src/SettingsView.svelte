@@ -593,11 +593,11 @@
                         <option value="mysql">MySQL</option>
                         <option value="mariadb">MariaDB</option>
                         <option value="postgresql">PostgreSQL</option>
-                        <option value="redshift">Redshift</option>
+                        <option value="redshift">Redshift (WIP)</option>
                         <option value="sqlite">SQLite</option>
                         <option value="sqlserver">SQL Server</option>
-                        <option value="snowflake">Snowflake</option>
-                        <option value="bigquery">BigQuery</option>
+                        <option value="snowflake">Snowflake (WIP)</option>
+                        <option value="bigquery">BigQuery (WIP)</option>
                       </select>
                     </div>
                     {#if dbDetailForm.type !== 'bigquery' && dbDetailForm.type !== 'sqlite'}
@@ -904,6 +904,9 @@
                     <div class="db-connection-info">
                       <span class="db-connection-name">{connection.name}</span>
                       <span class="db-connection-type">{connection.type.toUpperCase()}</span>
+                      {#if ['snowflake', 'bigquery', 'redshift'].includes(connection.type)}
+                        <span class="badge wip">WIP</span>
+                      {/if}
                     </div>
                     <div class="db-connection-details">
                       <span class="detail">{connection.host}:{connection.port}/{connection.database}</span>
@@ -1271,6 +1274,13 @@
     padding: 3px var(--space-md);
     border-radius: var(--radius-md);
     font-weight: 600;
+  }
+
+  .badge.wip {
+    background: #fff3e0;
+    color: #e65100;
+    border: 1px solid #ffcc80;
+    margin-left: var(--space-md);
   }
 
   .badge.default {
