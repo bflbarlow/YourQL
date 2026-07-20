@@ -19,6 +19,12 @@
       const { Chart, registerables } = await import('chart.js');
       Chart.register(...registerables);
 
+      // Soft color palette for grid lines and text
+      Chart.defaults.color = '#6c757d';
+      Chart.defaults.borderColor = '#e9ecef';
+      Chart.defaults.font.family = 'system-ui, -apple-system, sans-serif';
+      Chart.defaults.font.size = 12;
+
       if (chart) {
         chart.destroy();
         chart = null;
@@ -70,9 +76,9 @@
     min-height: 380px;
     margin: 0.75rem 0;
     padding: 1rem;
-    background: var(--bg-secondary, #1e1e1e);
+    background: #f8f9fa;
     border-radius: 8px;
-    border: 1px solid var(--border-color, #333);
+    border: 1px solid #e9ecef;
   }
   canvas {
     width: 100% !important;
@@ -83,7 +89,7 @@
     align-items: center;
     justify-content: center;
     height: 380px;
-    color: #999;
+    color: #adb5bd;
     font-size: 0.875rem;
   }
 </style>
