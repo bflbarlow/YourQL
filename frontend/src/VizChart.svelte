@@ -1,15 +1,44 @@
 <script>
-  import { onMount, onDestroy } from 'svelte';
-  import { Chart, registerables } from 'chart.js';
-
-  Chart.register(...registerables);
+  import { onDestroy } from 'svelte';
 
   let { config } = $props();
-  let canvas;
-  let chart = $state(null);
+  let canvas = $state(null);
+  let chart = null;
+  let error = $state(null);
 
-  onMount(() => {
-    renderChart();
+  async function initChart() {
+    if (!canvas || !config) return;
+    try {
+      // Dynamically import Chart.js to avoid module-level side effects
+      const { Chart, registerables } = await import('chart.js');
+      Chart.register(...registerables);
+
+      if (chart) {
+        chart.destroy();
+        chart = null;
+      }
+
+      const cfg = typeof config === 'string' ? JSON.parse(config) : config;
+      if (!cfg || !cfg.type) return;
+
+      // Ensure responsive defaults
+      if (!cfg.options) cfg.options = {};
+      cfg.options.responsive = true;
+      cfg.options.maintainAspectRatio = false;
+
+      chart = new Chart(canvas, cfg);
+      error = null;
+    } catch (e) {
+      error = String(e);
+      console.error('VizChart render failed:', e);
+    }
+  }
+
+  // Watch for config or canvas changes
+  $effect(() => {
+    if (config && canvas) {
+      initChart();
+    }
   });
 
   onDestroy(() => {
@@ -19,35 +48,19 @@
     }
   });
 
-  $effect(() => {
-    // Re-render when config changes
-    if (config) {
-      renderChart();
-    }
-  });
-
-  function renderChart() {
-    if (!canvas || !config) return;
-    if (chart) {
-      chart.destroy();
-      chart = null;
-    }
-    try {
-      const cfg = typeof config === 'string' ? JSON.parse(config) : config;
-      // Ensure responsive defaults
-      if (!cfg.options) cfg.options = {};
-      if (cfg.options.responsive === undefined) cfg.options.responsive = true;
-      cfg.options.maintainAspectRatio = false;
-      chart = new Chart(canvas, cfg);
-    } catch (e) {
-      console.error('Failed to render chart:', e);
-    }
+  // Bind canvas ref
+  function setCanvas(el) {
+    canvas = el;
   }
 </script>
 
 {#if config}
   <div class="viz-chart-container">
-    <canvas bind:this={canvas}></canvas>
+    {#if error}
+      <div class="viz-error">Chart unavailable: {error}</div>
+    {:else}
+      <canvas bind:this={setCanvas}></canvas>
+    {/if}
   </div>
 {/if}
 
@@ -65,5 +78,13 @@
   canvas {
     width: 100% !important;
     height: 100% !important;
+  }
+  .viz-error {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: #999;
+    font-size: 0.875rem;
   }
 </style>
