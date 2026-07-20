@@ -1108,11 +1108,57 @@ func resolveChartConfig(vizConfig string, columns []string, rows [][]interface{}
 	}
 
 	resolved := resolveRefs(config, colIndex, rows)
+	resolvedMap, _ := resolved.(map[string]interface{})
+
+	// Post-process: handle scatter plots - zip $x/$y columns into point objects
+	if typeStr, _ := resolvedMap["type"].(string); typeStr == "scatter" {
+		if data, ok := resolvedMap["data"].(map[string]interface{}); ok {
+			if datasets, ok := data["datasets"].([]interface{}); ok {
+				for _, ds := range datasets {
+					if dsMap, ok := ds.(map[string]interface{}); ok {
+						if dsData, ok := dsMap["data"].([]interface{}); ok {
+							points := zipScatterPoints(dsData, colIndex, rows)
+							if points != nil {
+								dsMap["data"] = points
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
 	out, err := json.Marshal(resolved)
 	if err != nil {
 		return "", err
 	}
 	return string(out), nil
+}
+
+// zipScatterPoints converts [{"x":"$col1","y":"$col2"}] into [{x:v1,y:v2}, ...]
+func zipScatterPoints(items []interface{}, colIndex map[string]int, rows [][]interface{}) []interface{} {
+	if len(items) == 0 {
+		return nil
+	}
+	// Only process if the first item looks like it had $refs (now resolved to arrays)
+	first, ok := items[0].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	xArr, xOk := first["x"].([]interface{})
+	yArr, yOk := first["y"].([]interface{})
+	if !xOk || !yOk {
+		return nil
+	}
+	n := len(xArr)
+	if len(yArr) < n {
+		n = len(yArr)
+	}
+	points := make([]interface{}, n)
+	for i := 0; i < n; i++ {
+		points[i] = map[string]interface{}{"x": xArr[i], "y": yArr[i]}
+	}
+	return points
 }
 
 // resolveRefs walks a JSON-like tree and replaces "$column_name" strings
@@ -1140,9 +1186,17 @@ func resolveRefs(node interface{}, colIndex map[string]int, rows [][]interface{}
 		}
 		return result
 	case []interface{}:
-		result := make([]interface{}, len(v))
-		for i, val := range v {
-			result[i] = resolveRefs(val, colIndex, rows)
+		result := make([]interface{}, 0, len(v))
+		for _, val := range v {
+			resolved := resolveRefs(val, colIndex, rows)
+			// Flatten: if "$col" in an array resolved to a data array, splice it in
+			if str, ok := val.(string); ok && strings.HasPrefix(str, "$") {
+				if arr, ok := resolved.([]interface{}); ok && len(arr) > 0 {
+					result = append(result, arr...)
+					continue
+				}
+			}
+			result = append(result, resolved)
 		}
 		return result
 	default:
