@@ -43,7 +43,7 @@ fi
 # ---- 4. Build the app ----
 echo "[4/5] Cloning and building YourQL..."
 if [ ! -d YourQL ]; then
-    git clone https://github.com/bflbarlow/YourQL.git -b gh_20260715
+    git clone https://github.com/bflbarlow/YourQL.git
 fi
 cd YourQL
 git pull
