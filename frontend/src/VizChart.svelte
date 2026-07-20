@@ -4,7 +4,6 @@
 
   // Register once at module level
   Chart.register(...registerables);
-  Chart.defaults.color = '#6c757d';
   Chart.defaults.borderColor = '#e9ecef';
   Chart.defaults.font.family = 'system-ui, -apple-system, sans-serif';
   Chart.defaults.font.size = 12;
