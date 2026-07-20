@@ -440,7 +440,7 @@
           {#if conversations.length === 0}
             <div class="empty-state">
               <p>No discussions found</p>
-              <p class="hint">Create a new discussion to start querying your database</p>
+              <p class="hint">Create a new discussion to start querying your data</p>
             </div>
           {:else}
             <div class="conversations-list">
@@ -522,7 +522,7 @@
             <ul>
               <li>Natural language to SQL conversion</li>
               <li>Support for multiple LLM providers (OpenAI, Anthropic, Ollama, Local)</li>
-              <li>Database connections (MySQL, SQLite)</li>
+              <li>Data sources (MySQL, SQLite, CSV, Excel)</li>
               <li>Conversation history and management</li>
               <li>Exploration queries for data discovery</li>
               <li>Technical details toggle for debugging</li>
@@ -534,7 +534,7 @@
             <ul>
               <li><strong>Backend:</strong> Go with Wails v2 framework</li>
               <li><strong>Frontend:</strong> Svelte 5 with Vite</li>
-              <li><strong>Database:</strong> SQLite (local app data) + MySQL/SQLite (external connections)</li>
+              <li><strong>Data:</strong> SQLite (local app data) + MySQL/SQLite (external connections)</li>
               <li><strong>LLM Integration:</strong> OpenAI API, Anthropic Claude, Ollama, Local models</li>
             </ul>
           </div>
@@ -758,7 +758,7 @@
           </div>
 
           <div class="form-group">
-            <label>Database Connection (optional)</label>
+            <label>Data Source (optional)</label>
             <select bind:value={selectedDataSource}>
               <option value={null}>Default</option>
               {#each dataSources as conn}

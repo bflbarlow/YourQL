@@ -202,7 +202,7 @@
           <span class="meta-tag">{llmProviders.find(p => p.id === activeConversation.llm_provider_id)?.name || 'LLM'}</span>
         {/if}
         {#if activeConversation?.data_source_id}
-          <span class="meta-tag">{dataSources.find(c => c.id === activeConversation.data_source_id)?.name || 'DB'}</span>
+          <span class="meta-tag">{dataSources.find(c => c.id === activeConversation.data_source_id)?.name || 'Data'}</span>
         {/if}
         {#if showContextDetails && tokenSummary.msgCount > 0}
           <span class="meta-tag context-tag">

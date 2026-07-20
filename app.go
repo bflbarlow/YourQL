@@ -288,13 +288,13 @@ func (a *App) ListDataSources() ([]DataSourceSetting, error) {
 	return settings, nil
 }
 
-func (a *App) CreateDataSource(name, dbType, host string, port int, database, username, password, sslMode, config, extra string) error {
-	_, err := services.CreateDataSource(name, dbType, host, port, database, username, password, sslMode, config, extra)
+func (a *App) CreateDataSource(name, dbType, host string, port int, database, username, password, sslMode, config, extra, filePath, fileType string) error {
+	_, err := services.CreateDataSource(name, dbType, host, port, database, username, password, sslMode, config, extra, filePath, fileType)
 	return err
 }
 
-func (a *App) UpdateDataSource(id uint, name, host, database, username, password, sslMode string, port int, config, extra string) error {
-	_, err := services.UpdateDataSource(id, &name, &host, &port, &database, &username, &password, &sslMode, &config, &extra)
+func (a *App) UpdateDataSource(id uint, name, host, database, username, password, sslMode, filePath, fileType string, port int, config, extra string) error {
+	_, err := services.UpdateDataSource(id, &name, &host, &port, &database, &username, &password, &sslMode, &config, &extra, &filePath, &fileType)
 	return err
 }
 
@@ -325,7 +325,7 @@ func (a *App) TestDataSource(id uint) (string, error) {
 }
 
 // TestNewDataSource tests a new connection using form fields without saving first.
-func (a *App) TestNewDataSource(name, dbType, host string, port int, database, username, password, sslMode, extra string) (string, error) {
+func (a *App) TestNewDataSource(name, dbType, host string, port int, database, username, password, sslMode, extra, filePath, fileType string) (string, error) {
 	conn := &models.DataSource{
 		Name:     name,
 		Type:     dbType,
@@ -335,6 +335,8 @@ func (a *App) TestNewDataSource(name, dbType, host string, port int, database, u
 		Username: &username,
 		Password: &password,
 		SSLMode:  &sslMode,
+		FilePath: &filePath,
+		FileType: &fileType,
 		Extra:    &extra,
 	}
 	if err := services.TestDataSource(conn); err != nil {

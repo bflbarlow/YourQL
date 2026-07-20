@@ -57,12 +57,13 @@
     username: '',
     password: '',
     sslMode: 'false',
-    extra: '{}'
+    extra: '{}',
+    filePath: ''
   })
 
   // DB Detail config state
 
-  // Which fields are required per database type (verified against driver BuildDSN).
+  // Which fields are required per data source type (verified against driver BuildDSN).
   const dbRequiredFields = {
     mysql:      { host: true, port: true, database: true, username: true, password: true },
     mariadb:    { host: true, port: true, database: true, username: true, password: true },
@@ -71,7 +72,9 @@
     sqlserver:  { host: true, port: true, database: true, username: true, password: true },
     sqlite:     { database: true },
     snowflake:  { database: true, username: true, password: true },
-    bigquery:   { database: true }
+    bigquery:   { database: true },
+    csv_file:    {},
+    excel_file:  {}
   }
 
   function isDBFieldRequired(type, field) {
@@ -234,7 +237,8 @@
       username: '',
       password: '',
       sslMode: '',
-      extra: '{}'
+      extra: '{}',
+      filePath: ''
     }
     dbDetailConfig = {
       system_prompt: '',
@@ -312,7 +316,8 @@
       username: connection.username || '',
       password: '',
       sslMode: connection.sslMode || 'disable',
-      extra: connection.extra || '{}'
+      extra: connection.extra || '{}',
+      filePath: connection.file_path || ''
     }
 
     dbDetailConfig = config
@@ -371,7 +376,9 @@
           dbDetailForm.password,
           dbDetailForm.sslMode,
           configStr,
-          dbDetailForm.extra
+          dbDetailForm.extra,
+          dbDetailForm.filePath,
+          dbDetailForm.type === 'csv_file' ? 'csv' : dbDetailForm.type === 'excel_file' ? 'xlsx' : ''
         )
         dbStatus = 'Connection created successfully'
         // Refresh connection list and find the new connection to switch to edit mode
@@ -391,6 +398,8 @@
           dbDetailForm.username,
           dbDetailForm.password,
           dbDetailForm.sslMode,
+          dbDetailForm.filePath,
+          dbDetailForm.type === 'csv_file' ? 'csv' : dbDetailForm.type === 'excel_file' ? 'xlsx' : '',
           dbDetailForm.port,
           configStr,
           dbDetailForm.extra
@@ -419,7 +428,9 @@
         dbDetailForm.username,
         dbDetailForm.password,
         dbDetailForm.sslMode,
-        dbDetailForm.extra
+        dbDetailForm.extra,
+        dbDetailForm.filePath,
+        dbDetailForm.type === 'csv_file' ? 'csv' : dbDetailForm.type === 'excel_file' ? 'xlsx' : ''
       )
       dbStatus = result
     } catch (e) {
@@ -478,7 +489,7 @@
       class="tab-btn {activeSettingsTab === 'databases' ? 'active' : ''}"
       onclick={() => activeSettingsTab = 'databases'}
     >
-      Database Configurations
+      Data Sources
     </button>
     <button
       class="tab-btn {activeSettingsTab === 'general' ? 'active' : ''}"
@@ -585,7 +596,7 @@
                   <div class="form-grid">
                     <div class="form-group">
                       <label>Name <span class="required">*</span></label>
-                      <input type="text" bind:value={dbDetailForm.name} placeholder="My Database" />
+                      <input type="text" bind:value={dbDetailForm.name} placeholder="My Data Source" />
                     </div>
                     <div class="form-group">
                       <label>Type</label>
@@ -598,8 +609,17 @@
                         <option value="sqlserver">SQL Server</option>
                         <option value="snowflake">Snowflake (WIP)</option>
                         <option value="bigquery">BigQuery (WIP)</option>
+                        <option disabled>─────────────</option>
+                        <option value="csv_file">CSV File</option>
+                        <option value="excel_file">Excel File</option>
                       </select>
                     </div>
+                    {#if dbDetailForm.type === 'csv_file' || dbDetailForm.type === 'excel_file'}
+                    <div class="form-group">
+                      <label>File <span class="required">*</span></label>
+                      <input type="text" bind:value={dbDetailForm.filePath} placeholder="/path/to/file.csv" />
+                    </div>
+                    {:else}
                     {#if dbDetailForm.type !== 'bigquery' && dbDetailForm.type !== 'sqlite'}
                     <div class="form-group">
                       <label>Host {#if isDBFieldRequired(dbDetailForm.type, 'host')}<span class="required">*</span>{/if}</label>
@@ -643,6 +663,7 @@
                         <option value="prefer">preferred</option>
                       </select>
                     </div>
+                    {/if}
                     {/if}
                     {#if dbDetailForm.type === 'postgresql' || dbDetailForm.type === 'redshift'}
                       {@const pgExtra = (() => { try { return JSON.parse(dbDetailForm.extra || '{}') } catch(e) { return {} } })()}
@@ -717,10 +738,10 @@
                     <label>Override Default System Prompt</label>
                     <textarea
                       bind:value={dbDetailConfig.system_prompt}
-                      placeholder="Enter a custom system prompt for this database connection. Leave empty to use the default."
+                      placeholder="Enter a custom system prompt for this data source. Leave empty to use the default."
                       rows="6"
                     ></textarea>
-                    <p class="hint">This prompt will be injected into the discussion engine's system message when this database is selected.</p>
+                    <p class="hint">This prompt will be injected into the discussion engine's system message when this data source is selected.</p>
                   </div>
                 </div>
 
@@ -897,7 +918,7 @@
               <button class="btn btn-primary" onclick={openNewConnection}>+ Add Connection</button>
 
               {#if dataSources.length === 0}
-                <p class="empty-hint">No database connections configured</p>
+                <p class="empty-hint">No data sources configured</p>
               {:else}
                 {#each dataSources as connection}
                   <div class="data-source-item">
@@ -910,7 +931,13 @@
                         {/if}
                       </div>
                       <div class="data-source-details">
-                        <span class="detail">{connection.host}:{connection.port}/{connection.database}</span>
+                        {#if connection.type === 'csv_file' || connection.type === 'excel_file'}
+                          <span class="detail">📄 {connection.file_path || 'No file selected'}</span>
+                        {:else if connection.type === 'sqlite'}
+                          <span class="detail">{connection.database}</span>
+                        {:else}
+                          <span class="detail">{connection.host}:{connection.port}/{connection.database}</span>
+                        {/if}
                         {#if connection.is_default}
                           <span class="badge default">Default</span>
                         {/if}

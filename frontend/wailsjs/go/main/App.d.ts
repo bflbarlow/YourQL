@@ -10,7 +10,7 @@ export function ClearConversationMessages(arg1:number):Promise<void>;
 
 export function CreateConversation(arg1:string,arg2:any,arg3:any):Promise<models.Conversation>;
 
-export function CreateDataSource(arg1:string,arg2:string,arg3:string,arg4:number,arg5:string,arg6:string,arg7:string,arg8:string,arg9:string,arg10:string):Promise<void>;
+export function CreateDataSource(arg1:string,arg2:string,arg3:string,arg4:number,arg5:string,arg6:string,arg7:string,arg8:string,arg9:string,arg10:string,arg11:string,arg12:string):Promise<void>;
 
 export function CreateLLMProvider(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<void>;
 
@@ -52,7 +52,7 @@ export function TestDataSource(arg1:number):Promise<string>;
 
 export function TestLLMProviderConnection(arg1:number):Promise<string>;
 
-export function TestNewDataSource(arg1:string,arg2:string,arg3:string,arg4:number,arg5:string,arg6:string,arg7:string,arg8:string,arg9:string):Promise<string>;
+export function TestNewDataSource(arg1:string,arg2:string,arg3:string,arg4:number,arg5:string,arg6:string,arg7:string,arg8:string,arg9:string,arg10:string,arg11:string):Promise<string>;
 
 export function UpdateConversationContextDetails(arg1:number,arg2:boolean):Promise<void>;
 
@@ -70,7 +70,7 @@ export function UpdateConversationTechDetails(arg1:number,arg2:boolean):Promise<
 
 export function UpdateConversationTitle(arg1:number,arg2:string):Promise<models.Conversation>;
 
-export function UpdateDataSource(arg1:number,arg2:string,arg3:string,arg4:string,arg5:string,arg6:string,arg7:string,arg8:number,arg9:string,arg10:string):Promise<void>;
+export function UpdateDataSource(arg1:number,arg2:string,arg3:string,arg4:string,arg5:string,arg6:string,arg7:string,arg8:string,arg9:string,arg10:number,arg11:string,arg12:string):Promise<void>;
 
 export function UpdateGeneralSettings(arg1:main.GeneralSettings):Promise<void>;
 

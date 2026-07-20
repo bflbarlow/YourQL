@@ -14,8 +14,8 @@ export function CreateConversation(arg1, arg2, arg3) {
   return window['go']['main']['App']['CreateConversation'](arg1, arg2, arg3);
 }
 
-export function CreateDataSource(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10) {
-  return window['go']['main']['App']['CreateDataSource'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10);
+export function CreateDataSource(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12) {
+  return window['go']['main']['App']['CreateDataSource'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12);
 }
 
 export function CreateLLMProvider(arg1, arg2, arg3, arg4, arg5) {
@@ -98,8 +98,8 @@ export function TestLLMProviderConnection(arg1) {
   return window['go']['main']['App']['TestLLMProviderConnection'](arg1);
 }
 
-export function TestNewDataSource(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9) {
-  return window['go']['main']['App']['TestNewDataSource'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9);
+export function TestNewDataSource(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11) {
+  return window['go']['main']['App']['TestNewDataSource'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11);
 }
 
 export function UpdateConversationContextDetails(arg1, arg2) {
@@ -134,8 +134,8 @@ export function UpdateConversationTitle(arg1, arg2) {
   return window['go']['main']['App']['UpdateConversationTitle'](arg1, arg2);
 }
 
-export function UpdateDataSource(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10) {
-  return window['go']['main']['App']['UpdateDataSource'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10);
+export function UpdateDataSource(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12) {
+  return window['go']['main']['App']['UpdateDataSource'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12);
 }
 
 export function UpdateGeneralSettings(arg1) {

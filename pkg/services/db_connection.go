@@ -11,7 +11,7 @@ import (
 	"YourQL/pkg/models"
 )
 
-func CreateDataSource(name, dbType, host string, port int, database, username, password, sslMode string, configJSON, extraJSON string) (*models.DataSource, error) {
+func CreateDataSource(name, dbType, host string, port int, database, username, password, sslMode string, configJSON, extraJSON string, filePath, fileType string) (*models.DataSource, error) {
 	now := time.Now().UTC()
 	isActive := true
 
@@ -28,8 +28,8 @@ func CreateDataSource(name, dbType, host string, port int, database, username, p
 	}
 
 	result, err := models.DB.Exec(
-		"INSERT INTO data_sources (name, type, host, port, database_name, username, password, ssl_mode, is_default, is_active, config, extra, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		name, dbType, host, port, database, username, password, sslMode, false, isActive, configArg, extraArg, now, now,
+		"INSERT INTO data_sources (name, type, host, port, database_name, username, password, ssl_mode, is_default, is_active, config, extra, file_path, file_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		name, dbType, host, port, database, username, password, sslMode, false, isActive, configArg, extraArg, filePath, fileType, now, now,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create database connection: %w", err)
@@ -55,15 +55,15 @@ func CreateDataSource(name, dbType, host string, port int, database, username, p
 func GetDataSourceByID(id uint) (*models.DataSource, error) {
 	var c models.DataSource
 	var hostNull, databaseNull, usernameNull, passwordNull, sslModeNull sql.NullString
-	var configNull, extraNull []byte
+	var configNull, extraNull, filePathNull, fileTypeNull []byte
 	var portNull sql.NullInt64
 	err := models.DB.QueryRow(
-		"SELECT id, name, type, host, port, database_name, username, password, ssl_mode, is_default, is_active, config, extra, created_at, updated_at FROM data_sources WHERE id = ? LIMIT 1",
+		"SELECT id, name, type, host, port, database_name, username, password, ssl_mode, is_default, is_active, config, extra, file_path, file_type, created_at, updated_at FROM data_sources WHERE id = ? LIMIT 1",
 		id,
 	).Scan(
 		&c.ID, &c.Name, &c.Type, &hostNull, &portNull,
 		&databaseNull, &usernameNull, &passwordNull, &sslModeNull,
-		&c.IsDefault, &c.IsActive, &configNull, &extraNull, &c.CreatedAt, &c.UpdatedAt,
+		&c.IsDefault, &c.IsActive, &configNull, &extraNull, &filePathNull, &fileTypeNull, &c.CreatedAt, &c.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, errors.New("database connection not found")
@@ -98,12 +98,36 @@ func GetDataSourceByID(id uint) (*models.DataSource, error) {
 		s := string(extraNull)
 		c.Extra = &s
 	}
+	if len(filePathNull) > 0 {
+		s := string(filePathNull)
+		c.FilePath = &s
+	}
+	if len(fileTypeNull) > 0 {
+		s := string(fileTypeNull)
+		c.FileType = &s
+	}
+	if len(filePathNull) > 0 {
+		s := string(filePathNull)
+		c.FilePath = &s
+	}
+	if len(fileTypeNull) > 0 {
+		s := string(fileTypeNull)
+		c.FileType = &s
+	}
+	if len(filePathNull) > 0 {
+		s := string(filePathNull)
+		c.FilePath = &s
+	}
+	if len(fileTypeNull) > 0 {
+		s := string(fileTypeNull)
+		c.FileType = &s
+	}
 	return &c, nil
 }
 
 func ListDataSourcesByWorkspace() ([]*models.DataSource, error) {
 	rows, err := models.DB.Query(
-		"SELECT id, name, type, host, port, database_name, username, password, ssl_mode, is_default, is_active, config, extra, created_at, updated_at FROM data_sources ORDER BY is_default DESC, created_at DESC",
+		"SELECT id, name, type, host, port, database_name, username, password, ssl_mode, is_default, is_active, config, extra, file_path, file_type, created_at, updated_at FROM data_sources ORDER BY is_default DESC, created_at DESC",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list database connections: %w", err)
@@ -114,12 +138,12 @@ func ListDataSourcesByWorkspace() ([]*models.DataSource, error) {
 	for rows.Next() {
 		var c models.DataSource
 		var hostNull, databaseNull, usernameNull, passwordNull, sslModeNull sql.NullString
-		var configNull, extraNull []byte
+		var configNull, extraNull, filePathNull, fileTypeNull []byte
 		var portNull sql.NullInt64
 		err := rows.Scan(
 			&c.ID, &c.Name, &c.Type, &hostNull, &portNull,
 			&databaseNull, &usernameNull, &passwordNull, &sslModeNull,
-			&c.IsDefault, &c.IsActive, &configNull, &extraNull, &c.CreatedAt, &c.UpdatedAt,
+			&c.IsDefault, &c.IsActive, &configNull, &extraNull, &filePathNull, &fileTypeNull, &c.CreatedAt, &c.UpdatedAt,
 		)
 		if err != nil {
 			continue
@@ -156,7 +180,7 @@ func ListDataSourcesByWorkspace() ([]*models.DataSource, error) {
 	return connections, nil
 }
 
-func UpdateDataSource(id uint, name *string, host *string, port *int, database *string, username *string, password *string, sslMode *string, configJSON *string, extraJSON *string) (*models.DataSource, error) {
+func UpdateDataSource(id uint, name *string, host *string, port *int, database *string, username *string, password *string, sslMode *string, configJSON *string, extraJSON *string, filePath, fileType *string) (*models.DataSource, error) {
 	c, err := GetDataSourceByID(id)
 	if err != nil {
 		return nil, err
@@ -208,6 +232,15 @@ func UpdateDataSource(id uint, name *string, host *string, port *int, database *
 		} else {
 			args = append(args, *extraJSON)
 		}
+	}
+
+	if filePath != nil {
+		updates = append(updates, "file_path = ?")
+		args = append(args, *filePath)
+	}
+	if fileType != nil {
+		updates = append(updates, "file_type = ?")
+		args = append(args, *fileType)
 	}
 
 	if len(updates) == 0 {
@@ -282,14 +315,14 @@ func SetDefaultDataSource(connectionID uint) error {
 func GetDefaultDataSource() (*models.DataSource, error) {
 	var c models.DataSource
 	var hostNull, databaseNull, usernameNull, passwordNull, sslModeNull sql.NullString
-	var configNull, extraNull []byte
+	var configNull, extraNull, filePathNull, fileTypeNull []byte
 	var portNull sql.NullInt64
 	err := models.DB.QueryRow(
-		"SELECT id, name, type, host, port, database_name, username, password, ssl_mode, is_default, is_active, config, extra, created_at, updated_at FROM data_sources WHERE is_default = 1 LIMIT 1",
+		"SELECT id, name, type, host, port, database_name, username, password, ssl_mode, is_default, is_active, config, extra, file_path, file_type, created_at, updated_at FROM data_sources WHERE is_default = 1 LIMIT 1",
 	).Scan(
 		&c.ID, &c.Name, &c.Type, &hostNull, &portNull,
 		&databaseNull, &usernameNull, &passwordNull, &sslModeNull,
-		&c.IsDefault, &c.IsActive, &configNull, &extraNull, &c.CreatedAt, &c.UpdatedAt,
+		&c.IsDefault, &c.IsActive, &configNull, &extraNull, &filePathNull, &fileTypeNull, &c.CreatedAt, &c.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
