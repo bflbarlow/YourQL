@@ -17,7 +17,7 @@ func ListSkills() ([]models.Skill, error) {
 	}
 	defer rows.Close()
 
-	var skills []models.Skill
+	skills := make([]models.Skill, 0)
 	for rows.Next() {
 		var s models.Skill
 		if err := rows.Scan(&s.ID, &s.Name, &s.MarkdownContent, &s.IsActive, &s.CreatedAt, &s.UpdatedAt); err != nil {
@@ -25,7 +25,10 @@ func ListSkills() ([]models.Skill, error) {
 		}
 		skills = append(skills, s)
 	}
-	return skills, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return skills, nil
 }
 
 // CreateSkill creates a new skill.
@@ -94,7 +97,7 @@ func GetEnabledSkillsContent(conversationID uint) (string, error) {
 	}
 	defer rows.Close()
 
-	var parts []string
+	parts := make([]string, 0)
 	for rows.Next() {
 		var content string
 		if err := rows.Scan(&content); err != nil {
@@ -104,7 +107,10 @@ func GetEnabledSkillsContent(conversationID uint) (string, error) {
 			parts = append(parts, content)
 		}
 	}
-	return strings.Join(parts, "\n\n"), rows.Err()
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	return strings.Join(parts, "\n\n"), nil
 }
 
 // GetConversationSkillIDs returns the IDs of skills enabled for a conversation.
@@ -118,7 +124,7 @@ func GetConversationSkillIDs(conversationID uint) ([]uint, error) {
 	}
 	defer rows.Close()
 
-	var ids []uint
+	ids := make([]uint, 0)
 	for rows.Next() {
 		var id uint
 		if err := rows.Scan(&id); err != nil {
@@ -126,7 +132,10 @@ func GetConversationSkillIDs(conversationID uint) ([]uint, error) {
 		}
 		ids = append(ids, id)
 	}
-	return ids, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return ids, nil
 }
 
 // SetConversationSkill enables or disables a skill for a conversation.
