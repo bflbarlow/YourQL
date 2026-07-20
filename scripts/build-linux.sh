@@ -7,7 +7,7 @@ echo ""
 # ---- 1. Install dependencies ----
 echo "[1/5] Installing system dependencies..."
 sudo apt-get update -qq
-sudo apt-get install -y -qq libgtk-3-dev libwebkit2gtk-4.1-dev imagemagick wget
+sudo apt-get install -y -qq build-essential libgtk-3-dev libwebkit2gtk-4.1-dev imagemagick wget curl
 
 # ---- 2. Install Go ----
 if ! command -v go &>/dev/null; then
