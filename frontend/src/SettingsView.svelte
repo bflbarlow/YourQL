@@ -38,6 +38,13 @@
     localStorage.setItem('yourql-ui-scale', scale)
   }
 
+  // Load skills when the Skills tab is selected
+  $effect(() => {
+    if (activeSettingsTab === 'skills') {
+      loadSkills()
+    }
+  })
+
   // Skills handlers
   async function loadSkills() {
     try {
@@ -77,7 +84,7 @@
       await SetSkillActive(id, active)
       const skill = skills.find(s => s.id === id)
       if (skill) skill.is_active = active
-      skills = skills
+      skills = [...skills]
     } catch (e) {
       console.error('Failed to toggle skill:', e)
     }
@@ -558,7 +565,7 @@
     </button>
     <button
       class="tab-btn {activeSettingsTab === 'skills' ? 'active' : ''}"
-      onclick={() => { activeSettingsTab = 'skills'; loadSkills() }}
+      onclick={() => { activeSettingsTab = 'skills' }}
     >
       Skills
     </button>
