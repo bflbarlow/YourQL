@@ -9,7 +9,7 @@
     processingMessage = ''
   })
 
-  import { ListConversations, CreateConversation, GetConversationMessages, ProcessUserMessage, DeleteConversation, UpdateConversationTechDetails, ArchiveConversation, RestoreConversation, UpdateConversationSettings, ListLLMProviders, ListDataSources, UpdateConversationTitle, UpdateConversationMaxMessages, UpdateConversationMaxContextMessages, UpdateConversationPinned, DuplicateConversation, ClearConversationMessages, UpdateConversationContextDetails, UpdateConversationSummarize, UpdateConversationVizEnabled } from '../wailsjs/go/main/App.js'
+  import { ListConversations, CreateConversation, GetConversationMessages, ProcessUserMessage, DeleteConversation, UpdateConversationTechDetails, ArchiveConversation, RestoreConversation, UpdateConversationSettings, ListLLMProviders, ListDataSources, UpdateConversationTitle, UpdateConversationMaxMessages, UpdateConversationMaxContextMessages, UpdateConversationPinned, DuplicateConversation, ClearConversationMessages, UpdateConversationContextDetails, UpdateConversationSummarize, UpdateConversationVizEnabled, ListSkills, GetConversationSkillIDs, SetConversationSkill } from '../wailsjs/go/main/App.js'
   import { MessageSquare, Settings, X, Copy, Trash2, Pin, ChevronRight, ChevronLeft, Plus } from 'lucide-svelte'
   import SettingsView from './SettingsView.svelte'
   import ConversationView from './ConversationView.svelte'
@@ -18,6 +18,8 @@
   let conversations = $state([])
   let llmProviders = $state([])
   let dataSources = $state([])
+  let allSkills = $state([])
+  let conversationSkillIDs = $state([])
   let sidebarCollapsed = $state(false)
 
   const appVersion = '0.1.0'
@@ -74,6 +76,10 @@
 
       const dbRes = await ListDataSources()
       dataSources = dbRes || []
+
+      try {
+        allSkills = await ListSkills() || []
+      } catch (_) {}
 
       status = "Loaded successfully"
     } catch (e) {
@@ -330,6 +336,27 @@
     }
   }
 
+  async function handleToggleConversationSkill(conversationId, skillId, enabled) {
+    try {
+      await SetConversationSkill(conversationId, skillId, enabled)
+      if (enabled) {
+        conversationSkillIDs = [...conversationSkillIDs, skillId]
+      } else {
+        conversationSkillIDs = conversationSkillIDs.filter(id => id !== skillId)
+      }
+    } catch (e) {
+      console.error('Failed to toggle conversation skill:', e)
+    }
+  }
+
+  async function loadConversationSkills(conversationId) {
+    try {
+      conversationSkillIDs = await GetConversationSkillIDs(conversationId) || []
+    } catch (e) {
+      conversationSkillIDs = []
+    }
+  }
+
   async function handleDuplicateConversation() {
     if (!selectedConversation) return
     try {
@@ -505,7 +532,7 @@
         onTechDetailsToggle={handleTechDetailsToggle}
         onArchiveConversation={handleArchiveConversation}
         onUpdateConversationSettings={handleUpdateConversationSettings}
-        onGearClick={() => { selectedConversation = activeConversation; showGearPopover = true }}
+        onGearClick={() => { selectedConversation = activeConversation; showGearPopover = true; loadConversationSkills(activeConversation.id) }}
       />
     {:else if activeView === 'settings'}
       <SettingsView
@@ -720,6 +747,24 @@
         <div style="color: #999; font-size: var(--font-xs); margin-top: var(--space-2xs);">
           LLM generates charts (bar, line, pie, scatter) when appropriate
         </div>
+      </div>
+
+      <!-- Skills -->
+      <div class="gear-popover-section">
+        <div class="gear-popover-section-title">Skills</div>
+        {#each allSkills as skill (skill.id)}
+          {@const enabled = conversationSkillIDs.includes(skill.id)}
+          <label class="skill-toggle">
+            <input type="checkbox"
+                   checked={enabled}
+                   disabled={!skill.is_active}
+                   onchange={(e) => handleToggleConversationSkill(selectedConversation.id, skill.id, e.target.checked)} />
+            {skill.name}
+          </label>
+        {/each}
+        {#if allSkills.length === 0}
+          <div style="color: #999; font-size: var(--font-xs);">No skills configured. Add skills in Settings.</div>
+        {/if}
       </div>
 
       <div class="gear-popover-divider"></div>
@@ -1587,6 +1632,30 @@
     height: 1px;
     background: #f0f0f0;
     margin: 0 18px;
+  }
+
+  /* Skill toggles in gear popover */
+  .gear-popover-section-title {
+    font-weight: 600;
+    font-size: var(--font-sm);
+    margin-bottom: var(--space-sm);
+    color: #333;
+  }
+  .skill-toggle {
+    display: flex !important;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-xs) 0;
+    font-size: var(--font-sm) !important;
+    font-weight: 400 !important;
+    text-transform: none !important;
+    letter-spacing: normal !important;
+    color: #333 !important;
+    cursor: pointer;
+    margin-bottom: 0 !important;
+  }
+  .skill-toggle input[type="checkbox"] {
+    accent-color: #0288d1;
   }
 
   .gear-popover-actions {

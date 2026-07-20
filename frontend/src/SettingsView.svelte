@@ -11,7 +11,12 @@
     SetDefaultDataSource,
     TestDataSource,
     GetSchemaPreview,
-    GetSupportedDBTypes
+    GetSupportedDBTypes,
+    ListSkills,
+    CreateSkill,
+    UpdateSkill,
+    DeleteSkill,
+    SetSkillActive
   } from '../wailsjs/go/main/App.js'
 
   let {
@@ -23,9 +28,59 @@
   let activeSettingsTab = $state('models')
   let generalScale = $state(typeof localStorage !== 'undefined' ? (localStorage.getItem('yourql-ui-scale') || 'medium') : 'medium')
 
+  // Skills state
+  let skills = $state([])
+  let skillEditor = $state(null)
+  let showSkillEditor = $state(false)
+
   function applyScale(scale) {
     document.documentElement.setAttribute('data-ui-scale', scale)
     localStorage.setItem('yourql-ui-scale', scale)
+  }
+
+  // Skills handlers
+  async function loadSkills() {
+    try {
+      skills = await ListSkills()
+    } catch (e) {
+      console.error('Failed to load skills:', e)
+    }
+  }
+
+  async function handleSaveSkill() {
+    if (!skillEditor.name.trim()) return
+    try {
+      if (skillEditor.id) {
+        await UpdateSkill(skillEditor.id, skillEditor.name, skillEditor.markdown_content)
+      } else {
+        await CreateSkill(skillEditor.name, skillEditor.markdown_content)
+      }
+      showSkillEditor = false
+      skillEditor = null
+      await loadSkills()
+    } catch (e) {
+      console.error('Failed to save skill:', e)
+    }
+  }
+
+  async function handleDeleteSkill(id) {
+    try {
+      await DeleteSkill(id)
+      await loadSkills()
+    } catch (e) {
+      console.error('Failed to delete skill:', e)
+    }
+  }
+
+  async function handleToggleSkillActive(id, active) {
+    try {
+      await SetSkillActive(id, active)
+      const skill = skills.find(s => s.id === id)
+      if (skill) skill.is_active = active
+      skills = skills
+    } catch (e) {
+      console.error('Failed to toggle skill:', e)
+    }
   }
 
   // LLM Provider Form State
@@ -502,6 +557,12 @@
       Data Sources
     </button>
     <button
+      class="tab-btn {activeSettingsTab === 'skills' ? 'active' : ''}"
+      onclick={() => { activeSettingsTab = 'skills'; loadSkills() }}
+    >
+      Skills
+    </button>
+    <button
       class="tab-btn {activeSettingsTab === 'general' ? 'active' : ''}"
       onclick={() => activeSettingsTab = 'general'}
     >
@@ -969,6 +1030,40 @@
           {/if}
         </div>
       </div>
+    {:else if activeSettingsTab === 'skills'}
+      <div class="settings-section">
+        <h3>Skills</h3>
+        <p class="section-desc">Skills are markdown text blocks added to the system prompt. Use them to give the LLM domain context or behavioral guidance.</p>
+
+        <div class="form-card" style="margin-bottom: var(--space-lg);">
+          <button class="btn btn-primary" onclick={() => { skillEditor = { id: null, name: '', markdown_content: '' }; showSkillEditor = true }}>
+            + New Skill
+          </button>
+        </div>
+
+        {#if skills.length === 0}
+          <div style="color: #999; text-align: center; padding: var(--space-2xl);">
+            No skills configured yet. Create one to add context to your conversations.
+          </div>
+        {:else}
+          {#each skills as skill (skill.id)}
+            <div class="skill-card">
+              <div class="skill-card-main">
+                <div class="skill-card-name">{skill.name}</div>
+                <div class="skill-card-preview">{skill.markdown_content || '(empty content)'}</div>
+              </div>
+              <div class="skill-card-actions">
+                <button onclick={() => { skillEditor = { ...skill }; showSkillEditor = true }}>Edit</button>
+                <button class="delete" onclick={() => handleDeleteSkill(skill.id)}>Delete</button>
+                <label class="toggle-switch">
+                  <input type="checkbox" checked={skill.is_active} onchange={() => handleToggleSkillActive(skill.id, !skill.is_active)} />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+          {/each}
+        {/if}
+      </div>
     {:else if activeSettingsTab === 'general'}
       <div class="settings-section">
         <h3>General Settings</h3>
@@ -1048,6 +1143,22 @@
           <button class="btn btn-primary" onclick={handleCreateLLM}>Save Changes</button>
           <button class="btn btn-secondary" onclick={cancelEditLLM}>Cancel</button>
         </div>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if showSkillEditor && skillEditor}
+  <div class="skill-editor-overlay" onclick={() => { showSkillEditor = false; skillEditor = null }}>
+    <div class="skill-editor" onclick={(e) => e.stopPropagation()}>
+      <h3>{skillEditor.id ? 'Edit Skill' : 'New Skill'}</h3>
+      <label>Name</label>
+      <input type="text" bind:value={skillEditor.name} placeholder="Sales Domain Context" />
+      <label>Markdown Content</label>
+      <textarea bind:value={skillEditor.markdown_content} placeholder="Revenue is in USD. Fiscal year starts July 1.&#10;Exclude test accounts from all queries."></textarea>
+      <div class="skill-editor-actions">
+        <button class="btn btn-primary" onclick={handleSaveSkill}>Save</button>
+        <button class="btn btn-secondary" onclick={() => { showSkillEditor = false; skillEditor = null }}>Cancel</button>
       </div>
     </div>
   </div>
@@ -2040,5 +2151,153 @@
   .scale-option-desc {
     font-size: var(--font-sm);
     color: #999999;
+  }
+
+  /* Skill cards */
+  .skill-card {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    padding: var(--space-lg) var(--space-xl);
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    margin-bottom: var(--space-md);
+    background: #ffffff;
+    gap: var(--space-lg);
+  }
+  .skill-card-main {
+    flex: 1;
+    min-width: 0;
+  }
+  .skill-card-name {
+    font-weight: 600;
+    font-size: var(--font-base);
+    margin-bottom: var(--space-2xs);
+  }
+  .skill-card-preview {
+    color: #666;
+    font-size: var(--font-sm);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .skill-card-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+    flex-shrink: 0;
+  }
+  .skill-card-actions button {
+    padding: var(--space-xs) var(--space-sm);
+    font-size: var(--font-sm);
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    background: #fff;
+    cursor: pointer;
+  }
+  .skill-card-actions button:hover {
+    background: #f5f5f5;
+  }
+  .skill-card-actions button.delete:hover {
+    background: #ffebee;
+    color: #c62828;
+    border-color: #ffcdd2;
+  }
+
+  /* Toggle switch */
+  .toggle-switch {
+    position: relative;
+    display: inline-block;
+    width: 44px;
+    height: 24px;
+  }
+  .toggle-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+  }
+  .slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: #ccc;
+    border-radius: 24px;
+    transition: 0.2s;
+  }
+  .slider:before {
+    position: absolute;
+    content: "";
+    height: 18px;
+    width: 18px;
+    left: 3px;
+    bottom: 3px;
+    background: white;
+    border-radius: 50%;
+    transition: 0.2s;
+  }
+  input:checked + .slider {
+    background: #0288d1;
+  }
+  input:checked + .slider:before {
+    transform: translateX(20px);
+  }
+
+  /* Skill editor modal */
+  .skill-editor-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+  }
+  .skill-editor {
+    background: #fff;
+    border-radius: 12px;
+    padding: var(--space-2xl);
+    width: 600px;
+    max-width: 90vw;
+    max-height: 80vh;
+    overflow-y: auto;
+  }
+  .skill-editor h3 {
+    margin: 0 0 var(--space-lg) 0;
+  }
+  .skill-editor label {
+    display: block;
+    font-weight: 600;
+    margin-bottom: var(--space-xs);
+    font-size: var(--font-sm);
+  }
+  .skill-editor input[type="text"] {
+    width: 100%;
+    padding: var(--space-sm);
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-size: var(--font-base);
+    margin-bottom: var(--space-lg);
+    box-sizing: border-box;
+  }
+  .skill-editor textarea {
+    width: 100%;
+    min-height: 200px;
+    padding: var(--space-sm);
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: var(--font-sm);
+    line-height: 1.5;
+    resize: vertical;
+    margin-bottom: var(--space-lg);
+    box-sizing: border-box;
+  }
+  .skill-editor-actions {
+    display: flex;
+    gap: var(--space-md);
+    justify-content: flex-end;
   }
 </style>

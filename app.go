@@ -129,6 +129,36 @@ func (a *App) RestoreConversation(id uint) error {
 	return services.RestoreConversation(id)
 }
 
+// ==================== Skills ====================
+
+func (a *App) ListSkills() ([]models.Skill, error) {
+	return services.ListSkills()
+}
+
+func (a *App) CreateSkill(name, markdownContent string) (*models.Skill, error) {
+	return services.CreateSkill(name, markdownContent)
+}
+
+func (a *App) UpdateSkill(id uint, name, markdownContent string) (*models.Skill, error) {
+	return services.UpdateSkill(id, name, markdownContent)
+}
+
+func (a *App) DeleteSkill(id uint) error {
+	return services.DeleteSkill(id)
+}
+
+func (a *App) SetSkillActive(id uint, active bool) error {
+	return services.SetSkillActive(id, active)
+}
+
+func (a *App) GetConversationSkillIDs(conversationID uint) ([]uint, error) {
+	return services.GetConversationSkillIDs(conversationID)
+}
+
+func (a *App) SetConversationSkill(conversationID uint, skillID uint, enabled bool) error {
+	return services.SetConversationSkill(conversationID, skillID, enabled)
+}
+
 // ==================== LLM Provider Settings ====================
 
 // LLMProviderSetting represents an LLM provider configuration for the frontend

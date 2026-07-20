@@ -160,6 +160,27 @@ func migrate() error {
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
 		)`,
+
+		// Skills — user-defined markdown prompt fragments
+		`CREATE TABLE IF NOT EXISTS skills (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			markdown_content TEXT NOT NULL DEFAULT '',
+			is_active INTEGER DEFAULT 1,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+
+		// Conversation-Skills join table
+		`CREATE TABLE IF NOT EXISTS conversation_skills (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			conversation_id INTEGER NOT NULL,
+			skill_id INTEGER NOT NULL,
+			enabled INTEGER DEFAULT 1,
+			FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+			FOREIGN KEY (skill_id) REFERENCES skills(id) ON DELETE CASCADE,
+			UNIQUE(conversation_id, skill_id)
+		)`, 
 	}
 
 	for _, ddl := range tables {

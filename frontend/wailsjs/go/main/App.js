@@ -22,6 +22,10 @@ export function CreateLLMProvider(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['CreateLLMProvider'](arg1, arg2, arg3, arg4, arg5);
 }
 
+export function CreateSkill(arg1, arg2) {
+  return window['go']['main']['App']['CreateSkill'](arg1, arg2);
+}
+
 export function DeleteConversation(arg1) {
   return window['go']['main']['App']['DeleteConversation'](arg1);
 }
@@ -34,6 +38,10 @@ export function DeleteLLMProvider(arg1) {
   return window['go']['main']['App']['DeleteLLMProvider'](arg1);
 }
 
+export function DeleteSkill(arg1) {
+  return window['go']['main']['App']['DeleteSkill'](arg1);
+}
+
 export function DuplicateConversation(arg1) {
   return window['go']['main']['App']['DuplicateConversation'](arg1);
 }
@@ -44,6 +52,10 @@ export function ExecuteQuery(arg1, arg2) {
 
 export function GetConversationMessages(arg1) {
   return window['go']['main']['App']['GetConversationMessages'](arg1);
+}
+
+export function GetConversationSkillIDs(arg1) {
+  return window['go']['main']['App']['GetConversationSkillIDs'](arg1);
 }
 
 export function GetGeneralSettings() {
@@ -74,6 +86,10 @@ export function ListLLMProviders() {
   return window['go']['main']['App']['ListLLMProviders']();
 }
 
+export function ListSkills() {
+  return window['go']['main']['App']['ListSkills']();
+}
+
 export function ProcessUserMessage(arg1, arg2) {
   return window['go']['main']['App']['ProcessUserMessage'](arg1, arg2);
 }
@@ -82,12 +98,20 @@ export function RestoreConversation(arg1) {
   return window['go']['main']['App']['RestoreConversation'](arg1);
 }
 
+export function SetConversationSkill(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SetConversationSkill'](arg1, arg2, arg3);
+}
+
 export function SetDefaultDataSource(arg1) {
   return window['go']['main']['App']['SetDefaultDataSource'](arg1);
 }
 
 export function SetDefaultLLMProvider(arg1) {
   return window['go']['main']['App']['SetDefaultLLMProvider'](arg1);
+}
+
+export function SetSkillActive(arg1, arg2) {
+  return window['go']['main']['App']['SetSkillActive'](arg1, arg2);
 }
 
 export function TestDataSource(arg1) {
@@ -148,4 +172,8 @@ export function UpdateGeneralSettings(arg1) {
 
 export function UpdateLLMProvider(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['UpdateLLMProvider'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function UpdateSkill(arg1, arg2, arg3) {
+  return window['go']['main']['App']['UpdateSkill'](arg1, arg2, arg3);
 }

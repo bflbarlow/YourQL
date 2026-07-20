@@ -213,7 +213,8 @@ func ProcessUserMessage(conversationID uint, userMessage string, onPhase func(st
 	}
 
 	// Step 10: Build LLM messages
-	llmMessages := buildLlmMessages(userMessage, history, schema, dbConnection, conversation.VizEnabled)
+	skillsContent, _ := GetEnabledSkillsContent(conversation.ID)
+	llmMessages := buildLlmMessages(userMessage, history, schema, dbConnection, conversation.VizEnabled, skillsContent)
 	log.Printf("[DiscussionEngine] Message count for LLM: %d", len(llmMessages))
 
 	// Step 11: Call LLM
@@ -474,11 +475,11 @@ func storePayload(conversationID uint, round any, label, requestJSON, responseJS
 }
 
 // buildLlmMessages constructs the message list for the LLM.
-func buildLlmMessages(userMessage string, history []*models.ConversationMessage, schema *DataSchema, dbConnection *models.DataSource, vizEnabled bool) []ChatMessage {
+func buildLlmMessages(userMessage string, history []*models.ConversationMessage, schema *DataSchema, dbConnection *models.DataSource, vizEnabled bool, skillsContent string) []ChatMessage {
 	messages := []ChatMessage{}
 
 	hasDB := dbConnection != nil
-	systemPrompt := buildSystemPrompt(schema, hasDB, dbConnection, vizEnabled)
+	systemPrompt := buildSystemPrompt(schema, hasDB, dbConnection, vizEnabled, skillsContent)
 	messages = append(messages, ChatMessage{Role: "system", Content: systemPrompt})
 
 	for _, msg := range history {
@@ -749,7 +750,7 @@ func formatSQLResultsForLLM(sqlResultsJSON string) string {
 }
 
 // buildSystemPrompt creates the system prompt with schema and instructions.
-func buildSystemPrompt(schema *DataSchema, hasDB bool, dbConnection *models.DataSource, vizEnabled bool) string {
+func buildSystemPrompt(schema *DataSchema, hasDB bool, dbConnection *models.DataSource, vizEnabled bool, skillsContent string) string {
 	var sb strings.Builder
 	
 	if dbConnection != nil {
@@ -906,6 +907,13 @@ func buildSystemPrompt(schema *DataSchema, hasDB bool, dbConnection *models.Data
 		sb.WriteString("  * scatter = correlation, relationship between two numeric variables\n")
 		sb.WriteString("- Do NOT include viz_config unless the user explicitly asks for a chart or the data clearly benefits from one\n")
 		sb.WriteString("- The viz_config must be a valid JSON string (double-quote all keys and values, escape internal quotes)\n\n")
+	}
+
+	// User-defined skill context (appended after viz instructions)
+	if skillsContent != "" {
+		sb.WriteString("\n## Additional Context (from Skills)\n")
+		sb.WriteString(skillsContent)
+		sb.WriteString("\n")
 	}
 
 	sb.WriteString("Your response must be a valid JSON object, no additional text.\n")

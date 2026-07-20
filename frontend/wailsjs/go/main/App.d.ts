@@ -14,17 +14,23 @@ export function CreateDataSource(arg1:string,arg2:string,arg3:string,arg4:number
 
 export function CreateLLMProvider(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<void>;
 
+export function CreateSkill(arg1:string,arg2:string):Promise<models.Skill>;
+
 export function DeleteConversation(arg1:number):Promise<void>;
 
 export function DeleteDataSource(arg1:number):Promise<void>;
 
 export function DeleteLLMProvider(arg1:number):Promise<void>;
 
+export function DeleteSkill(arg1:number):Promise<void>;
+
 export function DuplicateConversation(arg1:number):Promise<models.Conversation>;
 
 export function ExecuteQuery(arg1:number,arg2:string):Promise<main.QueryResult>;
 
 export function GetConversationMessages(arg1:number):Promise<Array<models.ConversationMessage>>;
+
+export function GetConversationSkillIDs(arg1:number):Promise<Array<number>>;
 
 export function GetGeneralSettings():Promise<main.GeneralSettings>;
 
@@ -40,13 +46,19 @@ export function ListDiscussions():Promise<Array<string>>;
 
 export function ListLLMProviders():Promise<Array<main.LLMProviderSetting>>;
 
+export function ListSkills():Promise<Array<models.Skill>>;
+
 export function ProcessUserMessage(arg1:number,arg2:string):Promise<void>;
 
 export function RestoreConversation(arg1:number):Promise<void>;
 
+export function SetConversationSkill(arg1:number,arg2:number,arg3:boolean):Promise<void>;
+
 export function SetDefaultDataSource(arg1:number):Promise<void>;
 
 export function SetDefaultLLMProvider(arg1:number):Promise<void>;
+
+export function SetSkillActive(arg1:number,arg2:boolean):Promise<void>;
 
 export function TestDataSource(arg1:number):Promise<string>;
 
@@ -77,3 +89,5 @@ export function UpdateDataSource(arg1:number,arg2:string,arg3:string,arg4:string
 export function UpdateGeneralSettings(arg1:main.GeneralSettings):Promise<void>;
 
 export function UpdateLLMProvider(arg1:number,arg2:string,arg3:string,arg4:string,arg5:string):Promise<void>;
+
+export function UpdateSkill(arg1:number,arg2:string,arg3:string):Promise<models.Skill>;
