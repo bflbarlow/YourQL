@@ -343,8 +343,13 @@
       dbStatus = 'Error: Name is required'
       return
     }
-    // Require database for all types except SQLite
-    if (dbDetailForm.type !== 'sqlite' && !dbDetailForm.database.trim()) {
+    // Require database for DB types, file path for file types
+    const isFile = dbDetailForm.type === 'csv_file' || dbDetailForm.type === 'excel_file'
+    if (isFile && !dbDetailForm.filePath.trim()) {
+      dbStatus = 'Error: File path is required'
+      return
+    }
+    if (!isFile && dbDetailForm.type !== 'sqlite' && !dbDetailForm.database.trim()) {
       dbStatus = 'Error: Database name is required'
       return
     }
@@ -413,7 +418,12 @@
   }
 
   async function handleTestNewConnection() {
-    if (dbDetailForm.type !== 'sqlite' && !dbDetailForm.database.trim()) {
+    const isFile = dbDetailForm.type === 'csv_file' || dbDetailForm.type === 'excel_file'
+    if (isFile && !dbDetailForm.filePath.trim()) {
+      dbStatus = 'Error: File path is required'
+      return
+    }
+    if (!isFile && dbDetailForm.type !== 'sqlite' && !dbDetailForm.database.trim()) {
       dbStatus = 'Error: Database name is required'
       return
     }
