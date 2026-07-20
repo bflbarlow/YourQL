@@ -6,10 +6,16 @@
   let chart = null;
   let error = $state(null);
 
+  $effect(() => {
+    if (config && canvas) {
+      console.log('[VizChart] canvas ready, initializing chart...', { config });
+      initChart();
+    }
+  });
+
   async function initChart() {
-    if (!canvas || !config) return;
+    if (!canvas) return;
     try {
-      // Dynamically import Chart.js to avoid module-level side effects
       const { Chart, registerables } = await import('chart.js');
       Chart.register(...registerables);
 
@@ -19,27 +25,25 @@
       }
 
       const cfg = typeof config === 'string' ? JSON.parse(config) : config;
-      if (!cfg || !cfg.type) return;
+      console.log('[VizChart] chart config:', cfg);
 
-      // Ensure responsive defaults
+      if (!cfg || !cfg.type) {
+        console.warn('[VizChart] missing chart type');
+        return;
+      }
+
       if (!cfg.options) cfg.options = {};
       cfg.options.responsive = true;
       cfg.options.maintainAspectRatio = false;
 
       chart = new Chart(canvas, cfg);
       error = null;
+      console.log('[VizChart] chart created successfully');
     } catch (e) {
       error = String(e);
-      console.error('VizChart render failed:', e);
+      console.error('[VizChart] render failed:', e);
     }
   }
-
-  // Watch for config or canvas changes
-  $effect(() => {
-    if (config && canvas) {
-      initChart();
-    }
-  });
 
   onDestroy(() => {
     if (chart) {
@@ -47,20 +51,15 @@
       chart = null;
     }
   });
-
-  // Bind canvas ref
-  function setCanvas(el) {
-    canvas = el;
-  }
 </script>
 
-{#if config}
+{#if config && !error}
   <div class="viz-chart-container">
-    {#if error}
-      <div class="viz-error">Chart unavailable: {error}</div>
-    {:else}
-      <canvas bind:this={setCanvas}></canvas>
-    {/if}
+    <canvas bind:this={canvas}></canvas>
+  </div>
+{:else if error}
+  <div class="viz-chart-container">
+    <div class="viz-error">Chart unavailable: {error}</div>
   </div>
 {/if}
 
@@ -68,7 +67,7 @@
   .viz-chart-container {
     position: relative;
     width: 100%;
-    height: 380px;
+    min-height: 380px;
     margin: 0.75rem 0;
     padding: 1rem;
     background: var(--bg-secondary, #1e1e1e);
@@ -77,13 +76,13 @@
   }
   canvas {
     width: 100% !important;
-    height: 100% !important;
+    min-height: 340px !important;
   }
   .viz-error {
     display: flex;
     align-items: center;
     justify-content: center;
-    height: 100%;
+    height: 380px;
     color: #999;
     font-size: 0.875rem;
   }
