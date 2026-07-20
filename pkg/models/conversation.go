@@ -19,4 +19,5 @@ type Conversation struct {
 	DeletedAt      *time.Time `json:"deleted_at,omitempty"`
 	TechDetails    bool       `json:"tech_details"`
 	ContextDetails bool       `json:"context_details"`
+	Summarize      bool       `json:"summarize"`
 }

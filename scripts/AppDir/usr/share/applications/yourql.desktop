@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=YourQL
+Comment=Natural language database queries
+Exec=yourql
+Icon=yourql
+Type=Application
+Categories=Development;Database;
+Terminal=false

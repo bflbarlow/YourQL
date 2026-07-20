@@ -1,0 +1,50 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV GO_VERSION=1.23.0
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl wget git build-essential pkg-config \
+    libgtk-3-dev libwebkit2gtk-4.1-dev \
+    imagemagick file fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz | tar -C /usr/local -xz
+ENV PATH="/usr/local/go/bin:/root/go/bin:$PATH"
+
+WORKDIR /build
+COPY go.mod go.sum ./
+COPY main.go app.go ./
+COPY pkg/ ./pkg/
+COPY frontend/dist/ ./frontend/dist/
+COPY frontend/wailsjs/ ./frontend/wailsjs/
+
+RUN go mod download
+
+RUN CGO_ENABLED=1 go build -o yourql .
+
+RUN wget -q -O /usr/local/bin/linuxdeploy \
+    https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage && \
+    chmod +x /usr/local/bin/linuxdeploy && \
+    /usr/local/bin/linuxdeploy --appimage-extract 2>/dev/null && \
+    mv squashfs-root /opt/linuxdeploy && \
+    chmod +x /opt/linuxdeploy/AppRun
+    wget -q -O /usr/local/bin/linuxdeploy-plugin-gtk.sh \
+    https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/master/linuxdeploy-plugin-gtk.sh && \
+    chmod +x /usr/local/bin/linuxdeploy-plugin-gtk.sh
+
+COPY scripts/AppDir /AppDir
+
+RUN cp /build/yourql /AppDir/usr/bin/yourql && \
+    chmod +x /AppDir/AppRun && \
+    ln -sf usr/share/applications/yourql.desktop /AppDir/yourql.desktop && \
+    ln -sf usr/share/icons/hicolor/256x256/apps/yourql.png /AppDir/yourql.png && \
+    convert -size 256x256 xc:'#1a1a1a' \
+        -fill '#0288d1' -draw 'roundrectangle 48,48 208,208 24,24' \
+        -fill white -font DejaVu-Sans-Bold -pointsize 110 -gravity center -annotate 0 'YQ' \
+        /AppDir/usr/share/icons/hicolor/256x256/apps/yourql.png && \
+    cd / && \
+    /opt/linuxdeploy/AppRun --appdir AppDir --plugin gtk --output appimage && \
+    ls -lh *.AppImage
+
+CMD ["bash"]

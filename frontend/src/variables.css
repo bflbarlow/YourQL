@@ -1,0 +1,67 @@
+/* YourQL — CSS Custom Properties for UI Scaling
+   Imported by main.js. Scale is applied via data-ui-scale on <html>:
+     small  = 85% of base
+     medium = 100% (default)
+     large  = 120% of base
+*/
+
+:root {
+  /* ===== Font Sizes ===== */
+  --font-2xs:  0.625rem; /* 10px */
+  --font-xs:   0.6875rem; /* 11px */
+  --font-sm:   0.75rem;   /* 12px */
+  --font-base: 0.8125rem; /* 13px */
+  --font-md:   0.875rem;  /* 14px */
+  --font-lg:   0.9375rem; /* 15px */
+  --font-xl:   1rem;      /* 16px */
+  --font-2xl:  1.125rem;  /* 18px */
+  --font-3xl:  1.25rem;   /* 20px */
+  --font-4xl:  1.5rem;    /* 24px */
+  --font-5xl:  1.75rem;   /* 28px */
+
+  /* ===== Spacing ===== */
+  --space-2xs: 0.125rem; /* 2px  */
+  --space-xs:  0.25rem;  /* 4px  */
+  --space-sm:  0.375rem; /* 6px  */
+  --space-md:  0.5rem;   /* 8px  */
+  --space-lg:  0.625rem; /* 10px */
+  --space-xl:  0.75rem;  /* 12px */
+  --space-2xl: 0.875rem; /* 14px */
+  --space-3xl: 1rem;     /* 16px */
+  --space-4xl: 1.25rem;  /* 20px */
+  --space-5xl: 1.5rem;   /* 24px */
+  --space-6xl: 1.875rem; /* 30px */
+  --space-7xl: 2.5rem;   /* 40px */
+
+  /* ===== Border Radii ===== */
+  --radius-sm: 0.25rem;  /* 4px */
+  --radius-md: 0.375rem; /* 6px */
+
+  /* ===== Layout ===== */
+  --sidebar-width:        15.625rem; /* 250px */
+  --sidebar-collapsed:    3.75rem;   /* 60px  */
+  --sidebar-padding-x:    1.25rem;   /* 20px  */
+  --sidebar-padding-y:    1.25rem;   /* 20px  */
+  --main-padding-x:       2.5rem;    /* 40px  */
+  --main-padding-y:       1.875rem;  /* 30px  */
+  --content-max-width:    50rem;     /* 800px */
+  --modal-width:          31.25rem;  /* 500px */
+  --gear-popover-width:   20rem;     /* 320px */
+  --gear-popover-wide:    26.25rem;  /* 420px */
+
+  /* ===== Border Widths (don't scale) ===== */
+  --border-thin:  1px;
+  --border-thick: 2px;
+  --border-heavy: 3px;
+}
+
+/* ===== Scale Modifiers ===== */
+html[data-ui-scale="small"] {
+  font-size: 13.6px; /* 85% of 16px */
+}
+
+html[data-ui-scale="large"] {
+  font-size: 19.2px; /* 120% of 16px */
+}
+
+/* medium (default) = 16px browser default */
