@@ -7,7 +7,18 @@ echo ""
 # ---- 1. Install dependencies ----
 echo "[1/5] Installing system dependencies..."
 sudo apt-get update -qq
-sudo apt-get install -y -qq build-essential libgtk-3-dev libwebkit2gtk-4.1-dev imagemagick wget curl
+
+# Detect Ubuntu version to pick correct WebKit package
+. /etc/os-release 2>/dev/null
+if [ "${VERSION_ID:-0}" \> "24" ] 2>/dev/null || [ "${VERSION_ID:-0}" = "24.04" ]; then
+    WEBKIT_PKG="libwebkit2gtk-4.1-dev"
+    WEBKIT_TAG="webkit2_41"
+else
+    WEBKIT_PKG="libwebkit2gtk-4.0-dev"
+    WEBKIT_TAG=""
+fi
+
+sudo apt-get install -y -qq build-essential libgtk-3-dev $WEBKIT_PKG imagemagick wget curl
 
 # ---- 2. Install Go ----
 if ! command -v go &>/dev/null; then
@@ -39,7 +50,12 @@ git pull
 
 # Build the binary
 go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
-wails build -platform linux/amd64 -tags webkit2_41
+if [ -n "$WEBKIT_TAG" ]; then
+    WEBKIT_FLAGS="-tags $WEBKIT_TAG"
+else
+    WEBKIT_FLAGS=""
+fi
+wails build -platform linux/amd64 $WEBKIT_FLAGS
 
 # ---- 5. Package as AppImage ----
 echo "[5/5] Packaging AppImage..."
