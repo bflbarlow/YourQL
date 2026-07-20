@@ -1,9 +1,9 @@
 <script>
   import { onDestroy } from 'svelte';
-  import { Chart, registerables } from 'chart.js';
+  import { Chart, registerables, Colors } from 'chart.js';
 
-  // Register once at module level
-  Chart.register(...registerables);
+  // Register once at module level (Colors plugin auto-assigns dataset colors)
+  Chart.register(...registerables, Colors);
   Chart.defaults.borderColor = '#e9ecef';
   Chart.defaults.font.family = 'system-ui, -apple-system, sans-serif';
   Chart.defaults.font.size = 12;
