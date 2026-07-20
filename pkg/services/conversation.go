@@ -28,6 +28,8 @@ func CreateConversation(title string, llmProviderID, dbConnectionID *uint) (*mod
 	return &models.Conversation{
 		ID:             uint(id),
 		Title:          &title,
+		LLMProviderID:  llmProviderID,
+		DBConnectionID: dbConnectionID,
 		Status:         status,
 		CreatedAt:      now,
 		UpdatedAt:      now,
