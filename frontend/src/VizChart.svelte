@@ -1,5 +1,13 @@
 <script>
   import { onDestroy } from 'svelte';
+  import { Chart, registerables } from 'chart.js';
+
+  // Register once at module level
+  Chart.register(...registerables);
+  Chart.defaults.color = '#6c757d';
+  Chart.defaults.borderColor = '#e9ecef';
+  Chart.defaults.font.family = 'system-ui, -apple-system, sans-serif';
+  Chart.defaults.font.size = 12;
 
   let { config } = $props();
   let canvas = $state(null);
@@ -8,48 +16,30 @@
 
   $effect(() => {
     if (config && canvas) {
-      console.log('[VizChart] canvas ready, initializing chart...', { config });
-      initChart();
-    }
-  });
-
-  async function initChart() {
-    if (!canvas) return;
-    try {
-      const { Chart, registerables } = await import('chart.js');
-      Chart.register(...registerables);
-
-      // Soft color palette for grid lines and text
-      Chart.defaults.color = '#6c757d';
-      Chart.defaults.borderColor = '#e9ecef';
-      Chart.defaults.font.family = 'system-ui, -apple-system, sans-serif';
-      Chart.defaults.font.size = 12;
-
+      console.log('[VizChart] canvas ready, initializing chart...', config);
       if (chart) {
         chart.destroy();
         chart = null;
       }
+      try {
+        const cfg = typeof config === 'string' ? JSON.parse(config) : config;
+        if (!cfg || !cfg.type) {
+          error = 'Missing chart type';
+          return;
+        }
+        if (!cfg.options) cfg.options = {};
+        cfg.options.responsive = true;
+        cfg.options.maintainAspectRatio = false;
 
-      const cfg = typeof config === 'string' ? JSON.parse(config) : config;
-      console.log('[VizChart] chart config:', cfg);
-
-      if (!cfg || !cfg.type) {
-        console.warn('[VizChart] missing chart type');
-        return;
+        chart = new Chart(canvas, cfg);
+        error = null;
+        console.log('[VizChart] chart created:', cfg.type);
+      } catch (e) {
+        error = String(e);
+        console.error('[VizChart] render failed:', e);
       }
-
-      if (!cfg.options) cfg.options = {};
-      cfg.options.responsive = true;
-      cfg.options.maintainAspectRatio = false;
-
-      chart = new Chart(canvas, cfg);
-      error = null;
-      console.log('[VizChart] chart created successfully');
-    } catch (e) {
-      error = String(e);
-      console.error('[VizChart] render failed:', e);
     }
-  }
+  });
 
   onDestroy(() => {
     if (chart) {
@@ -65,7 +55,7 @@
   </div>
 {:else if error}
   <div class="viz-chart-container">
-    <div class="viz-error">Chart unavailable: {error}</div>
+    <div class="viz-error">Chart: {error}</div>
   </div>
 {/if}
 
