@@ -63,6 +63,7 @@
       showSkillEditor = false
       skillEditor = null
       await loadSkills()
+      onUpdate()
     } catch (e) {
       console.error('Failed to save skill:', e)
     }
@@ -72,6 +73,7 @@
     try {
       await DeleteSkill(id)
       await loadSkills()
+      onUpdate()
     } catch (e) {
       console.error('Failed to delete skill:', e)
     }
@@ -83,6 +85,7 @@
       const skill = skills.find(s => s.id === id)
       if (skill) skill.is_active = active
       skills = [...skills]
+      onUpdate()
     } catch (e) {
       console.error('Failed to toggle skill:', e)
     }

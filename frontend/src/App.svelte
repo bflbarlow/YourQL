@@ -532,7 +532,7 @@
         onTechDetailsToggle={handleTechDetailsToggle}
         onArchiveConversation={handleArchiveConversation}
         onUpdateConversationSettings={handleUpdateConversationSettings}
-        onGearClick={() => { selectedConversation = activeConversation; showGearPopover = true; loadConversationSkills(activeConversation.id) }}
+        onGearClick={async () => { selectedConversation = activeConversation; showGearPopover = true; allSkills = await ListSkills() || []; loadConversationSkills(activeConversation.id) }}
       />
     {:else if activeView === 'settings'}
       <SettingsView
