@@ -105,6 +105,10 @@ func (a *App) UpdateConversationPinned(id uint, pinned bool) error {
 	return services.UpdateConversationPinned(id, pinned)
 }
 
+func (a *App) UpdateConversationSummarize(id uint, summarize bool) error {
+	return services.UpdateConversationSummarize(id, summarize)
+}
+
 func (a *App) DuplicateConversation(id uint) (*models.Conversation, error) {
 	return services.DuplicateConversation(id)
 }
@@ -196,7 +200,7 @@ func (a *App) TestLLMProviderConnection(id uint) (string, error) {
 type DBConnectionSetting struct {
 	ID                   uint   `json:"id"`
 	Name                 string `json:"name"`
-	Type                 string `json:"type"` // mysql, sqlite
+	Type                 string `json:"type"`
 	Host                 string `json:"host,omitempty"`
 	Port                 int    `json:"port,omitempty"`
 	Database             string `json:"database,omitempty"`
@@ -208,6 +212,7 @@ type DBConnectionSetting struct {
 	MaxExplorationRounds int    `json:"max_exploration_rounds"`
 	ExplorationSafety    string `json:"exploration_safety"`
 	Config               string `json:"config,omitempty"`
+	Extra                string `json:"extra,omitempty"`
 }
 
 func (a *App) ListDBConnections() ([]DBConnectionSetting, error) {
@@ -257,6 +262,11 @@ func (a *App) ListDBConnections() ([]DBConnectionSetting, error) {
 			}
 		}
 
+		var extraStr string
+		if c.Extra != nil {
+			extraStr = *c.Extra
+		}
+
 		settings = append(settings, DBConnectionSetting{
 			ID:                   c.ID,
 			Name:                 c.Name,
@@ -272,19 +282,25 @@ func (a *App) ListDBConnections() ([]DBConnectionSetting, error) {
 			MaxExplorationRounds: maxExplorationRounds,
 			ExplorationSafety:    explorationSafety,
 			Config:               configStr,
+			Extra:                extraStr,
 		})
 	}
 	return settings, nil
 }
 
-func (a *App) CreateDBConnection(name, dbType, host string, port int, database, username, password, sslMode, config string) error {
-	_, err := services.CreateDBConnection(name, dbType, host, port, database, username, password, sslMode, config)
+func (a *App) CreateDBConnection(name, dbType, host string, port int, database, username, password, sslMode, config, extra string) error {
+	_, err := services.CreateDBConnection(name, dbType, host, port, database, username, password, sslMode, config, extra)
 	return err
 }
 
-func (a *App) UpdateDBConnection(id uint, name, host, database, username, password, sslMode string, port int, config string) error {
-	_, err := services.UpdateDBConnection(id, &name, &host, &port, &database, &username, &password, &sslMode, &config)
+func (a *App) UpdateDBConnection(id uint, name, host, database, username, password, sslMode string, port int, config, extra string) error {
+	_, err := services.UpdateDBConnection(id, &name, &host, &port, &database, &username, &password, &sslMode, &config, &extra)
 	return err
+}
+
+// GetSupportedDBTypes returns metadata about all registered database types.
+func (a *App) GetSupportedDBTypes() []services.DBTypeInfo {
+	return services.GetSupportedDBTypes()
 }
 
 func (a *App) DeleteDBConnection(id uint) error {
@@ -301,18 +317,30 @@ func (a *App) TestDBConnection(id uint) (string, error) {
 		return "", err
 	}
 
-	schema, err := services.GetDatabaseSchema(conn)
-	if err != nil {
+	if err := services.TestDBConnection(conn); err != nil {
 		return fmt.Sprintf("Connection failed: %v", err), nil
 	}
 
-	tableCount := len(schema.Tables)
-	totalRows := int64(0)
-	for _, t := range schema.Tables {
-		totalRows += t.RowCount
-	}
+	return "Connection successful.", nil
+}
 
-	return fmt.Sprintf("Connected. Found %d table(s) with ~%d rows.", tableCount, totalRows), nil
+// TestNewDBConnection tests a new connection using form fields without saving first.
+func (a *App) TestNewDBConnection(name, dbType, host string, port int, database, username, password, sslMode, extra string) (string, error) {
+	conn := &models.DBConnection{
+		Name:     name,
+		Type:     dbType,
+		Host:     &host,
+		Port:     &port,
+		Database: &database,
+		Username: &username,
+		Password: &password,
+		SSLMode:  &sslMode,
+		Extra:    &extra,
+	}
+	if err := services.TestDBConnection(conn); err != nil {
+		return fmt.Sprintf("Connection failed: %v", err), nil
+	}
+	return "Connection successful.", nil
 }
 
 // SchemaPreview represents a preview of a database schema for the Settings UI.

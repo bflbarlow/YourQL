@@ -11,20 +11,25 @@ import (
 	"YourQL/pkg/models"
 )
 
-func CreateDBConnection(name, dbType, host string, port int, database, username, password, sslMode string, configJSON string) (*models.DBConnection, error) {
+func CreateDBConnection(name, dbType, host string, port int, database, username, password, sslMode string, configJSON, extraJSON string) (*models.DBConnection, error) {
 	now := time.Now().UTC()
 	isActive := true
 
-	var configArg interface{}
+	var configArg, extraArg interface{}
 	if configJSON == "" {
 		configArg = nil
 	} else {
 		configArg = configJSON
 	}
+	if extraJSON == "" {
+		extraArg = nil
+	} else {
+		extraArg = extraJSON
+	}
 
 	result, err := models.DB.Exec(
-		"INSERT INTO db_connections (name, type, host, port, `database`, username, password, ssl_mode, is_default, is_active, config, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		name, dbType, host, port, database, username, password, sslMode, false, isActive, configArg, now, now,
+		"INSERT INTO db_connections (name, type, host, port, `database`, username, password, ssl_mode, is_default, is_active, config, extra, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		name, dbType, host, port, database, username, password, sslMode, false, isActive, configArg, extraArg, now, now,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create database connection: %w", err)
@@ -50,15 +55,15 @@ func CreateDBConnection(name, dbType, host string, port int, database, username,
 func GetDBConnectionByID(id uint) (*models.DBConnection, error) {
 	var c models.DBConnection
 	var hostNull, databaseNull, usernameNull, passwordNull, sslModeNull sql.NullString
-	var configNull []byte
+	var configNull, extraNull []byte
 	var portNull sql.NullInt64
 	err := models.DB.QueryRow(
-		"SELECT id, name, type, host, port, `database`, username, password, ssl_mode, is_default, is_active, config, created_at, updated_at FROM db_connections WHERE id = ? LIMIT 1",
+		"SELECT id, name, type, host, port, `database`, username, password, ssl_mode, is_default, is_active, config, extra, created_at, updated_at FROM db_connections WHERE id = ? LIMIT 1",
 		id,
 	).Scan(
 		&c.ID, &c.Name, &c.Type, &hostNull, &portNull,
 		&databaseNull, &usernameNull, &passwordNull, &sslModeNull,
-		&c.IsDefault, &c.IsActive, &configNull, &c.CreatedAt, &c.UpdatedAt,
+		&c.IsDefault, &c.IsActive, &configNull, &extraNull, &c.CreatedAt, &c.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, errors.New("database connection not found")
@@ -89,12 +94,16 @@ func GetDBConnectionByID(id uint) (*models.DBConnection, error) {
 		s := string(configNull)
 		c.Config = &s
 	}
+	if len(extraNull) > 0 {
+		s := string(extraNull)
+		c.Extra = &s
+	}
 	return &c, nil
 }
 
 func ListDBConnectionsByWorkspace() ([]*models.DBConnection, error) {
 	rows, err := models.DB.Query(
-		"SELECT id, name, type, host, port, `database`, username, password, ssl_mode, is_default, is_active, config, created_at, updated_at FROM db_connections ORDER BY is_default DESC, created_at DESC",
+		"SELECT id, name, type, host, port, `database`, username, password, ssl_mode, is_default, is_active, config, extra, created_at, updated_at FROM db_connections ORDER BY is_default DESC, created_at DESC",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list database connections: %w", err)
@@ -105,12 +114,12 @@ func ListDBConnectionsByWorkspace() ([]*models.DBConnection, error) {
 	for rows.Next() {
 		var c models.DBConnection
 		var hostNull, databaseNull, usernameNull, passwordNull, sslModeNull sql.NullString
-		var configNull []byte
+		var configNull, extraNull []byte
 		var portNull sql.NullInt64
 		err := rows.Scan(
 			&c.ID, &c.Name, &c.Type, &hostNull, &portNull,
 			&databaseNull, &usernameNull, &passwordNull, &sslModeNull,
-			&c.IsDefault, &c.IsActive, &configNull, &c.CreatedAt, &c.UpdatedAt,
+			&c.IsDefault, &c.IsActive, &configNull, &extraNull, &c.CreatedAt, &c.UpdatedAt,
 		)
 		if err != nil {
 			continue
@@ -138,12 +147,16 @@ func ListDBConnectionsByWorkspace() ([]*models.DBConnection, error) {
 			s := string(configNull)
 			c.Config = &s
 		}
+		if len(extraNull) > 0 {
+			s := string(extraNull)
+			c.Extra = &s
+		}
 		connections = append(connections, &c)
 	}
 	return connections, nil
 }
 
-func UpdateDBConnection(id uint, name *string, host *string, port *int, database *string, username *string, password *string, sslMode *string, configJSON *string) (*models.DBConnection, error) {
+func UpdateDBConnection(id uint, name *string, host *string, port *int, database *string, username *string, password *string, sslMode *string, configJSON *string, extraJSON *string) (*models.DBConnection, error) {
 	c, err := GetDBConnectionByID(id)
 	if err != nil {
 		return nil, err
@@ -172,7 +185,7 @@ func UpdateDBConnection(id uint, name *string, host *string, port *int, database
 		updates = append(updates, "username = ?")
 		args = append(args, *username)
 	}
-	if password != nil {
+	if password != nil && *password != "" {
 		updates = append(updates, "password = ?")
 		args = append(args, *password)
 	}
@@ -186,6 +199,14 @@ func UpdateDBConnection(id uint, name *string, host *string, port *int, database
 			args = append(args, nil)
 		} else {
 			args = append(args, *configJSON)
+		}
+	}
+	if extraJSON != nil {
+		updates = append(updates, "extra = ?")
+		if *extraJSON == "" {
+			args = append(args, nil)
+		} else {
+			args = append(args, *extraJSON)
 		}
 	}
 
@@ -261,14 +282,14 @@ func SetDefaultDBConnection(connectionID uint) error {
 func GetDefaultDBConnection() (*models.DBConnection, error) {
 	var c models.DBConnection
 	var hostNull, databaseNull, usernameNull, passwordNull, sslModeNull sql.NullString
-	var configNull []byte
+	var configNull, extraNull []byte
 	var portNull sql.NullInt64
 	err := models.DB.QueryRow(
-		"SELECT id, name, type, host, port, `database`, username, password, ssl_mode, is_default, is_active, config, created_at, updated_at FROM db_connections WHERE is_default = 1 LIMIT 1",
+		"SELECT id, name, type, host, port, `database`, username, password, ssl_mode, is_default, is_active, config, extra, created_at, updated_at FROM db_connections WHERE is_default = 1 LIMIT 1",
 	).Scan(
 		&c.ID, &c.Name, &c.Type, &hostNull, &portNull,
 		&databaseNull, &usernameNull, &passwordNull, &sslModeNull,
-		&c.IsDefault, &c.IsActive, &configNull, &c.CreatedAt, &c.UpdatedAt,
+		&c.IsDefault, &c.IsActive, &configNull, &extraNull, &c.CreatedAt, &c.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -287,7 +308,7 @@ func GetDefaultDBConnection() (*models.DBConnection, error) {
 	if databaseNull.Valid {
 		c.Database = &databaseNull.String
 	}
-	if usernameNull.Value != nil {
+	if usernameNull.Valid {
 		c.Username = &usernameNull.String
 	}
 	if passwordNull.Valid {
@@ -299,6 +320,10 @@ func GetDefaultDBConnection() (*models.DBConnection, error) {
 	if len(configNull) > 0 {
 		s := string(configNull)
 		c.Config = &s
+	}
+	if len(extraNull) > 0 {
+		s := string(extraNull)
+		c.Extra = &s
 	}
 	return &c, nil
 }

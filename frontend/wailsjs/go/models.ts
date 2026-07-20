@@ -15,6 +15,7 @@ export namespace main {
 	    max_exploration_rounds: number;
 	    exploration_safety: string;
 	    config?: string;
+	    extra?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new DBConnectionSetting(source);
@@ -36,6 +37,7 @@ export namespace main {
 	        this.max_exploration_rounds = source["max_exploration_rounds"];
 	        this.exploration_safety = source["exploration_safety"];
 	        this.config = source["config"];
+	        this.extra = source["extra"];
 	    }
 	}
 	export class GeneralSettings {
@@ -210,6 +212,7 @@ export namespace models {
 	    deleted_at?: any;
 	    tech_details: boolean;
 	    context_details: boolean;
+	    summarize: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Conversation(source);
@@ -230,6 +233,7 @@ export namespace models {
 	        this.deleted_at = this.convertValues(source["deleted_at"], null);
 	        this.tech_details = source["tech_details"];
 	        this.context_details = source["context_details"];
+	        this.summarize = source["summarize"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -294,6 +298,27 @@ export namespace models {
 		    }
 		    return a;
 		}
+	}
+
+}
+
+export namespace services {
+	
+	export class DBTypeInfo {
+	    type: string;
+	    display_name: string;
+	    default_port: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DBTypeInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.type = source["type"];
+	        this.display_name = source["display_name"];
+	        this.default_port = source["default_port"];
+	    }
 	}
 
 }

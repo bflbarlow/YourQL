@@ -19,6 +19,7 @@ type DBConnection struct {
 	IsDefault  bool      `json:"is_default"`
 	IsActive   bool      `json:"is_active"`
 	Config     *string   `json:"config,omitempty"`
+	Extra      *string   `json:"extra,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
 }

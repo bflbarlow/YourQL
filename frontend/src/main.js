@@ -1,6 +1,18 @@
 import { mount } from 'svelte'
 import App from './App.svelte'
 import { EventsOn } from '../wailsjs/runtime/runtime.js'
+import './variables.css'
+
+// ==================== UI Scale ====================
+const SCALE_KEY = 'yourql-ui-scale'
+function applyScale(scale) {
+  document.documentElement.setAttribute('data-ui-scale', scale)
+  localStorage.setItem(SCALE_KEY, scale)
+}
+// Restore saved scale on load
+const savedScale = localStorage.getItem(SCALE_KEY) || 'medium'
+applyScale(savedScale)
+window.setUIScale = applyScale
 
 mount(App, {
   target: document.getElementById('app')
@@ -45,10 +57,37 @@ function sortTable(tableEl, colIndex, direction) {
     const tbody = tableEl.querySelector('tbody')
     if (!tbody) return
 
+    // Check if this table has a collapse toggle before clearing
+    const container = tableEl.closest('.results-card')
+    const expandBtn = container ? container.querySelector('.table-expand-btn') : null
+    const isExpanded = expandBtn && expandBtn.textContent.includes('Show first 10')
+    // Extract the collapsed-row-N class from existing rows (before we clear them)
+    let collapsedClass = null
+    if (expandBtn) {
+      for (const tr of tableEl.querySelectorAll('tr')) {
+        for (const cls of tr.classList) {
+          if (cls.startsWith('collapsed-row-')) {
+            collapsedClass = cls
+            break
+          }
+        }
+        if (collapsedClass) break
+      }
+    }
+
     tbody.innerHTML = ''
-    for (const row of sorted) {
+
+    for (let ri = 0; ri < sorted.length; ri++) {
+      const row = sorted[ri]
       const tr = document.createElement('tr')
-      tr.className = 'result-row'
+      let rowClass = 'result-row'
+      let rowStyle = ''
+      if (collapsedClass && ri >= 10 && !isExpanded) {
+        rowClass += ' ' + collapsedClass
+        rowStyle = 'display:none;'
+      }
+      tr.className = rowClass
+      if (rowStyle) tr.style.display = 'none'
       for (let i = 0; i < row.length; i++) {
         const td = document.createElement('td')
         const cell = String(row[i])

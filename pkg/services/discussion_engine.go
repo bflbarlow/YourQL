@@ -176,7 +176,10 @@ func ProcessUserMessage(conversationID uint, userMessage string, onPhase func(st
 	if dbConnection != nil {
 		schema, err = GetDatabaseSchema(dbConnection)
 		if err != nil {
+			log.Printf("Failed to fetch schema for %s: %v", dbConnection.Type, err)
 			_ = UpdateQueryStatus(query.ID, "error", nil, nil, stringPtr(fmt.Sprintf("Failed to fetch database schema: %v", err)), nil, nil, nil)
+		} else if schema != nil {
+			log.Printf("Fetched schema: %d tables", len(schema.Tables))
 		}
 	}
 
@@ -296,7 +299,7 @@ func ProcessUserMessage(conversationID uint, userMessage string, onPhase func(st
 					Content: er.ToMessageContent(),
 				})
 			}
-			executeFinalQueryWithRetry(ctx, query, llmResp, client, llmMessages, dbConnection, conversationID, explorationResults, maxFinalRetries)
+			executeFinalQueryWithRetry(ctx, query, llmResp, client, llmMessages, dbConnection, conversation, userMessage, explorationResults, maxFinalRetries)
 			assistantMessageSaved = true
 			return nil
 
@@ -417,7 +420,7 @@ func ProcessUserMessage(conversationID uint, userMessage string, onPhase func(st
 		onPhase("Running query...")
 	}
 
-	executeFinalQueryWithRetry(ctx, query, finalResp, client, llmMessages, dbConnection, conversationID, explorationResults, maxFinalRetries)
+	executeFinalQueryWithRetry(ctx, query, finalResp, client, llmMessages, dbConnection, conversation, userMessage, explorationResults, maxFinalRetries)
 	assistantMessageSaved = true
 
 	// Phase: finalizing
@@ -567,7 +570,7 @@ func (er *ExplorationResult) ToMessageContent() string {
 }
 
 // executeFinalQueryWithRetry wraps SQL execution in a retry loop.
-func executeFinalQueryWithRetry(ctx context.Context, query *models.Query, resp LLMResponse, client LLMClient, llmMessages []ChatMessage, dbConnection *models.DBConnection, conversationID uint, explorationResults []ExplorationResult, maxRetries int) {
+func executeFinalQueryWithRetry(ctx context.Context, query *models.Query, resp LLMResponse, client LLMClient, llmMessages []ChatMessage, dbConnection *models.DBConnection, conversation *models.Conversation, userMessage string, explorationResults []ExplorationResult, maxRetries int) {
 	lastSQL := ""
 	var lastErr error
 
@@ -590,7 +593,7 @@ func executeFinalQueryWithRetry(ctx context.Context, query *models.Query, resp L
 			}
 
 			if requestJSON != "" && responseJSON != "" {
-				_ = storePayload(conversationID, 0, fmt.Sprintf("retry-%d", attempt), requestJSON, responseJSON, llmMessages)
+				_ = storePayload(conversation.ID, 0, fmt.Sprintf("retry-%d", attempt), requestJSON, responseJSON, llmMessages)
 			}
 
 			cleanedResponse := extractJSONFromResponse(responseText)
@@ -616,7 +619,7 @@ func executeFinalQueryWithRetry(ctx context.Context, query *models.Query, resp L
 				}
 
 				_ = UpdateQueryStatus(query.ID, "error", &lastSQL, nil, stringPtr(fmt.Sprintf("%s: %v", newResp.Action, lastErr)), nil, nil, nil)
-				_, _ = CreateConversationMessage(conversationID, "assistant", displayMsg, llmContentPtr, nil, nil)
+				_, _ = CreateConversationMessage(conversation.ID, "assistant", displayMsg, llmContentPtr, nil, nil)
 				return
 			}
 			resp = newResp
@@ -630,7 +633,14 @@ func executeFinalQueryWithRetry(ctx context.Context, query *models.Query, resp L
 
 		results, err := executeSQL(dbConnection, resp.SQLQuery)
 		if err == nil {
-			renderSQLResults(query, resp, dbConnection, conversationID, explorationResults, results)
+			var summary *string
+			if conversation.Summarize {
+				s := summarizeResults(ctx, client, userMessage, resp.SQLQuery, results)
+				if s != "" {
+					summary = &s
+				}
+			}
+			renderSQLResults(query, resp, dbConnection, conversation.ID, explorationResults, results, summary)
 			return
 		}
 
@@ -643,7 +653,7 @@ func executeFinalQueryWithRetry(ctx context.Context, query *models.Query, resp L
 		log.Printf("[DiscussionEngine] SQL execution failed (attempt %d/%d): %v", attempt+1, maxRetries+1, err)
 	}
 
-	renderSQLError(query, resp, dbConnection, conversationID, explorationResults, lastErr)
+	renderSQLError(query, resp, dbConnection, conversation.ID, explorationResults, lastErr)
 }
 
 // handleClarification creates an assistant message asking for clarification.
@@ -840,14 +850,10 @@ func buildSystemPrompt(schema *DatabaseSchema, hasDB bool, dbConnection *models.
 	sb.WriteString("   - \"explanation\": optional short explanation of your reasoning.\n")
 	dbTypeHint := "SQL"
 	if dbConnection != nil {
-		switch dbConnection.Type {
-		case "sqlite":
-			dbTypeHint = "SQLite"
-		case "mysql":
-			dbTypeHint = "MySQL"
-		case "postgresql":
-			dbTypeHint = "PostgreSQL"
-		default:
+		driver, driverErr := GetDriver(dbConnection.Type)
+		if driverErr == nil {
+			dbTypeHint = driver.DisplayName()
+		} else {
 			dbTypeHint = dbConnection.Type
 		}
 	}
@@ -888,7 +894,7 @@ func buildSystemPrompt(schema *DatabaseSchema, hasDB bool, dbConnection *models.
 }
 
 // renderSQLResults renders a successful SQL query result as an assistant message.
-func renderSQLResults(query *models.Query, resp LLMResponse, dbConnection *models.DBConnection, conversationID uint, explorationResults []ExplorationResult, results *QueryResult) {
+func renderSQLResults(query *models.Query, resp LLMResponse, dbConnection *models.DBConnection, conversationID uint, explorationResults []ExplorationResult, results *QueryResult, summary *string) {
 	resultSummary := formatResults(results)
 
 	var explanation string
@@ -911,6 +917,7 @@ func renderSQLResults(query *models.Query, resp LLMResponse, dbConnection *model
 		SQL:             resp.SQLQuery,
 		Result:          results,
 		ExplorationHTML: explorationHTML,
+		Summary:         summary,
 	}
 	assistantMessageHTML := assistantResp.ToHTML()
 
@@ -938,6 +945,94 @@ func renderSQLResults(query *models.Query, resp LLMResponse, dbConnection *model
 	if err != nil {
 		log.Printf("[DiscussionEngine] Failed to create assistant message: %v", err)
 	}
+}
+
+// summarizeResults sends query results back to the LLM for a natural-language summary.
+func summarizeResults(ctx context.Context, client LLMClient, userQuestion, sqlQuery string, results *QueryResult) string {
+	if results == nil || results.RowCount == 0 {
+		return ""
+	}
+
+	formatted := formatSQLResultsForLLMFromQueryResult(results)
+	if formatted == "" {
+		return ""
+	}
+
+	prompt := fmt.Sprintf(`You are a helpful data analyst. Summarize the following SQL query results in plain English, directly answering the user's question.
+
+**User's question**: %s
+
+**SQL executed**:
+`+"```sql\n%s\n```"+`
+
+**Query results**:
+%s
+
+**Instructions**:
+- Answer the user's question directly, referencing specific numbers and facts from the data.
+- Keep it concise — 3-5 sentences is ideal.
+- If the results are empty, clearly state that no data matched the query.
+- Do NOT include a markdown table — this is a prose summary.
+- Do NOT suggest next steps — just answer the question.`, userQuestion, sqlQuery, formatted)
+
+	summaryMessages := []ChatMessage{
+		{Role: "user", Content: prompt},
+	}
+
+	summary, err := client.ChatCompletion(ctx, summaryMessages)
+	if err != nil {
+		log.Printf("[DiscussionEngine] Summarization failed: %v", err)
+		return ""
+	}
+
+	return strings.TrimSpace(summary)
+}
+
+// formatSQLResultsForLLMFromQueryResult formats a QueryResult for LLM consumption.
+func formatSQLResultsForLLMFromQueryResult(result *QueryResult) string {
+	if result == nil || len(result.Columns) == 0 || len(result.Rows) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("Columns: " + strings.Join(result.Columns, ", ") + "\n")
+
+	maxRows := 50
+	if len(result.Rows) > maxRows {
+		sb.WriteString(fmt.Sprintf("Showing %d of %d rows:\n\n", maxRows, len(result.Rows)))
+	} else {
+		sb.WriteString(fmt.Sprintf("(%d rows):\n\n", len(result.Rows)))
+	}
+
+	sb.WriteString("| ")
+	for i, col := range result.Columns {
+		if i > 0 {
+			sb.WriteString(" | ")
+		}
+		sb.WriteString(humanizeColumnName(col))
+	}
+	sb.WriteString(" |\n")
+	sb.WriteString("|" + strings.Repeat("---|", len(result.Columns)) + "\n")
+
+	for i, row := range result.Rows {
+		if i >= maxRows {
+			break
+		}
+		sb.WriteString("| ")
+		for j, val := range row {
+			if j > 0 {
+				sb.WriteString(" | ")
+			}
+			cell := fmt.Sprintf("%v", val)
+			if len(cell) > 80 {
+				cell = cell[:80] + "..."
+			}
+			sb.WriteString(cell)
+		}
+		sb.WriteString(" |\n")
+	}
+
+	return sb.String()
 }
 
 // renderSQLError renders a failed SQL query as an assistant message.

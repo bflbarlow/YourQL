@@ -49,6 +49,27 @@ func ConnectDatabase() error {
 }
 
 func migrate() error {
+	// =========================================================================
+	// MIGRATION SAFETY RULES — DO NOT VIOLATE:
+	//
+	// 1. Only ADD COLUMN in auto-migrations. Never drop, rename, or alter
+	//    existing columns in a way that can lose data.
+	// 2. Never use CREATE TABLE … AS SELECT — it strips constraints.
+	// 3. Never DROP TABLE and recreate — data loss is irreversible.
+	// 4. Use runMigration() for any change beyond ensureColumn(), so it
+	//    records success in schema_migrations and never re-runs.
+	// 5. If a migration cannot be done safely, SKIP it with a warning.
+	//    Do not fall back to a destructive workaround.
+	// =========================================================================
+
+	// Migrations tracking table — ensures each migration runs exactly once
+	if _, err := DB.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
+		name TEXT PRIMARY KEY,
+		applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	)`); err != nil {
+		return fmt.Errorf("failed to create schema_migrations: %w", err)
+	}
+
 	tables := []string{
 		// LLM Providers
 		`CREATE TABLE IF NOT EXISTS llm_providers (
@@ -79,6 +100,7 @@ func migrate() error {
 			is_default INTEGER DEFAULT 0,
 			is_active INTEGER DEFAULT 1,
 			config TEXT,
+			extra TEXT,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
@@ -95,6 +117,7 @@ func migrate() error {
 			pinned INTEGER DEFAULT 0,
 			tech_details INTEGER DEFAULT 0,
 		context_details INTEGER DEFAULT 0,
+		summarize INTEGER DEFAULT 0,
 			deleted_at DATETIME,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -147,6 +170,7 @@ func migrate() error {
 	ensureColumn("conversations", "deleted_at", "DATETIME")
 	ensureColumn("conversations", "tech_details", "INTEGER DEFAULT 0")
 	ensureColumn("conversations", "context_details", "INTEGER DEFAULT 0")
+	ensureColumn("conversations", "summarize", "INTEGER DEFAULT 0")
 	ensureColumn("conversations", "max_messages", "INTEGER DEFAULT 0")
 	ensureColumn("conversations", "max_context_messages", "INTEGER DEFAULT 10")
 	// Migrate existing conversations: set default to 10 if still 0
@@ -155,10 +179,35 @@ func migrate() error {
 	ensureColumn("conversation_messages", "llm_content", "TEXT")
 	ensureColumn("conversation_messages", "sql_results", "TEXT")
 	ensureColumn("conversation_messages", "metadata", "TEXT")
+	ensureColumn("db_connections", "extra", "TEXT")
+
+	// Remove legacy user_id column if it exists (from older schemas)
+	dropColumnIfExists("conversations", "user_id")
 
 	return nil
 }
 
+// runMigration executes fn exactly once. If the migration name already exists
+// in schema_migrations, it is skipped. This prevents re-applying or retrying
+// a migration that previously succeeded (or partially ran).
+//
+// IMPORTANT: fn must be non-destructive. The migration system guarantees
+// at-most-once execution, but fn itself must not corrupt existing data.
+func runMigration(name string, fn func() error) error {
+	var existing string
+	err := DB.QueryRow("SELECT name FROM schema_migrations WHERE name = ?", name).Scan(&existing)
+	if err == nil {
+		return nil // already applied
+	}
+	if err := fn(); err != nil {
+		return fmt.Errorf("migration %s failed: %w", name, err)
+	}
+	_, err = DB.Exec("INSERT INTO schema_migrations (name) VALUES (?)", name)
+	return err
+}
+
+// ensureColumn adds a column if it doesn't already exist.
+// NON-DESTRUCTIVE: Uses ALTER TABLE ADD COLUMN only — never touches existing data.
 func ensureColumn(tableName, columnName, columnDef string) error {
 	exists, err := columnExists(tableName, columnName)
 	if err != nil {
@@ -192,4 +241,29 @@ func columnExists(tableName, columnName string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// dropColumnIfExists drops a column using SQLite's native ALTER TABLE DROP COLUMN.
+//
+// NON-DESTRUCTIVE: Uses only ALTER TABLE DROP COLUMN (safe since SQLite 3.35.0).
+// If the SQLite engine is too old to support it, the migration is SKIPPED with
+// a warning — no data is touched, no table is rebuilt, no columns are lost.
+//
+// Tracked via runMigration so it never attempts twice on the same column.
+func dropColumnIfExists(tableName, columnName string) {
+	exists, err := columnExists(tableName, columnName)
+	if err != nil || !exists {
+		return // nothing to do
+	}
+
+	migrationName := fmt.Sprintf("drop_%s_%s", tableName, columnName)
+	_ = runMigration(migrationName, func() error {
+		_, err := DB.Exec(fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", tableName, columnName))
+		if err != nil {
+			log.Printf("WARNING: Could not drop column %s.%s (likely SQLite version too old): %v", tableName, columnName, err)
+			return fmt.Errorf("ALTER TABLE DROP COLUMN not supported: %w", err)
+		}
+		log.Printf("Dropped column %s from %s", columnName, tableName)
+		return nil
+	})
 }

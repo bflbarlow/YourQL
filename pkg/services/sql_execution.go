@@ -160,6 +160,21 @@ func executeSQL(conn *models.DBConnection, sqlQuery string) (*QueryResult, error
 	return executeSQLWithMode(conn, sqlQuery, false)
 }
 
+// executeNativeQuery runs a query via the NativeQuerier interface (used by BigQuery etc.).
+func executeNativeQuery(nq NativeQuerier, conn *models.DBConnection, sqlQuery string) (*QueryResult, error) {
+	columns, rows, err := nq.QueryRowsNative(conn, sqlQuery)
+	if err != nil {
+		return nil, fmt.Errorf("query execution failed: %w", err)
+	}
+	defer nq.CloseNative(conn)
+
+	return &QueryResult{
+		Columns:  columns,
+		Rows:     rows,
+		RowCount: len(rows),
+	}, nil
+}
+
 // executeSQLWithMode is like executeSQL but allows specifying exploration mode.
 func executeSQLWithMode(conn *models.DBConnection, sqlQuery string, isExploration bool) (*QueryResult, error) {
 	sqlQuery = applyDefaultLimit(sqlQuery, conn, isExploration)
@@ -182,7 +197,13 @@ func executeSQLWithMode(conn *models.DBConnection, sqlQuery string, isExploratio
 		return nil, fmt.Errorf("failed to build DSN: %w", err)
 	}
 
-	db, err := sql.Open(conn.Type, dsn)
+	// Check if the driver supports native query execution (e.g., BigQuery)
+	driver, _ := GetDriver(conn.Type)
+	if nq, ok := driver.(NativeQuerier); ok {
+		return executeNativeQuery(nq, conn, sqlQuery)
+	}
+
+	db, err := sql.Open(openDriverName(conn.Type), dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
@@ -293,19 +314,35 @@ type AssistantResponse struct {
 	SQL             string
 	Result          *QueryResult
 	ExplorationHTML string
+	Summary         *string
 }
 
 // ToHTML renders the assistant response as HTML.
 func (r *AssistantResponse) ToHTML() string {
 	var sb strings.Builder
-	if r.Explanation != "" {
-		sb.WriteString(fmt.Sprintf("<p>%s</p>\n", html.EscapeString(r.Explanation)))
+	if r.Summary != nil && *r.Summary != "" {
+		sb.WriteString(fmt.Sprintf("<p>%s</p>\n", html.EscapeString(*r.Summary)))
+	}
+	if r.Summary == nil || *r.Summary == "" {
+		if r.Explanation != "" {
+			sb.WriteString(fmt.Sprintf("<p>%s</p>\n", html.EscapeString(r.Explanation)))
+		}
 	}
 	if r.SQL != "" {
 		// SQL is now shown in the results toolbar toggle, not as a separate block
 	}
 	if r.Result != nil {
-		sb.WriteString(formatResultsHTML(r.Result, r.SQL))
+		if r.Summary != nil && *r.Summary != "" {
+			// Collapse the table behind a details element
+			sb.WriteString(fmt.Sprintf("<details class=\"results-details\" style=\"margin-top:0.5rem;\"><summary style=\"cursor:pointer; color:#666; font-size:0.85rem; padding:4px 8px; background:#f5f5f5; border-radius:4px; display:inline-block;\">View raw results (%d rows)</summary><div style=\"margin-top:0.5rem;\">", r.Result.RowCount))
+			if r.Explanation != "" {
+				sb.WriteString(fmt.Sprintf("<p style=\"color:#666; font-size:0.9rem;\"><em>%s</em></p>\n", html.EscapeString(r.Explanation)))
+			}
+			sb.WriteString(formatResultsHTML(r.Result, r.SQL))
+			sb.WriteString("</div></details>")
+		} else {
+			sb.WriteString(formatResultsHTML(r.Result, r.SQL))
+		}
 	}
 	if r.ExplorationHTML != "" {
 		sb.WriteString(r.ExplorationHTML)
@@ -326,12 +363,10 @@ func formatResultsHTML(result *QueryResult, sqlQuery string) string {
 
 	hash := sqlQueryHash(sqlQuery)
 
-	const defaultLimit = 100
-	showAll := result.RowCount <= defaultLimit
-	displayedRows := defaultLimit
-	if showAll {
-		displayedRows = result.RowCount
-	}
+	// Row collapse: show 10 rows by default, expandable if more
+	const visibleRows = 10
+	totalRows := result.RowCount
+	hasMore := totalRows > visibleRows
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("<div class=\"results-card\" style=\"margin:0.5rem 0;\">"))
@@ -371,10 +406,13 @@ func formatResultsHTML(result *QueryResult, sqlQuery string) string {
 	sb.WriteString(`<tbody>`)
 
 	for i, row := range result.Rows {
-		if i >= displayedRows {
-			break
+		rowClass := "result-row"
+		rowStyle := ""
+		if hasMore && i >= visibleRows {
+			rowClass += fmt.Sprintf(" collapsed-row-%d", hash)
+			rowStyle = ` style="display:none;"`
 		}
-		sb.WriteString(`<tr class="result-row">`)
+		sb.WriteString(fmt.Sprintf(`<tr class="%s"%s>`, rowClass, rowStyle))
 		for _, val := range row {
 			cell := fmt.Sprintf("%v", val)
 			cellClass := ""
@@ -389,7 +427,14 @@ func formatResultsHTML(result *QueryResult, sqlQuery string) string {
 		sb.WriteString(`</tr>`)
 	}
 
-	sb.WriteString(`</tbody></table></div>`)
+	sb.WriteString(`</tbody></table>`)
+
+	// Expand/collapse button for tall tables
+	if hasMore {
+		sb.WriteString(fmt.Sprintf(`<div style="margin-top:0.5rem;"><button class="table-expand-btn" onclick="var rs=this.closest('.results-card').querySelectorAll('.collapsed-row-%d');var ex=rs.length&&rs[0].style.display!=='none';rs.forEach(function(r){r.style.display=ex?'none':''});this.innerHTML=ex?'Show all %d rows &#9660;':'Show first 10 rows &#9650;'" style="font-size:0.8rem; padding:4px 12px; border:1px solid #e0e0e0; border-radius:4px; background:#f8f9fa; cursor:pointer; color:#666;">Show all %d rows &#9660;</button></div>`, hash, totalRows, totalRows))
+	}
+
+	sb.WriteString(`</div>`)
 	return sb.String()
 }
 

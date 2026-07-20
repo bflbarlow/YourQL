@@ -14,8 +14,8 @@ export function CreateConversation(arg1, arg2, arg3) {
   return window['go']['main']['App']['CreateConversation'](arg1, arg2, arg3);
 }
 
-export function CreateDBConnection(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9) {
-  return window['go']['main']['App']['CreateDBConnection'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9);
+export function CreateDBConnection(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10) {
+  return window['go']['main']['App']['CreateDBConnection'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10);
 }
 
 export function CreateLLMProvider(arg1, arg2, arg3, arg4, arg5) {
@@ -52,6 +52,10 @@ export function GetGeneralSettings() {
 
 export function GetSchemaPreview(arg1) {
   return window['go']['main']['App']['GetSchemaPreview'](arg1);
+}
+
+export function GetSupportedDBTypes() {
+  return window['go']['main']['App']['GetSupportedDBTypes']();
 }
 
 export function ListConversations() {
@@ -94,6 +98,10 @@ export function TestLLMProviderConnection(arg1) {
   return window['go']['main']['App']['TestLLMProviderConnection'](arg1);
 }
 
+export function TestNewDBConnection(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9) {
+  return window['go']['main']['App']['TestNewDBConnection'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9);
+}
+
 export function UpdateConversationContextDetails(arg1, arg2) {
   return window['go']['main']['App']['UpdateConversationContextDetails'](arg1, arg2);
 }
@@ -114,6 +122,10 @@ export function UpdateConversationSettings(arg1, arg2, arg3) {
   return window['go']['main']['App']['UpdateConversationSettings'](arg1, arg2, arg3);
 }
 
+export function UpdateConversationSummarize(arg1, arg2) {
+  return window['go']['main']['App']['UpdateConversationSummarize'](arg1, arg2);
+}
+
 export function UpdateConversationTechDetails(arg1, arg2) {
   return window['go']['main']['App']['UpdateConversationTechDetails'](arg1, arg2);
 }
@@ -122,8 +134,8 @@ export function UpdateConversationTitle(arg1, arg2) {
   return window['go']['main']['App']['UpdateConversationTitle'](arg1, arg2);
 }
 
-export function UpdateDBConnection(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9) {
-  return window['go']['main']['App']['UpdateDBConnection'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9);
+export function UpdateDBConnection(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10) {
+  return window['go']['main']['App']['UpdateDBConnection'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10);
 }
 
 export function UpdateGeneralSettings(arg1) {
