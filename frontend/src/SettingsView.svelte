@@ -1,5 +1,5 @@
 <script>
-  import { untrack } from 'svelte'
+  import { onMount } from 'svelte'
   import {
     CreateLLMProvider,
     UpdateLLMProvider,
@@ -34,17 +34,14 @@
   let skillEditor = $state(null)
   let showSkillEditor = $state(false)
 
+  onMount(() => {
+    loadSkills()
+  })
+
   function applyScale(scale) {
     document.documentElement.setAttribute('data-ui-scale', scale)
     localStorage.setItem('yourql-ui-scale', scale)
   }
-
-  // Load skills when the Skills tab is selected (untracked to avoid infinite loop)
-  $effect(() => {
-    if (activeSettingsTab === 'skills') {
-      untrack(() => { loadSkills() })
-    }
-  })
 
   // Skills handlers
   async function loadSkills() {
@@ -566,7 +563,7 @@
     </button>
     <button
       class="tab-btn {activeSettingsTab === 'skills' ? 'active' : ''}"
-      onclick={() => { activeSettingsTab = 'skills' }}
+      onclick={() => activeSettingsTab = 'skills'}
     >
       Skills
     </button>
