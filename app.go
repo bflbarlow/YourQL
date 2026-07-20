@@ -109,6 +109,10 @@ func (a *App) UpdateConversationSummarize(id uint, summarize bool) error {
 	return services.UpdateConversationSummarize(id, summarize)
 }
 
+func (a *App) UpdateConversationVizEnabled(id uint, vizEnabled bool) error {
+	return services.UpdateConversationVizEnabled(id, vizEnabled)
+}
+
 func (a *App) DuplicateConversation(id uint) (*models.Conversation, error) {
 	return services.DuplicateConversation(id)
 }

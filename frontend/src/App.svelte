@@ -9,7 +9,7 @@
     processingMessage = ''
   })
 
-  import { ListConversations, CreateConversation, GetConversationMessages, ProcessUserMessage, DeleteConversation, UpdateConversationTechDetails, ArchiveConversation, RestoreConversation, UpdateConversationSettings, ListLLMProviders, ListDataSources, UpdateConversationTitle, UpdateConversationMaxMessages, UpdateConversationMaxContextMessages, UpdateConversationPinned, DuplicateConversation, ClearConversationMessages, UpdateConversationContextDetails, UpdateConversationSummarize } from '../wailsjs/go/main/App.js'
+  import { ListConversations, CreateConversation, GetConversationMessages, ProcessUserMessage, DeleteConversation, UpdateConversationTechDetails, ArchiveConversation, RestoreConversation, UpdateConversationSettings, ListLLMProviders, ListDataSources, UpdateConversationTitle, UpdateConversationMaxMessages, UpdateConversationMaxContextMessages, UpdateConversationPinned, DuplicateConversation, ClearConversationMessages, UpdateConversationContextDetails, UpdateConversationSummarize, UpdateConversationVizEnabled } from '../wailsjs/go/main/App.js'
   import { MessageSquare, Settings, X, Copy, Trash2, Pin, ChevronRight, ChevronLeft, Plus } from 'lucide-svelte'
   import SettingsView from './SettingsView.svelte'
   import ConversationView from './ConversationView.svelte'
@@ -313,6 +313,20 @@
       }
     } catch (e) {
       console.error('Failed to set summarize:', e)
+    }
+  }
+
+  async function handleToggleVizEnabled(id, vizEnabled) {
+    try {
+      await UpdateConversationVizEnabled(id, vizEnabled)
+      if (activeConversation && activeConversation.id === id) {
+        activeConversation.viz_enabled = vizEnabled
+      }
+      if (selectedConversation && selectedConversation.id === id) {
+        selectedConversation.viz_enabled = vizEnabled
+      }
+    } catch (e) {
+      console.error('Failed to toggle viz enabled:', e)
     }
   }
 
@@ -694,6 +708,17 @@
         </label>
         <div style="color: #999; font-size: var(--font-xs); margin-top: var(--space-2xs);">
           LLM summarizes query results as a plain-English answer
+        </div>
+      </div>
+
+      <!-- Data Visualization -->
+      <div class="gear-popover-section">
+        <label>
+          <input type="checkbox" checked={selectedConversation.viz_enabled !== false} onchange={(e) => handleToggleVizEnabled(selectedConversation.id, e.target.checked)} />
+          Data visualization
+        </label>
+        <div style="color: #999; font-size: var(--font-xs); margin-top: var(--space-2xs);">
+          LLM generates charts (bar, line, pie, scatter) when appropriate
         </div>
       </div>
 

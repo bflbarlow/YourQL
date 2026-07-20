@@ -18,6 +18,7 @@ type LLMResponse struct {
 	SQLQuery              string `json:"sql_query,omitempty"`
 	ClarificationQuestion string `json:"clarification_question,omitempty"`
 	Explanation           string `json:"explanation,omitempty"`
+	VizConfig             string `json:"viz_config,omitempty"` // raw JSON for Chart.js (contains $column refs)
 }
 
 // looksLikeSQL checks if a string appears to be a SQL query.
@@ -212,7 +213,7 @@ func ProcessUserMessage(conversationID uint, userMessage string, onPhase func(st
 	}
 
 	// Step 10: Build LLM messages
-	llmMessages := buildLlmMessages(userMessage, history, schema, dbConnection)
+	llmMessages := buildLlmMessages(userMessage, history, schema, dbConnection, conversation.VizEnabled)
 	log.Printf("[DiscussionEngine] Message count for LLM: %d", len(llmMessages))
 
 	// Step 11: Call LLM
@@ -473,11 +474,11 @@ func storePayload(conversationID uint, round any, label, requestJSON, responseJS
 }
 
 // buildLlmMessages constructs the message list for the LLM.
-func buildLlmMessages(userMessage string, history []*models.ConversationMessage, schema *DataSchema, dbConnection *models.DataSource) []ChatMessage {
+func buildLlmMessages(userMessage string, history []*models.ConversationMessage, schema *DataSchema, dbConnection *models.DataSource, vizEnabled bool) []ChatMessage {
 	messages := []ChatMessage{}
 
 	hasDB := dbConnection != nil
-	systemPrompt := buildSystemPrompt(schema, hasDB, dbConnection)
+	systemPrompt := buildSystemPrompt(schema, hasDB, dbConnection, vizEnabled)
 	messages = append(messages, ChatMessage{Role: "system", Content: systemPrompt})
 
 	for _, msg := range history {
@@ -640,7 +641,7 @@ func executeFinalQueryWithRetry(ctx context.Context, query *models.Query, resp L
 					summary = &s
 				}
 			}
-			renderSQLResults(query, resp, dbConnection, conversation.ID, explorationResults, results, summary)
+			renderSQLResults(query, resp, dbConnection, conversation, explorationResults, results, summary)
 			return
 		}
 
@@ -748,7 +749,7 @@ func formatSQLResultsForLLM(sqlResultsJSON string) string {
 }
 
 // buildSystemPrompt creates the system prompt with schema and instructions.
-func buildSystemPrompt(schema *DataSchema, hasDB bool, dbConnection *models.DataSource) string {
+func buildSystemPrompt(schema *DataSchema, hasDB bool, dbConnection *models.DataSource, vizEnabled bool) string {
 	var sb strings.Builder
 	
 	if dbConnection != nil {
@@ -884,6 +885,29 @@ func buildSystemPrompt(schema *DataSchema, hasDB bool, dbConnection *models.Data
 		}
 	}
 
+	if vizEnabled {
+		sb.WriteString("## Data Visualization\n")
+		sb.WriteString("You can generate charts when the user asks for visualizations (bar chart, line graph, pie chart, scatter plot, trend line, etc.).\n")
+		sb.WriteString("To create a chart, include a \"viz_config\" field in your JSON response with a Chart.js configuration object.\n")
+		sb.WriteString("Example \"viz_config\" value (as a JSON string):\n")
+		sb.WriteString(`{"type":"bar","data":{"labels":["$column_name"],"datasets":[{"label":"Data","data":["$column_name"]}]}}` + "\n\n")
+		sb.WriteString("Rules:\n")
+		sb.WriteString(`- "type" must be one of: bar, line, pie, doughnut, scatter, radar, polarArea` + "\n")
+		sb.WriteString(`- "data.labels" is an array of ONE column name from your SQL result (the category/X axis)` + "\n")
+		sb.WriteString(`- "data.datasets[].data" is an array of ONE column name (the value/Y axis)` + "\n")
+		sb.WriteString(`- Use "$column_name" syntax to reference SQL result columns (the system replaces them with real data)` + "\n")
+		sb.WriteString("- You can define MULTIPLE datasets (as separate objects in the datasets array) for grouped/stacked charts\n")
+		sb.WriteString("- For pie/doughnut: labels = category column, data = single value column (limit to 8 or fewer categories)\n")
+		sb.WriteString(`- For scatter: use data: [{"x": "$col1", "y": "$col2"}] format` + "\n")
+		sb.WriteString("- Choose chart type intelligently:\n")
+		sb.WriteString("  * bar = comparisons, rankings, categories\n")
+		sb.WriteString("  * line = time series, trends, sequential data\n")
+		sb.WriteString("  * pie/doughnut = proportions, composition (<=8 categories)\n")
+		sb.WriteString("  * scatter = correlation, relationship between two numeric variables\n")
+		sb.WriteString("- Do NOT include viz_config unless the user explicitly asks for a chart or the data clearly benefits from one\n")
+		sb.WriteString("- The viz_config must be a valid JSON string (double-quote all keys and values, escape internal quotes)\n\n")
+	}
+
 	sb.WriteString("Your response must be a valid JSON object, no additional text.\n")
 
 	prompt := sb.String()
@@ -894,7 +918,7 @@ func buildSystemPrompt(schema *DataSchema, hasDB bool, dbConnection *models.Data
 }
 
 // renderSQLResults renders a successful SQL query result as an assistant message.
-func renderSQLResults(query *models.Query, resp LLMResponse, dbConnection *models.DataSource, conversationID uint, explorationResults []ExplorationResult, results *QueryResult, summary *string) {
+func renderSQLResults(query *models.Query, resp LLMResponse, dbConnection *models.DataSource, conversation *models.Conversation, explorationResults []ExplorationResult, results *QueryResult, summary *string) {
 	resultSummary := formatResults(results)
 
 	var explanation string
@@ -935,13 +959,24 @@ func renderSQLResults(query *models.Query, resp LLMResponse, dbConnection *model
 	metadataPtr := new(string)
 	*metadataPtr = string(metadataJSON)
 
+	// Resolve chart visualization config if present and enabled
+	if conversation.VizEnabled && resp.VizConfig != "" && results != nil && len(results.Columns) > 0 {
+		resolved, err := resolveChartConfig(resp.VizConfig, results.Columns, results.Rows)
+		if err == nil && resolved != "" {
+			*metadataPtr = string(mustMarshalJSON(map[string]interface{}{
+				"content_type": "html",
+				"chart_config": json.RawMessage(resolved),
+			}))
+		}
+	}
+
 	execTime := 0
 	tokensUsed := 0
 	if err := UpdateQueryStatus(query.ID, "success", &resp.SQLQuery, &resultSummary, nil, &execTime, &tokensUsed, nil); err != nil {
 		log.Printf("[DiscussionEngine] Failed to update query status: %v", err)
 	}
 
-	_, err = CreateConversationMessage(conversationID, "assistant", assistantMessageHTML, llmContentPtr, sqlResultsPtr, metadataPtr)
+	_, err = CreateConversationMessage(conversation.ID, "assistant", assistantMessageHTML, llmContentPtr, sqlResultsPtr, metadataPtr)
 	if err != nil {
 		log.Printf("[DiscussionEngine] Failed to create assistant message: %v", err)
 	}
@@ -1056,4 +1091,70 @@ func renderSQLError(query *models.Query, resp LLMResponse, dbConnection *models.
 	if err != nil {
 		log.Printf("[DiscussionEngine] Failed to create error message: %v", err)
 	}
+}
+
+// resolveChartConfig replaces "$column_name" references in a Chart.js JSON config
+// with actual data arrays from the query results.
+func resolveChartConfig(vizConfig string, columns []string, rows [][]interface{}) (string, error) {
+	var config map[string]interface{}
+	if err := json.Unmarshal([]byte(vizConfig), &config); err != nil {
+		return "", fmt.Errorf("invalid viz_config JSON: %w", err)
+	}
+
+	// Build column index (case-insensitive)
+	colIndex := make(map[string]int)
+	for i, col := range columns {
+		colIndex[strings.ToLower(col)] = i
+	}
+
+	resolved := resolveRefs(config, colIndex, rows)
+	out, err := json.Marshal(resolved)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+// resolveRefs walks a JSON-like tree and replaces "$column_name" strings
+// with the actual column data arrays from the query rows.
+func resolveRefs(node interface{}, colIndex map[string]int, rows [][]interface{}) interface{} {
+	switch v := node.(type) {
+	case string:
+		if strings.HasPrefix(v, "$") {
+			colName := strings.ToLower(v[1:])
+			if idx, ok := colIndex[colName]; ok {
+				data := make([]interface{}, len(rows))
+				for i, row := range rows {
+					if idx < len(row) {
+						data[i] = row[idx]
+					}
+				}
+				return data
+			}
+		}
+		return v
+	case map[string]interface{}:
+		result := make(map[string]interface{})
+		for k, val := range v {
+			result[k] = resolveRefs(val, colIndex, rows)
+		}
+		return result
+	case []interface{}:
+		result := make([]interface{}, len(v))
+		for i, val := range v {
+			result[i] = resolveRefs(val, colIndex, rows)
+		}
+		return result
+	default:
+		return v
+	}
+}
+
+// mustMarshalJSON marshals a value to JSON or returns an empty array on error.
+func mustMarshalJSON(v interface{}) []byte {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return []byte("{}")
+	}
+	return data
 }

@@ -20,4 +20,5 @@ type Conversation struct {
 	TechDetails    bool       `json:"tech_details"`
 	ContextDetails bool       `json:"context_details"`
 	Summarize      bool       `json:"summarize"`
+	VizEnabled     bool       `json:"viz_enabled"`
 }

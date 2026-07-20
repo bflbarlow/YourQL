@@ -173,6 +173,7 @@ func migrate() error {
 	ensureColumn("conversations", "tech_details", "INTEGER DEFAULT 0")
 	ensureColumn("conversations", "context_details", "INTEGER DEFAULT 0")
 	ensureColumn("conversations", "summarize", "INTEGER DEFAULT 0")
+	ensureColumn("conversations", "viz_enabled", "INTEGER DEFAULT 1")
 	ensureColumn("conversations", "max_messages", "INTEGER DEFAULT 0")
 	ensureColumn("conversations", "max_context_messages", "INTEGER DEFAULT 10")
 	// Migrate existing conversations: set default to 10 if still 0

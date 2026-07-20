@@ -70,6 +70,8 @@ export function UpdateConversationTechDetails(arg1:number,arg2:boolean):Promise<
 
 export function UpdateConversationTitle(arg1:number,arg2:string):Promise<models.Conversation>;
 
+export function UpdateConversationVizEnabled(arg1:number,arg2:boolean):Promise<void>;
+
 export function UpdateDataSource(arg1:number,arg2:string,arg3:string,arg4:string,arg5:string,arg6:string,arg7:string,arg8:string,arg9:string,arg10:number,arg11:string,arg12:string):Promise<void>;
 
 export function UpdateGeneralSettings(arg1:main.GeneralSettings):Promise<void>;

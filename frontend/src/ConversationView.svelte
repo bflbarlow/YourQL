@@ -1,5 +1,6 @@
 <script>
-  import { Settings, Pin, Search, ChevronRight, ChevronDown, MessageSquare } from 'lucide-svelte'
+  import { Settings, Pin, Search, ChevronRight, ChevronDown, MessageSquare, BarChart3, Table } from 'lucide-svelte'
+  import VizChart from './VizChart.svelte'
   let { 
     activeConversation, 
     conversationMessages = [], 
@@ -76,7 +77,23 @@
   // Per-message payload toggles (§4.7)
   let payloadToggles = $state({})
 
+  // Per-message chart visibility (show chart by default when chart_config exists)
+  let chartViews = $state({})
+
   // Token counting from message payloads
+
+  function getChartConfig(message) {
+    try {
+      if (!message.metadata) return null
+      const meta = typeof message.metadata === 'string' ? JSON.parse(message.metadata) : message.metadata
+      return meta?.chart_config || null
+    } catch { return null }
+  }
+
+  function toggleChartView(messageId) {
+    chartViews[messageId] = !chartViews[messageId]
+    chartViews = chartViews // trigger reactivity
+  }
   let tokenSummary = $derived.by(() => {
     let promptTotal = 0
     let completionTotal = 0
@@ -294,6 +311,23 @@
             {:else}
               <!-- §4.8: assistant messages with HTML -->
               <div class="assistant-message">{@html message.content}</div>
+              <!-- Chart visualization -->
+              {#if getChartConfig(message)}
+                {@const chartConfig = getChartConfig(message)}
+                {@const showChart = chartViews[message.id] !== false}
+                <div class="viz-toggle">
+                  <button class="btn btn-small" onclick={() => toggleChartView(message.id)}>
+                    {#if showChart}
+                      <Table size="14" /> Table
+                    {:else}
+                      <BarChart3 size="14" /> Chart
+                    {/if}
+                  </button>
+                </div>
+                {#if showChart}
+                  <VizChart config={chartConfig} />
+                {/if}
+              {/if}
             {/if}
           </div>
           <div class="message-time">
@@ -709,5 +743,18 @@
     line-height: 1.5; overflow-x: auto;
     white-space: pre-wrap; word-break: break-all;
     max-height: 25rem;
+  }
+
+  .viz-toggle {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 0.25rem;
+  }
+  .viz-toggle .btn-small {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: var(--font-sm);
+    padding: 0.25rem 0.75rem;
   }
 </style>

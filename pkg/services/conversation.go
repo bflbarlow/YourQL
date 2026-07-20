@@ -39,11 +39,11 @@ func CreateConversation(title string, llmProviderID, dataSourceID *uint) (*model
 func GetConversationByID(id uint) (*models.Conversation, error) {
 	var c models.Conversation
 	err := models.DB.QueryRow(
-		"SELECT id, title, llm_provider_id, data_source_id, status, max_messages, max_context_messages, pinned, created_at, updated_at, tech_details, context_details, summarize FROM conversations WHERE id = ? LIMIT 1",
+		"SELECT id, title, llm_provider_id, data_source_id, status, max_messages, max_context_messages, pinned, created_at, updated_at, tech_details, context_details, summarize, viz_enabled FROM conversations WHERE id = ? LIMIT 1",
 		id,
 	).Scan(
 		&c.ID, &c.Title, &c.LLMProviderID, &c.DataSourceID,
-		&c.Status, &c.MaxMessages, &c.MaxContextMessages, &c.Pinned, &c.CreatedAt, &c.UpdatedAt, &c.TechDetails, &c.ContextDetails, &c.Summarize,
+		&c.Status, &c.MaxMessages, &c.MaxContextMessages, &c.Pinned, &c.CreatedAt, &c.UpdatedAt, &c.TechDetails, &c.ContextDetails, &c.Summarize, &c.VizEnabled,
 	)
 	if err == sql.ErrNoRows {
 		return nil, errors.New("conversation not found")
@@ -56,7 +56,7 @@ func GetConversationByID(id uint) (*models.Conversation, error) {
 
 func ListConversationsByUser() ([]*models.Conversation, error) {
 	rows, err := models.DB.Query(
-		"SELECT id, title, llm_provider_id, data_source_id, status, max_messages, max_context_messages, pinned, created_at, updated_at, tech_details, context_details, summarize FROM conversations WHERE status != 'deleted' ORDER BY pinned DESC, updated_at DESC",
+		"SELECT id, title, llm_provider_id, data_source_id, status, max_messages, max_context_messages, pinned, created_at, updated_at, tech_details, context_details, summarize, viz_enabled FROM conversations WHERE status != 'deleted' ORDER BY pinned DESC, updated_at DESC",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list conversations: %w", err)
@@ -68,7 +68,7 @@ func ListConversationsByUser() ([]*models.Conversation, error) {
 		var c models.Conversation
 		err := rows.Scan(
 			&c.ID, &c.Title, &c.LLMProviderID, &c.DataSourceID,
-			&c.Status, &c.MaxMessages, &c.MaxContextMessages, &c.Pinned, &c.CreatedAt, &c.UpdatedAt, &c.TechDetails, &c.ContextDetails, &c.Summarize,
+			&c.Status, &c.MaxMessages, &c.MaxContextMessages, &c.Pinned, &c.CreatedAt, &c.UpdatedAt, &c.TechDetails, &c.ContextDetails, &c.Summarize, &c.VizEnabled,
 		)
 		if err != nil {
 			continue
@@ -234,6 +234,17 @@ func UpdateConversationSummarize(id uint, summarize bool) error {
 	)
 	if err != nil {
 		return fmt.Errorf("failed to update conversation summarize: %w", err)
+	}
+	return nil
+}
+
+func UpdateConversationVizEnabled(id uint, vizEnabled bool) error {
+	_, err := models.DB.Exec(
+		"UPDATE conversations SET viz_enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+		vizEnabled, id,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update conversation viz_enabled: %w", err)
 	}
 	return nil
 }

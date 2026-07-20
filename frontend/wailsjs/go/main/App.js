@@ -134,6 +134,10 @@ export function UpdateConversationTitle(arg1, arg2) {
   return window['go']['main']['App']['UpdateConversationTitle'](arg1, arg2);
 }
 
+export function UpdateConversationVizEnabled(arg1, arg2) {
+  return window['go']['main']['App']['UpdateConversationVizEnabled'](arg1, arg2);
+}
+
 export function UpdateDataSource(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12) {
   return window['go']['main']['App']['UpdateDataSource'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12);
 }

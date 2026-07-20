@@ -213,6 +213,7 @@ export namespace models {
 	    tech_details: boolean;
 	    context_details: boolean;
 	    summarize: boolean;
+	    viz_enabled: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Conversation(source);
@@ -234,6 +235,7 @@ export namespace models {
 	        this.tech_details = source["tech_details"];
 	        this.context_details = source["context_details"];
 	        this.summarize = source["summarize"];
+	        this.viz_enabled = source["viz_enabled"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
