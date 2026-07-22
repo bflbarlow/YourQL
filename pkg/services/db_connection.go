@@ -55,15 +55,15 @@ func CreateDataSource(name, dbType, host string, port int, database, username, p
 func GetDataSourceByID(id uint) (*models.DataSource, error) {
 	var c models.DataSource
 	var hostNull, databaseNull, usernameNull, passwordNull, sslModeNull sql.NullString
-	var configNull, extraNull, filePathNull, fileTypeNull []byte
+	var configNull, extraNull, filePathNull, fileTypeNull, authConfigNull []byte
 	var portNull sql.NullInt64
 	err := models.DB.QueryRow(
-		"SELECT id, name, type, host, port, database_name, username, password, ssl_mode, is_default, is_active, config, extra, file_path, file_type, created_at, updated_at FROM data_sources WHERE id = ? LIMIT 1",
+		"SELECT id, name, type, host, port, database_name, username, password, ssl_mode, is_default, is_active, config, extra, file_path, file_type, auth_config, created_at, updated_at FROM data_sources WHERE id = ? LIMIT 1",
 		id,
 	).Scan(
 		&c.ID, &c.Name, &c.Type, &hostNull, &portNull,
 		&databaseNull, &usernameNull, &passwordNull, &sslModeNull,
-		&c.IsDefault, &c.IsActive, &configNull, &extraNull, &filePathNull, &fileTypeNull, &c.CreatedAt, &c.UpdatedAt,
+		&c.IsDefault, &c.IsActive, &configNull, &extraNull, &filePathNull, &fileTypeNull, &authConfigNull, &c.CreatedAt, &c.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, errors.New("database connection not found")
@@ -114,13 +114,9 @@ func GetDataSourceByID(id uint) (*models.DataSource, error) {
 		s := string(fileTypeNull)
 		c.FileType = &s
 	}
-	if len(filePathNull) > 0 {
-		s := string(filePathNull)
-		c.FilePath = &s
-	}
-	if len(fileTypeNull) > 0 {
-		s := string(fileTypeNull)
-		c.FileType = &s
+	if len(authConfigNull) > 0 {
+		s := string(authConfigNull)
+		c.AuthConfig = &s
 	}
 	return &c, nil
 }
@@ -174,6 +170,14 @@ func ListDataSourcesByWorkspace() ([]*models.DataSource, error) {
 		if len(extraNull) > 0 {
 			s := string(extraNull)
 			c.Extra = &s
+		}
+		if len(filePathNull) > 0 {
+			s := string(filePathNull)
+			c.FilePath = &s
+		}
+		if len(fileTypeNull) > 0 {
+			s := string(fileTypeNull)
+			c.FileType = &s
 		}
 		connections = append(connections, &c)
 	}
@@ -357,6 +361,14 @@ func GetDefaultDataSource() (*models.DataSource, error) {
 	if len(extraNull) > 0 {
 		s := string(extraNull)
 		c.Extra = &s
+	}
+	if len(filePathNull) > 0 {
+		s := string(filePathNull)
+		c.FilePath = &s
+	}
+	if len(fileTypeNull) > 0 {
+		s := string(fileTypeNull)
+		c.FileType = &s
 	}
 	return &c, nil
 }

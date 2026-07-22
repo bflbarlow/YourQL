@@ -211,6 +211,7 @@ func migrate() error {
 	ensureColumn("data_sources", "extra", "TEXT")
 	ensureColumn("data_sources", "file_path", "TEXT DEFAULT ''")
 	ensureColumn("data_sources", "file_type", "TEXT DEFAULT ''")
+	ensureColumn("data_sources", "auth_config", "TEXT")
 
 	// Remove legacy user_id column if it exists (from older schemas)
 	dropColumnIfExists("conversations", "user_id")

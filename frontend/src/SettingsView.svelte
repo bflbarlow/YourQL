@@ -17,8 +17,15 @@
     CreateSkill,
     UpdateSkill,
     DeleteSkill,
-    SetSkillActive
+    SetSkillActive,
+    StartGoogleSheetsAuth,
+    StartGoogleSheetsAuthTemp,
+    CancelGoogleSheetsAuth,
+    CancelGoogleSheetsAuthTemp,
+    RevokeGoogleSheetsAuth,
+    MigrateGoogleAuthConfig
   } from '../wailsjs/go/main/App.js'
+  import { EventsOn, EventsOff, BrowserOpenURL } from '../wailsjs/runtime/runtime.js'
 
   let {
     llmProviders = [],
@@ -135,9 +142,10 @@
     sqlserver:  { host: true, port: true, database: true, username: true, password: true },
     sqlite:     { database: true },
     snowflake:  { database: true, username: true, password: true },
-    bigquery:   { database: true },
-    csv_file:    {},
-    excel_file:  {}
+    bigquery:       { database: true },
+    csv_file:        {},
+    excel_file:     {},
+    google_sheets:  { filePath: true }
   }
 
   function isDBFieldRequired(type, field) {
@@ -170,6 +178,12 @@
   let dbStatus = $state('')
   let schemaData = $state(null)
   let schemaLoading = $state(false)
+
+  // Google Sheets OAuth state
+  let googleAuthState = $state('idle') // idle | pending | success | error
+  let googleError = $state('')
+  let googleAuthDataSourceID = $state(null)
+  let googleTempSessionID = $state('')  // UUID for unsaved connections
 
   // Schema tables sorting
   let schemaSortColumn = $state('name')
@@ -382,6 +396,10 @@
       extra: connection.extra || '{}',
       filePath: connection.file_path || ''
     }
+    // Reset Google Sheets auth state when opening a different connection
+    googleAuthState = 'idle'
+    googleAuthDataSourceID = null
+    googleTempSessionID = ''
 
     dbDetailConfig = config
     tempBusinessRules = (config.business_rules || []).join('\n')
@@ -408,11 +426,16 @@
     }
     // Require database for DB types, file path for file types
     const isFile = dbDetailForm.type === 'csv_file' || dbDetailForm.type === 'excel_file'
+    const isGoogleSheets = dbDetailForm.type === 'google_sheets'
     if (isFile && !dbDetailForm.filePath.trim()) {
       dbStatus = 'Error: File path is required'
       return
     }
-    if (!isFile && dbDetailForm.type !== 'sqlite' && !dbDetailForm.database.trim()) {
+    if (isGoogleSheets && !dbDetailForm.filePath.trim()) {
+      dbStatus = 'Error: Spreadsheet ID is required'
+      return
+    }
+    if (!isFile && !isGoogleSheets && dbDetailForm.type !== 'sqlite' && !dbDetailForm.database.trim()) {
       dbStatus = 'Error: Database name is required'
       return
     }
@@ -446,7 +469,7 @@
           configStr,
           dbDetailForm.extra,
           dbDetailForm.filePath,
-          dbDetailForm.type === 'csv_file' ? 'csv' : dbDetailForm.type === 'excel_file' ? 'xlsx' : ''
+          dbDetailForm.type === 'csv_file' ? 'csv' : dbDetailForm.type === 'excel_file' ? 'xlsx' : dbDetailForm.type === 'google_sheets' ? 'gsheet' : ''
         )
         dbStatus = 'Connection created successfully'
         // Refresh connection list and find the new connection to switch to edit mode
@@ -456,6 +479,15 @@
         if (newConn) {
           selectedDataSource = newConn
           isNewConnection = false
+          // Migrate temp auth config if we completed the OAuth flow before saving
+          if (googleTempSessionID && googleAuthState === 'success') {
+            try {
+              await MigrateGoogleAuthConfig(googleTempSessionID, newConn.id)
+            } catch (e) {
+              // best-effort; token will be lost if migration fails
+            }
+            googleTempSessionID = ''
+          }
         }
       } else {
         await UpdateDataSource(
@@ -467,7 +499,7 @@
           dbDetailForm.password,
           dbDetailForm.sslMode,
           dbDetailForm.filePath,
-          dbDetailForm.type === 'csv_file' ? 'csv' : dbDetailForm.type === 'excel_file' ? 'xlsx' : '',
+          dbDetailForm.type === 'csv_file' ? 'csv' : dbDetailForm.type === 'excel_file' ? 'xlsx' : dbDetailForm.type === 'google_sheets' ? 'gsheet' : '',
           dbDetailForm.port,
           configStr,
           dbDetailForm.extra
@@ -503,7 +535,7 @@
         dbDetailForm.sslMode,
         dbDetailForm.extra,
         dbDetailForm.filePath,
-        dbDetailForm.type === 'csv_file' ? 'csv' : dbDetailForm.type === 'excel_file' ? 'xlsx' : ''
+        dbDetailForm.type === 'csv_file' ? 'csv' : dbDetailForm.type === 'excel_file' ? 'xlsx' : dbDetailForm.type === 'google_sheets' ? 'gsheet' : ''
       )
       dbStatus = result
     } catch (e) {
@@ -531,6 +563,101 @@
       dbStatus = 'Error loading schema: ' + e.toString()
     } finally {
       schemaLoading = false
+    }
+  }
+
+  // ==================== Google Sheets OAuth Handlers ====================
+
+  async function startGoogleAuth(dataSourceID) {
+    if (dataSourceID === null || dataSourceID === undefined) return
+
+    // New (unsaved) connection: use temp session flow
+    if (dataSourceID === 0 || dataSourceID === null) {
+      googleTempSessionID = crypto.randomUUID()
+      googleAuthState = 'pending'
+      googleError = ''
+      try {
+        const resp = await StartGoogleSheetsAuthTemp(googleTempSessionID)
+        BrowserOpenURL(resp.auth_url)
+
+        EventsOn('googleAuthComplete', (payload) => {
+          if (payload.sessionID === googleTempSessionID) {
+            googleAuthState = 'success'
+            EventsOff('googleAuthComplete')
+            EventsOff('googleAuthError')
+          }
+        })
+        EventsOn('googleAuthError', (payload) => {
+          if (payload.sessionID === googleTempSessionID) {
+            googleAuthState = 'error'
+            googleError = payload.error
+            EventsOff('googleAuthComplete')
+            EventsOff('googleAuthError')
+          }
+        })
+      } catch (e) {
+        googleAuthState = 'error'
+        googleError = e.toString()
+      }
+      return
+    }
+
+    // Existing (saved) connection: use the real data source ID
+    googleAuthDataSourceID = dataSourceID
+    googleAuthState = 'pending'
+    googleError = ''
+    try {
+      const resp = await StartGoogleSheetsAuth(dataSourceID)
+      BrowserOpenURL(resp.auth_url)
+
+      EventsOn('googleAuthComplete', (payload) => {
+        if (payload.dataSourceID === dataSourceID) {
+          googleAuthState = 'success'
+          EventsOff('googleAuthComplete')
+          EventsOff('googleAuthError')
+        }
+      })
+      EventsOn('googleAuthError', (payload) => {
+        if (payload.dataSourceID === dataSourceID) {
+          googleAuthState = 'error'
+          googleError = payload.error
+          EventsOff('googleAuthComplete')
+          EventsOff('googleAuthError')
+        }
+      })
+    } catch (e) {
+      googleAuthState = 'error'
+      googleError = e.toString()
+    }
+  }
+
+  async function cancelGoogleAuth() {
+    if (googleTempSessionID) {
+      await CancelGoogleSheetsAuthTemp(googleTempSessionID)
+    } else if (googleAuthDataSourceID) {
+      await CancelGoogleSheetsAuth(googleAuthDataSourceID)
+    }
+    EventsOff('googleAuthComplete')
+    EventsOff('googleAuthError')
+    googleAuthState = 'idle'
+    googleAuthDataSourceID = null
+    googleTempSessionID = ''
+  }
+
+  async function disconnectGoogle() {
+    if (googleTempSessionID) {
+      // Unsaved connection: just clear temp state
+      googleTempSessionID = ''
+    } else if (selectedDataSource && selectedDataSource.id > 0) {
+      await RevokeGoogleSheetsAuth(selectedDataSource.id)
+    }
+    googleAuthState = 'idle'
+    googleError = ''
+  }
+
+  function copyText(text) {
+    if (typeof navigator !== 'undefined' && navigator.clipboard) {
+      navigator.clipboard.writeText(text)
     }
   }
 
@@ -691,6 +818,8 @@
                         <option disabled>─────────────</option>
                         <option value="csv_file">CSV File</option>
                         <option value="excel_file">Excel File</option>
+                        <option disabled>─────────────</option>
+                        <option value="google_sheets">Google Sheets</option>
                       </select>
                     </div>
                     {#if dbDetailForm.type === 'csv_file' || dbDetailForm.type === 'excel_file'}
@@ -698,14 +827,44 @@
                       <label>File <span class="required">*</span></label>
                       <input type="text" bind:value={dbDetailForm.filePath} placeholder="/path/to/file.csv" />
                     </div>
-                    {:else}
-                    {#if dbDetailForm.type !== 'bigquery' && dbDetailForm.type !== 'sqlite'}
+                    {:else if dbDetailForm.type === 'google_sheets'}
+                    <div class="form-group">
+                      <label>Spreadsheet ID / URL <span class="required">*</span></label>
+                      <input type="text" bind:value={dbDetailForm.filePath} placeholder="ABC123 or https://docs.google.com/spreadsheets/d/ABC123/edit" />
+                    </div>
+                    {/if}
+                    {#if dbDetailForm.type === 'google_sheets'}
+                    <!-- Google Sheets Auth Section (moved here, right after Connection Info) -->
+                    <div class="db-section">
+                      <h4>Google Account</h4>
+                      {#if googleAuthState === 'idle'}
+                        <div class="form-group">
+                          <button class="btn btn-primary" onclick={() => startGoogleAuth(selectedDataSource?.id ?? 0)}>Connect Google Account</button>
+                        </div>
+                      {:else if googleAuthState === 'pending'}
+                        <div class="form-group">
+                          <p class="hint">Waiting for authorization in your browser...</p>
+                          <button class="btn btn-secondary" onclick={() => cancelGoogleAuth()}>Cancel</button>
+                        </div>
+                      {:else if googleAuthState === 'success'}
+                        <div class="form-group">
+                          <p style="color: var(--success-color);">✅ Connected</p>
+                          <button class="btn btn-small btn-danger" onclick={() => disconnectGoogle()}>Disconnect</button>
+                        </div>
+                      {:else if googleAuthState === 'error'}
+                        <div class="form-group">
+                          <p style="color: var(--error-color);">❌ {googleError}</p>
+                          <button class="btn btn-secondary" onclick={() => { googleAuthState = 'idle'; googleError = '' }}>Dismiss</button>
+                        </div>
+                      {/if}
+                    </div>
+                    {:else if dbDetailForm.type !== 'bigquery' && dbDetailForm.type !== 'sqlite'}
                     <div class="form-group">
                       <label>Host {#if isDBFieldRequired(dbDetailForm.type, 'host')}<span class="required">*</span>{/if}</label>
                       <input type="text" bind:value={dbDetailForm.host} placeholder="localhost" />
                     </div>
                     {/if}
-                    {#if dbDetailForm.type !== 'bigquery' && dbDetailForm.type !== 'sqlite'}
+                    {#if dbDetailForm.type !== 'bigquery' && dbDetailForm.type !== 'sqlite' && dbDetailForm.type !== 'google_sheets'}
                     <div class="form-group">
                       <label>Port {#if isDBFieldRequired(dbDetailForm.type, 'port')}<span class="required">*</span>{/if}</label>
                       <input type="number" bind:value={dbDetailForm.port} />
@@ -713,7 +872,9 @@
                     {/if}
                     <div class="form-group">
                       <label>Database {#if isDBFieldRequired(dbDetailForm.type, 'database')}<span class="required">*</span>{/if}</label>
-                      {#if dbDetailForm.type === 'sqlite'}
+                      {#if dbDetailForm.type === 'google_sheets'}
+                        <!-- Google Sheets uses spreadsheet ID above, no database field -->
+                      {:else if dbDetailForm.type === 'sqlite'}
                         <input type="text" bind:value={dbDetailForm.database} placeholder="/path/to/database.db" />
                       {:else if dbDetailForm.type === 'bigquery'}
                         <input type="text" bind:value={dbDetailForm.database} placeholder="Project ID" />
@@ -721,19 +882,19 @@
                         <input type="text" bind:value={dbDetailForm.database} placeholder="e.g. classicmodels" />
                       {/if}
                     </div>
-                    {#if dbDetailForm.type !== 'bigquery' && dbDetailForm.type !== 'sqlite'}
+                    {#if dbDetailForm.type !== 'bigquery' && dbDetailForm.type !== 'sqlite' && dbDetailForm.type !== 'google_sheets'}
                     <div class="form-group">
                       <label>Username {#if isDBFieldRequired(dbDetailForm.type, 'username')}<span class="required">*</span>{/if}</label>
                       <input type="text" bind:value={dbDetailForm.username} placeholder="e.g. root" />
                     </div>
                     {/if}
-                    {#if dbDetailForm.type !== 'bigquery' && dbDetailForm.type !== 'sqlite'}
+                    {#if dbDetailForm.type !== 'bigquery' && dbDetailForm.type !== 'sqlite' && dbDetailForm.type !== 'google_sheets'}
                     <div class="form-group">
                       <label>Password {#if isDBFieldRequired(dbDetailForm.type, 'password')}<span class="required">*</span>{/if}</label>
                       <input type="password" bind:value={dbDetailForm.password} />
                     </div>
                     {/if}
-                    {#if dbDetailForm.type !== 'bigquery'}
+                    {#if dbDetailForm.type !== 'bigquery' && dbDetailForm.type !== 'sqlite' && dbDetailForm.type !== 'google_sheets'}
                     <div class="form-group">
                       <label>SSL Mode</label>
                       <select bind:value={dbDetailForm.sslMode}>
@@ -742,7 +903,6 @@
                         <option value="prefer">preferred</option>
                       </select>
                     </div>
-                    {/if}
                     {/if}
                     {#if dbDetailForm.type === 'postgresql' || dbDetailForm.type === 'redshift'}
                       {@const pgExtra = (() => { try { return JSON.parse(dbDetailForm.extra || '{}') } catch(e) { return {} } })()}
@@ -837,7 +997,6 @@
                     <p class="hint">Each line becomes a business rule injected into the system prompt.</p>
                   </div>
                 </div>
-
 
                 <!-- Exploration Settings Section -->
                 <div class="db-section">
@@ -1008,10 +1167,15 @@
                         {#if ['snowflake', 'bigquery', 'redshift'].includes(connection.type)}
                           <span class="badge wip">WIP</span>
                         {/if}
+                        {#if connection.type === 'google_sheets'}
+                          <span class="badge google">Google Sheets</span>
+                        {/if}
                       </div>
                       <div class="data-source-details">
                         {#if connection.type === 'csv_file' || connection.type === 'excel_file'}
                           <span class="detail">📄 {connection.file_path || 'No file selected'}</span>
+                        {:else if connection.type === 'google_sheets'}
+                          <span class="detail">📊 {connection.file_path || 'No spreadsheet ID'}</span>
                         {:else if connection.type === 'sqlite'}
                           <span class="detail">{connection.database}</span>
                         {:else}

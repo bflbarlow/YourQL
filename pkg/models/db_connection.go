@@ -22,6 +22,7 @@ type DataSource struct {
 	Extra      *string   `json:"extra,omitempty"`
 	FilePath   *string   `json:"file_path,omitempty"`
 	FileType   *string   `json:"file_type,omitempty"`
+	AuthConfig *string   `json:"-"` // OAuth2 token JSON (never sent to frontend)
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
 }
