@@ -6,10 +6,12 @@ require (
 	cloud.google.com/go/bigquery v1.79.0
 	github.com/go-sql-driver/mysql v1.10.0
 	github.com/jackc/pgx/v5 v5.10.0
+	github.com/joho/godotenv v1.5.1
 	github.com/microsoft/go-mssqldb v1.10.0
 	github.com/snowflakedb/gosnowflake v1.19.1
 	github.com/wailsapp/wails/v2 v2.13.0
 	github.com/xuri/excelize/v2 v2.11.0
+	golang.org/x/oauth2 v0.36.0
 	google.golang.org/api v0.289.0
 	modernc.org/sqlite v1.53.0
 )
@@ -123,7 +125,6 @@ require (
 	golang.org/x/exp v0.0.0-20250408133849-7e4ce0ab07d0 // indirect
 	golang.org/x/mod v0.37.0 // indirect
 	golang.org/x/net v0.57.0 // indirect
-	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/telemetry v0.0.0-20260625142307-59b4966ccb57 // indirect

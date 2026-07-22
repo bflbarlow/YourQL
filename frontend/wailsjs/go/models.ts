@@ -16,6 +16,8 @@ export namespace main {
 	    exploration_safety: string;
 	    config?: string;
 	    extra?: string;
+	    file_path?: string;
+	    file_type?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new DataSourceSetting(source);
@@ -38,6 +40,8 @@ export namespace main {
 	        this.exploration_safety = source["exploration_safety"];
 	        this.config = source["config"];
 	        this.extra = source["extra"];
+	        this.file_path = source["file_path"];
+	        this.file_type = source["file_type"];
 	    }
 	}
 	export class GeneralSettings {
