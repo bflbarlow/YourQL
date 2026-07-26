@@ -2,12 +2,13 @@ package main
 
 import (
 	"embed"
-	"log"
+	"log/slog"
 
 	"github.com/joho/godotenv"
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/options/mac"
 )
 
 //go:embed all:frontend/dist
@@ -16,7 +17,7 @@ var assets embed.FS
 func main() {
 	// Load .env file if present (ignored if not found)
 	if err := godotenv.Load(); err != nil {
-		log.Println("No .env file found, skipping")
+		slog.Info("No .env file found, skipping")
 	}
 
 	// Create an instance of the app structure
@@ -32,12 +33,16 @@ func main() {
 		},
 		BackgroundColour: &options.RGBA{R: 27, G: 38, B: 54, A: 1},
 		OnStartup:        app.startup,
+		OnShutdown:       app.shutdown,
+		Mac: &mac.Options{
+			DisableZoom: false,
+		},
 		Bind: []interface{}{
 			app,
 		},
 	})
 
 	if err != nil {
-		println("Error:", err.Error())
+		slog.Error("application error", "error", err)
 	}
 }

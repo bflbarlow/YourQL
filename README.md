@@ -1,9 +1,52 @@
 # YourQL
 
-## Overview
-**YourQL** is a desktop application built with [Wails v2](https://wails.io/). It focuses entirely on the core functionality of conversational database querying and LLM integration, providing a clean chat-like interface for interacting with databases via natural language.
+**Talk to your database in plain English.**
 
-The application bridges the gap between natural language and SQL, allowing users to interact with their databases via a chat-like interface powered by Large Language Models (LLMs).
+YourQL is a desktop application that lets you query your databases using natural language. Instead of writing SQL by hand, you ask questions the way you'd ask a colleague — and YourQL translates them into accurate, safe queries using your preferred AI model. The results come back as interactive tables, charts, and plain-English summaries.
+
+Everything runs locally on your machine. Your database credentials, conversation history, and API keys never leave your computer unless you explicitly configure a cloud LLM provider.
+
+---
+
+## What You Can Do
+
+- **Ask questions in plain English** — "How many orders shipped last month?" or "Show me the top 10 customers by revenue" — and get answers backed by real queries against your database.
+- **Work across multiple databases** — Connect to MySQL, PostgreSQL, SQLite, SQL Server, Snowflake, BigQuery, Redshift, MariaDB, CSV files, Excel files, and Google Sheets.
+- **Use your own AI model** — Bring your own OpenAI, Anthropic Claude, Ollama, or any OpenAI-compatible HTTP endpoint (LM Studio, llama.cpp, cloud-hosted models).
+- **Explore data safely** — Before writing a final query, YourQL can run read-only exploration queries to understand your schema's actual data, all within configurable safety constraints.
+- **Visualize results** — Bar charts, line graphs, pie charts, scatter plots, and more, generated automatically when you ask for a visualization or when the data calls for one.
+- **Summaries you can read** — Long tables of numbers are automatically summarized into plain-English answers so you don't have to decipher raw results.
+- **Keep everything organized** — Pin, archive, duplicate, rename, or clear discussions. Limit how much history is sent to the LLM. Set a custom system prompt or business rules per database.
+- **Define reusable Skills** — Write Markdown snippets with domain knowledge, business rules, or preferred query patterns and activate them per-conversation.
+
+---
+
+## Supported Connections
+
+### AI Providers
+| Provider | Description |
+|---|---|
+| **OpenAI** | GPT-4, GPT-4 Turbo, GPT-3.5 Turbo, and compatible APIs (OpenRouter, etc.) |
+| **Anthropic** | Claude 3 Opus, Claude 3 Sonnet, Claude 3 Haiku |
+| **Ollama** | Local, self-hosted models via Ollama |
+| **Custom Endpoint** | Any OpenAI-compatible HTTP API — LM Studio, llama.cpp server, vLLM, cloud-hosted models (qwen, deepseek, etc.) |
+
+### Database & Data Source Types
+| Type | Status |
+|---|---|
+| MySQL | ✅ Supported |
+| MariaDB | ✅ Supported |
+| PostgreSQL | ✅ Supported |
+| SQLite | ✅ Supported |
+| SQL Server | ✅ Supported |
+| Snowflake | ✅ Supported |
+| BigQuery | ✅ Supported |
+| Redshift | ✅ Supported |
+| CSV Files | ✅ Supported |
+| Excel Files (.xlsx) | ✅ Supported |
+| Google Sheets | ✅ Supported (OAuth) |
+
+---
 
 ## Screenshots
 
@@ -23,274 +66,173 @@ The application bridges the gap between natural language and SQL, allowing users
 </p>
 
 ---
-## Architecture
-YourQL follows the standard Wails architecture, combining a Go-based backend with a Svelte 5-based frontend:
 
-1. **Core Engine (`pkg/services/`)**: Contains the "Discussion Engine" logic. This includes the `ProcessUserMessage` function, which orchestrates the conversation loop: fetching context, calling the LLM, parsing JSON responses, and executing SQL.
-2. **Database Layer (`pkg/models/`)**: Handles all database interactions using GORM and the modernc.org/sqlite driver. It defines the data structures for conversations, messages, and database connections.
-3. **Wails Bindings (`app.go`)**: The gateway between the frontend and the backend. It exposes Go functions (like `ListConversations`, `ProcessUserMessage`) to the Svelte frontend.
-4. **LLM Integration (`pkg/services/llm_*.go`)**: Provides a unified interface for multiple LLM providers (OpenAI, Anthropic, Ollama, and local models).
+## Getting Started
 
-## Project Structure
-```text
-YourQL/
-├── app.go                      # Wails application struct and bindings
-├── main.go                     # Application entry point
-├── go.mod / go.sum             # Go dependencies
-├── wails.json                  # Wails configuration
-├── pkg/                        # Core business logic
-│   ├── models/                 # Data structures and DB schemas
-│   │   ├── conversation.go     # Conversation and message models
-│   │   ├── db_connection.go    # Database connection models
-│   │   ├── llm_provider.go     # LLM provider models
-│   │   └── setup.go            # DB initialization and migrations
-│   ├── services/               # Business logic
-│   │   ├── discussion_engine.go # Core conversation orchestration
-│   │   ├── conversation.go     # Conversation persistence
-│   │   ├── sql_execution.go    # SQL execution and retry logic
-│   │   ├── database_introspection.go # Schema fetching
-│   │   ├── database_connection.go # Connection management
-│   │   ├── llm_client.go       # LLM interface definition
-│   │   ├── llm_openai.go       # OpenAI-compatible provider
-│   │   ├── llm_anthropic.go    # Anthropic Claude provider
-│   │   ├── llm_ollama.go       # Ollama provider
-│   │   ├── llm_local.go        # Custom local model provider
-│   │   └── llm_mock.go         # Mock provider for testing
-│   └── controllers/            # API-like handlers (adapted for Wails)
-└── frontend/                   # Svelte 5 UI
-    ├── src/
-    │   ├── App.svelte          # Main application component
-    │   ├── ConversationView.svelte # Conversation display and input
-    │   ├── SettingsView.svelte     # Settings management
-    │   └── main.js             # Entry point
-    ├── wailsjs/                # Auto-generated Wails bindings
-    └── package.json            # Frontend dependencies
-```
+### Installation
 
-## Backend Details
+Download the latest release for your operating system from the [Releases page](https://github.com/yourorg/yourql/releases).
 
-### Core Components
-The backend of YourQL is built on a robust set of services that work together to provide the "Discussion Engine" capabilities:
+#### macOS
 
-#### 1. Discussion Engine (`pkg/services/discussion_engine.go`)
-- The heart of the application. It manages the state of a conversation, interacts with the LLM, and handles the logic for SQL generation and execution.
-- **Exploration Mode**: Supports "exploration rounds" where the LLM can run intermediate queries to gather data before formulating a final answer.
-- **Safety Constraints**: Enforces read-only restrictions on exploration queries to prevent accidental data modification.
-- **Context Management**: Automatically injects database schema into the LLM context via `buildSystemPrompt`.
-- **System Prompt Capping**: If the system prompt exceeds 16KB, it is truncated to prevent context window overflow.
-- **Retry Logic**: Handles LLM clarification responses and retry scenarios for final query generation.
-- **Context Message Limiting**: Each conversation can specify a maximum number of history messages sent to the LLM (default: 10). Only the last N messages are included in the context, preventing context window overflow on long conversations.
+Open the `.dmg` file and drag YourQL into your Applications folder. On first launch, you may need to right-click → **Open** to bypass Gatekeeper if the app isn't notarized.
 
-#### 2. LLM Client (`pkg/services/llm_client.go`)
-- A unified interface for interacting with different LLM providers.
-- **Supported Providers**:
-  - **OpenAI** (`llm_openai.go`): Supports GPT-4 and other OpenAI-compatible models (OpenRouter, LM Studio, etc.).
-  - **Anthropic** (`llm_anthropic.go`): Supports Claude models.
-  - **Ollama** (`llm_ollama.go`): For local, self-hosted models.
-  - **Local** (`llm_local.go`): For custom HTTP endpoints supporting both OpenAI-compatible and legacy API formats.
-  - **Mock** (`llm_mock.go`): For testing without an actual LLM.
+#### Linux
 
-#### 3. SQL Execution (`pkg/services/sql_execution.go`)
-- Handles the execution of SQL queries against the configured database connection.
-- Includes retry logic for transient errors and provides a mechanism to feed error messages back to the LLM for self-correction.
-- **Inline SQL Display**: Generated SQL appears as an expandable section below the results, with a copy button, rather than as a floating popover.
+Download the AppImage, make it executable, and run:
 
-#### 4. Database Introspection (`pkg/services/database_introspection.go`)
-- Automatically fetches the schema of the connected database (tables, columns, indexes, foreign keys).
-- **Multi-DB Support**: Uses `INFORMATION_SCHEMA` for MySQL and `pragma_table_info()` for SQLite.
-- This schema is injected into the LLM's context to ensure generated SQL is accurate and compatible.
-
-#### 5. Conversation Management (`pkg/services/conversation.go`)
-- Persists conversations and messages to the local SQLite database (`~/.yourql/yourql.db`).
-- Supports soft delete for discussions with proper status tracking.
-- Manages metadata for storing LLM payloads and exploration results.
-
-### Database Storage
-YourQL uses a local SQLite database for all application data:
-- **Location**: `~/.yourql/yourql.db`
-- **Auto-creation**: Directory and database are created automatically on first run
-- **Migration Strategy**: Uses `CREATE TABLE IF NOT EXISTS` + `addColumnIfNotExists()` helper for safe schema evolution
-- **SQLite Driver**: Uses `modernc.org/sqlite` (pure Go, no CGO) to avoid cross-compilation issues
-- **Date Functions**: Uses `CURRENT_TIMESTAMP` (not `NOW()`) for SQLite compatibility
-
-### Configuration
-Configuration is stored in the local SQLite database, not in `.env` files. Users manage settings through the Settings UI:
-- **Model Configurations**: LLM provider settings (name, type, model, base URL, API key)
-- **Database Configurations**: External database connections (MySQL, SQLite) with introspection
-- **General Settings**: Application-wide preferences
-
-### Dependencies
-The project uses the following major Go modules:
-- **Wails v2**: For the desktop framework
-- **GORM**: For database ORM operations
-- **modernc.org/sqlite**: Pure Go SQLite driver (no CGO)
-- **github.com/go-sql-driver/mysql**: MySQL driver registration
-- **github.com/samber/lo**: Functional helpers
-
-## Frontend and Wails Integration
-
-### Technology Stack
-- **Svelte 5**: Used for building the reactive user interface
-- **Vite**: Used as the build tool and development server
-- **Wails Runtime**: Provides the bridge between the Go backend and the JavaScript frontend
-
-### Wails Bindings
-Wails automatically generates TypeScript and JavaScript bindings that allow the Svelte frontend to call Go functions. These are located in `frontend/wailsjs/go/main/`.
-
-Regenerate bindings after adding new Go methods:
 ```bash
-~/go/bin/wails generate module
+chmod +x YourQL-*.AppImage
+./YourQL-*.AppImage
 ```
 
-### UI Implementation
+#### Windows
 
-#### Sidebar Navigation
-- **Discussions**: List of conversations with actual LLM provider and DB connection names
-- **Settings**: Three tabs for configuration management
+Run the `.exe` installer and follow the prompts.
 
-#### Conversation View (`ConversationView.svelte`)
-- **Message Display**: User and assistant messages with Markdown support
-- **Input**: Textarea with send button
-- **Tech Toggle**: Show/hide intermediate engine messages (raw SQL, exploration results, LLM payloads)
-- **Exploration Results**: Displays intermediate SQL queries and their results when tech details are enabled
-- **Raw LLM Payloads**: Shows full request/response JSON with copy button when tech details are enabled
+### First-Time Setup
 
-#### Discussion Settings Popover
-Each discussion has a settings popover (gear icon) with a darkened backdrop overlay, accessible from both the discussion list and the conversation header:
-- **LLM Provider**: Select the LLM provider for this discussion
-- **DB Connection**: Select the database connection for this discussion
-- **Rename**: Edit the discussion title (auto-saves on blur or Enter)
-- **Visible Messages**: Limit how many messages are shown in the UI ("Show All" or a specific number)
-- **Messages in LLM Context**: Limit how many recent messages are sent to the LLM as context (default: 10, "All" to send everything)
-- **Pin**: Pin the discussion to the top of the list
-- **Tech Details**: Toggle technical details on by default
-- **Context Details**: Toggle context/token details on by default
-- **Actions**: Duplicate, clear messages, archive/restore, and delete
+1. **Add an AI provider** — Open Settings → Model Configurations and click **Add New Provider**. Enter a name, choose the provider type, specify the model, and provide your API key or base URL. Click **Create Provider**, then **Set as Default**.
 
-#### Settings View (`SettingsView.svelte`)
+2. **Connect a database** — Open Settings → Data Sources and click **+ Add Connection**. Fill in the connection details for your database, then click **Test Connection** to verify it works. Click **Save**, then **Set as Default**.
 
-**Model Configurations Tab**
-- List of configured LLM providers
-- Add/edit/delete providers
-- Test connections
-
-**Database Configurations Tab**
-- **List View**: Horizontal list of database connections with type badges
-- **Detail View**: Click any connection to see full configuration:
-  - Connection info (name, type, host, port, database, credentials)
-  - Custom system prompt
-  - Business rules (one per line)
-  - Exploration settings (allow exploration, max rounds, safety mode)
-  - **Editable Schema**: Load and view database schema with inline table/column description editing
-  - Actions: Save, Test Connection, Delete
-
-**General Settings Tab**
-- Application-wide preferences
-
-### Styling
-The UI uses a clean, light theme with:
-- White background, black text, blue accents
-- Flexbox layout for responsive design
-- Card-style containers for settings and conversation items
+3. **Start a discussion** — Click **New Discussion** in the sidebar, give it a title, and start asking questions about your data.
 
 ---
 
-## Key Implementation Details
+## How It Works
 
-### Svelte 5 Patterns Used
-- **`$props()` rune**: For component props (replaces `export let`)
-- **`$state()`**: For ALL reactive local state
-- **`$derived(expr)`**: For computed values (not `$derived let x = $state(...)`)
-- **`$effect()`**: For syncing derived state
-- **Callback pattern**: For child→parent data flow
-- **`onclick`**: Event handlers (no colon syntax)
-- **`{@html}`**: For safe HTML rendering
+When you ask a question, YourQL does the following behind the scenes:
 
-### Go Patterns Used
-- **`make([]*Type, 0)`**: For empty slices (prevents `nil` serializing to `null` in JSON)
-- **`addColumnIfNotExists()`**: Safe column addition for SQLite migrations
-- **`_ "github.com/go-sql-driver/mysql"`**: Required for driver registration
+1. **Reads your schema** — Tables, columns, types, primary keys, foreign keys, and row counts are gathered from your database.
+2. **Builds a prompt** — The schema, your question, any custom system prompt, business rules, and active skills are assembled into a structured prompt for the LLM.
+3. **Calls the LLM** — The prompt is sent to your configured AI provider. The LLM responds with a JSON action: `sql_query` (execute this SQL), `clarification` (ask the user for more detail), or `sql_exploration` (run a read-only query to understand the data better before writing the final query).
+4. **Explores if needed** — If the LLM chooses exploration, it runs safe, read-only queries (constrained by configurable safety modes) and uses the results to refine its understanding.
+5. **Executes the final query** — The generated SQL is run against your database. If it fails, YourQL sends the error back to the LLM for automatic correction and retry.
+6. **Renders the results** — Results appear as an interactive, sortable table. If you've enabled summaries or visualizations, those are generated and displayed above the table.
 
-### SQLite Date Functions
-- Use `CURRENT_TIMESTAMP` (not `NOW()`) for SQLite compatibility
+---
 
-### LLM Client Interface
-```go
-type LLMClient interface {
-    ChatCompletion(ctx context.Context, messages []ChatMessage) (string, error)
-    ChatCompletionWithPayload(ctx context.Context, messages []ChatMessage) (content, requestJSON, responseJSON string, err error)
-}
-```
-- `ChatCompletionWithPayload` captures full request/response JSON for debugging
-- Payloads are stored in `conversation_messages` as metadata for `exploration`-role messages
-- Inline HTML event handlers (`onclick="toggleSQLSection(...)"`, `onclick="copySQL(...)"`, `onclick="exportCSV(...)"`) are exposed as global `window` functions in `ConversationView.svelte`
+## Conversation Settings
 
-### Exploration Queries
-Per-connection configuration stored as JSON in `db_connections.config`:
-- `exploration_allowed`: Enable/disable exploration
-- `max_exploration_rounds`: Maximum intermediate query rounds
-- `exploration_safety`: Safety mode (strict/relaxed/permissive)
-- `system_prompt`: Custom system prompt for this connection
-- `business_rules`: Business rules injected into system prompt
-- `table_descriptions`: Custom table descriptions
-- `column_descriptions`: Custom column descriptions (format: `table.column`)
+Every discussion has its own settings panel (click the gear icon):
 
-### Technical Details Toggle
-Per-discussion boolean stored in `tech_details` column:
-- **OFF**: Shows only user and assistant messages
-- **ON**: Shows all intermediate engine messages including:
-  - Exploration SQL queries and results
-  - Raw LLM request/response JSON
-  - Full LLM message array
-  - Copy button for payloads
+- **LLM Provider** — Which AI model powers this discussion
+- **Data Source** — Which database this discussion queries
+- **Messages in Context** — How many recent messages are sent to the LLM (prevents context-window overflow with long conversations)
+- **Summarize Results** — Let the LLM write a plain-English summary above each result table
+- **Data Visualization** — Let the LLM generate charts (bar, line, pie, scatter, etc.) when appropriate
+- **Pin** — Keep this discussion at the top of your list
+- **Duplicate, Clear, Archive, Delete** — Standard conversation management
 
-### Soft Delete
-Discussions are soft-deleted via `status = 'deleted'` and `deleted_at = CURRENT_TIMESTAMP`. List queries filter on `status != 'deleted'` (safe column that always exists).
+---
 
-### Conversations Table Columns
-- `max_messages`: UI limit for displayed messages (0 = show all)
-- `max_context_messages`: LLM context limit — only the last N messages are sent to the LLM (default: 10, 0 = all)
-- `pinned`: Whether the discussion is pinned to the top of the list
-- `tech_details`: Whether technical details are shown by default
-- `context_details`: Whether context/token details are shown by default
+## Data Source Configuration
+
+Each database connection supports deep customization:
+
+- **Custom System Prompt** — Override the default prompt for a specific database (inject domain knowledge, naming conventions, etc.)
+- **Business Rules** — One-per-line rules injected into every query prompt (e.g., "Never expose customer SSN", "Always use ISO date format")
+- **Table & Column Descriptions** — After loading the schema, add human-readable descriptions for tables and columns so the LLM understands your domain
+- **Exploration Settings** — Control when and how the LLM can explore your data:
+  - **Strict** — Simple SELECT only; no JOINs, subqueries, UNION, GROUP BY, or ORDER BY
+  - **Moderate** — Single-table JOIN, GROUP BY, and ORDER BY allowed
+  - **Relaxed** — Subqueries and UNION allowed (still read-only)
+- **Query Limits** — Set default and exploration row limits, query length thresholds
+
+---
+
+## Skills
+
+Skills are reusable Markdown prompt fragments you define in Settings. Write a skill for your organization's naming conventions, common query patterns, or any domain knowledge you want the LLM to reference. Then enable one or more skills per conversation — the content is injected into the system prompt for discussions where they're active.
+
+---
+
+## Security & Privacy
+
+- **Your data stays local** — All conversations, settings, and connection details are stored in a local SQLite database at `~/.yourql/yourql.db`. Nothing is sent to the cloud unless you configure a cloud LLM provider.
+- **API keys are stored locally** — Provider API keys are saved in the same local database. They are never sent to any server other than the LLM provider you configure.
+- **Queries are read-only by default** — Exploration queries are validated against configurable safety modes to prevent data modification. Only SELECT queries (and CTEs) are allowed.
+- **No telemetry, no analytics, no phoning home** — YourQL does not collect usage data or communicate with any server other than the LLM API endpoint you configure and the databases you connect to.
+
+---
+
+## Technical Architecture
+
+YourQL is built with [Wails v2](https://wails.io/), combining a Go backend with a Svelte 5 frontend.
+
+| Layer | Technology |
+|---|---|
+| Desktop framework | Wails v2 |
+| Backend | Go 1.25 |
+| Frontend | Svelte 5 + Vite |
+| Charts | Chart.js 4 |
+| App database | SQLite (via `modernc.org/sqlite`, pure Go) |
+| External databases | Native drivers per type (see list above) |
+| LLM APIs | OpenAI, Anthropic, Ollama, custom HTTP endpoints |
+
+### Data Storage
+
+All application data — conversations, messages, provider configs, connection configs, and skills — is stored in `~/.yourql/yourql.db`. The database is created automatically on first run. Schema migrations are handled non-destructively with automated column addition and tracking.
+
+### LLM Integration
+
+The LLM interface is provider-agnostic. Each provider implements a common `LLMClient` interface supporting chat completion with full request/response payload capture for debugging. The system prompt is dynamically built per-conversation from schema metadata, custom configuration, and active skills.
+
+### Multi-Database Support
+
+Database drivers implement a common `DBDriver` interface with methods for DSN construction, schema introspection, and dialect-aware prompt generation. Drivers for native-API databases (BigQuery, Google Sheets) also implement an optional `NativeQuerier` interface for query execution without `database/sql`.
 
 ---
 
 ## Development
 
 ### Prerequisites
+
 - Go 1.21+
 - Node.js 18+
 - Wails CLI: `go install github.com/wailsapp/wails/v2/cmd/wails@latest`
 
 ### Building
+
 ```bash
 # Generate Wails bindings
 ~/go/bin/wails generate module
 
-# Build Go backend
-go build .
+# Build the full application
+wails build
 
-# Build frontend
-cd frontend && npm run build
-
-# Run in dev mode
+# Run in development mode with hot reload
 wails dev
 ```
 
-### Running
-```bash
-wails dev
-```
+### Project Structure
 
-### Testing
-- Test LLM connections from Settings → Model Configurations → Test button
-- Test DB connections from Settings → Database Configurations → Detail View → Test Connection
-- View schema from Settings → Database Configurations → Detail View → Load Schema
+```text
+YourQL/
+├── app.go                       # Wails bindings (Go ↔ frontend bridge)
+├── main.go                      # Application entry point
+├── pkg/
+│   ├── models/                  # Data structures, DB schemas, migrations
+│   └── services/                # Core logic — discussion engine, LLM clients,
+│                                #   SQL execution, schema introspection, drivers
+├── frontend/                    # Svelte 5 UI
+│   └── src/
+│       ├── App.svelte           # Sidebar, navigation, discussion list
+│       ├── ConversationView.svelte  # Chat interface, message display
+│       ├── SettingsView.svelte  # LLM providers, data sources, skills
+│       └── VizChart.svelte      # Chart.js visualization component
+└── screenshots/                 # UI screenshots
+```
 
 ---
 
-## Known Limitations
-- Small models (e.g., qwen3.5-0.8b) may not handle consecutive same-role messages well
-- System prompt is capped at 16KB to prevent context overflow
-- LLM base URLs must include `/v1` prefix for OpenAI-compatible endpoints (e.g., `http://192.168.0.176:1234/v1`)
+## License
+
+YourQL is open-source software. See the [LICENSE](LICENSE) file for details.
+
+---
+
+## Disclaimer
+
+The AI models you configure will have access to the databases you configure. Use responsibly with databases containing sensitive data. YourQL can be deployed in an air-gapped or local-network-only environment so that models and databases remain isolated, but this requires technical knowledge and deliberate configuration.

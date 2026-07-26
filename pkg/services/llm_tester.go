@@ -54,7 +54,7 @@ func testOpenAIConnection(apiKey, model, baseURL *string) (string, error) {
 	}
 
 	if localEndpoint {
-		return fmt.Sprintf("Local model connection successful (model: %s)", modelName), nil
+		return fmt.Sprintf("Model connection successful (model: %s)", modelName), nil
 	}
 	return fmt.Sprintf("OpenAI API connection successful (model: %s)", modelName), nil
 }
@@ -177,5 +177,5 @@ func testLocalConnection(baseURL, model *string) (string, error) {
 	if resp.StatusCode != 200 {
 		return "", fmt.Errorf("local model API error: status %d", resp.StatusCode)
 	}
-	return fmt.Sprintf("Local model connection successful (model: %s)", modelName), nil
+	return fmt.Sprintf("Model connection successful (model: %s)", modelName), nil
 }

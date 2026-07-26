@@ -32,6 +32,8 @@ export function DuplicateConversation(arg1:number):Promise<models.Conversation>;
 
 export function ExecuteQuery(arg1:number,arg2:string):Promise<main.QueryResult>;
 
+export function ExportConversationPDF():Promise<void>;
+
 export function GetConversationMessages(arg1:number):Promise<Array<models.ConversationMessage>>;
 
 export function GetConversationSkillIDs(arg1:number):Promise<Array<number>>;

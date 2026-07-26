@@ -14,9 +14,10 @@ import (
 
 // LLMResponse defines the structured response expected from the LLM.
 type LLMResponse struct {
-	Action                string `json:"action"` // "sql_query", "clarification", or "sql_exploration"
+	Action                string `json:"action"` // "sql_query", "clarification", "sql_exploration", or "answer"
 	SQLQuery              string `json:"sql_query,omitempty"`
 	ClarificationQuestion string `json:"clarification_question,omitempty"`
+	Answer                string `json:"answer,omitempty"`
 	Explanation           string `json:"explanation,omitempty"`
 	VizConfig             string `json:"viz_config,omitempty"` // raw JSON for Chart.js (contains $column refs)
 }
@@ -122,9 +123,13 @@ func ProcessUserMessage(conversationID uint, userMessage string, onPhase func(st
 		return fmt.Errorf("failed to save user message: %w", err)
 	}
 
-	// Defer: save an assistant error message if we fail, but guard against duplicates (§5.3)
+	// Defer: save an assistant error message if we fail, but guard against duplicates.
+	// recover() catches panics (e.g. parser bugs) so they don't leave the spinner stuck.
 	assistantMessageSaved := false
 	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("internal error: %v", r)
+		}
 		if err != nil && !assistantMessageSaved {
 			errorMsg := fmt.Sprintf("I encountered an error: %s", err.Error())
 			_, _ = CreateConversationMessage(conversationID, "assistant", errorMsg, nil, nil, nil)
@@ -265,14 +270,14 @@ func ProcessUserMessage(conversationID uint, userMessage string, onPhase func(st
 				llmResp.Action = "sql_query"
 			} else {
 				llmResp.Action = "clarification"
-				llmResp.ClarificationQuestion = "I received your response but couldn't determine what you wanted me to do. Please use one of: sql_query, clarification, or sql_exploration."
+				llmResp.ClarificationQuestion = "I received your response but couldn't determine what you wanted me to do. Please use one of: sql_query, clarification, sql_exploration, or answer."
 			}
-		} else if llmResp.Action != "sql_query" && llmResp.Action != "clarification" && llmResp.Action != "sql_exploration" {
+		} else if llmResp.Action != "sql_query" && llmResp.Action != "clarification" && llmResp.Action != "sql_exploration" && llmResp.Action != "answer" {
 			if actionRetries < maxActionRetries {
 				log.Printf("[DiscussionEngine] Round %d — unknown action '%s', retry %d/%d", round+1, llmResp.Action, actionRetries+1, maxActionRetries)
 				llmMessages = append(llmMessages, ChatMessage{
 					Role:    "system",
-					Content: fmt.Sprintf("Your previous response was valid JSON but did not include a recognized action. You must use one of: \"sql_query\", \"clarification\", or \"sql_exploration\". Please respond again with the correct format."),
+					Content: fmt.Sprintf("Your previous response was valid JSON but did not include a recognized action. You must use one of: \"sql_query\", \"clarification\", or \"sql_exploration\", or \"answer\". Please respond again with the correct format."),
 				})
 				actionRetries++
 				continue
@@ -283,6 +288,11 @@ func ProcessUserMessage(conversationID uint, userMessage string, onPhase func(st
 				llmResp.Action = "clarification"
 				llmResp.ClarificationQuestion = fmt.Sprintf("I couldn't understand your last response (action: %q). Please rephrase your question.", llmResp.Action)
 			}
+		}
+
+		if llmResp.Action == "answer" && llmResp.Answer == "" {
+			llmResp.Action = "clarification"
+			llmResp.ClarificationQuestion = "I tried to answer but received an empty response. Could you rephrase your question?"
 		}
 
 		switch llmResp.Action {
@@ -298,12 +308,19 @@ func ProcessUserMessage(conversationID uint, userMessage string, onPhase func(st
 					Content: er.ToMessageContent(),
 				})
 			}
-			executeFinalQueryWithRetry(ctx, query, llmResp, client, llmMessages, dbConnection, conversation, userMessage, explorationResults, maxFinalRetries, skillsContent)
+			executeFinalQueryWithRetry(ctx, query, llmResp, client, llmMessages, dbConnection, conversation, userMessage, explorationResults, maxFinalRetries, skillsContent, onPhase)
 			assistantMessageSaved = true
 			return nil
 
 		case "clarification":
 			err := handleClarification(query, llmResp, conversationID)
+			if err == nil {
+				assistantMessageSaved = true
+			}
+			return err
+
+		case "answer":
+			err := handleAnswer(query, llmResp, conversationID)
 			if err == nil {
 				assistantMessageSaved = true
 			}
@@ -400,6 +417,10 @@ func ProcessUserMessage(conversationID uint, userMessage string, onPhase func(st
 		return handleClarification(query, finalResp, conversationID)
 	}
 
+	if finalResp.Action == "answer" {
+		return handleAnswer(query, finalResp, conversationID)
+	}
+
 	if finalResp.Action != "sql_query" {
 		// BUG FIX §5.2: Don't send comment-only SQL; convert to clarification
 		finalResp = LLMResponse{
@@ -419,7 +440,7 @@ func ProcessUserMessage(conversationID uint, userMessage string, onPhase func(st
 		onPhase("Running query...")
 	}
 
-	executeFinalQueryWithRetry(ctx, query, finalResp, client, llmMessages, dbConnection, conversation, userMessage, explorationResults, maxFinalRetries, skillsContent)
+	executeFinalQueryWithRetry(ctx, query, finalResp, client, llmMessages, dbConnection, conversation, userMessage, explorationResults, maxFinalRetries, skillsContent, onPhase)
 	assistantMessageSaved = true
 
 	// Phase: finalizing
@@ -444,8 +465,8 @@ func parseLLMResponse(cleanedResponse string) (LLMResponse, error) {
 			}, nil
 		}
 		return LLMResponse{
-			Action:                "clarification",
-			ClarificationQuestion: cleanedResponse,
+			Action: "answer",
+			Answer: cleanedResponse,
 		}, nil
 	}
 	return resp, nil
@@ -577,7 +598,7 @@ func formatSkillsContext(skillsContent string) string {
 }
 
 // executeFinalQueryWithRetry wraps SQL execution in a retry loop.
-func executeFinalQueryWithRetry(ctx context.Context, query *models.Query, resp LLMResponse, client LLMClient, llmMessages []ChatMessage, dbConnection *models.DataSource, conversation *models.Conversation, userMessage string, explorationResults []ExplorationResult, maxRetries int, skillsContent string) {
+func executeFinalQueryWithRetry(ctx context.Context, query *models.Query, resp LLMResponse, client LLMClient, llmMessages []ChatMessage, dbConnection *models.DataSource, conversation *models.Conversation, userMessage string, explorationResults []ExplorationResult, maxRetries int, skillsContent string, onPhase func(string)) {
 	lastSQL := ""
 	var lastErr error
 
@@ -612,6 +633,10 @@ func executeFinalQueryWithRetry(ctx context.Context, query *models.Query, resp L
 			}
 
 			if newResp.Action != "sql_query" {
+				if newResp.Action == "answer" {
+					_ = handleAnswer(query, newResp, conversation.ID)
+					return
+				}
 				llmContentJSON, _ := json.Marshal(newResp)
 				llmContent := string(llmContentJSON)
 				llmContentPtr := &llmContent
@@ -642,7 +667,10 @@ func executeFinalQueryWithRetry(ctx context.Context, query *models.Query, resp L
 		if err == nil {
 			var summary *string
 			if conversation.Summarize {
-				s := summarizeResults(ctx, client, userMessage, resp.SQLQuery, results, skillsContent)
+				if onPhase != nil {
+					onPhase("Summarizing with LLM...")
+				}
+				s := summarizeResults(ctx, client, userMessage, resp.SQLQuery, results, skillsContent, conversation.ID)
 				if s != "" {
 					summary = &s
 				}
@@ -661,6 +689,29 @@ func executeFinalQueryWithRetry(ctx context.Context, query *models.Query, resp L
 	}
 
 	renderSQLError(query, resp, dbConnection, conversation.ID, explorationResults, lastErr)
+}
+
+// handleAnswer creates an assistant message with a direct markdown response.
+func handleAnswer(query *models.Query, resp LLMResponse, conversationID uint) error {
+	if err := UpdateQueryStatus(query.ID, "answer", nil, nil, nil, nil, nil, nil); err != nil {
+		return fmt.Errorf("failed to update query: %w", err)
+	}
+
+	htmlContent := renderMarkdown(resp.Answer)
+
+	llmContentJSON, _ := json.Marshal(resp)
+	llmContent := string(llmContentJSON)
+
+	metadataJSON, _ := json.Marshal(map[string]interface{}{"content_type": "html"})
+	metadata := string(metadataJSON)
+
+	_, err := CreateConversationMessage(conversationID, "assistant",
+		fmt.Sprintf("<div class=\"markdown-content\">%s</div>", htmlContent),
+		&llmContent, nil, &metadata)
+	if err != nil {
+		return fmt.Errorf("failed to create answer message: %w", err)
+	}
+	return nil
 }
 
 // handleClarification creates an assistant message asking for clarification.
@@ -849,11 +900,12 @@ func buildSystemPrompt(schema *DataSchema, hasDB bool, dbConnection *models.Data
 
 	sb.WriteString("## Instructions\n")
 	sb.WriteString("1. Analyze the user's question and the database schema (if provided).\n")
-	sb.WriteString("2. Decide whether you can answer directly by generating a SQL query, if you need clarification, or if you should first explore the data.\n")
+	sb.WriteString("2. Decide whether you can answer directly, generate a SQL query, request clarification, or first explore the data.\n")
 	sb.WriteString("3. Respond with a JSON object containing exactly the following fields:\n")
-	sb.WriteString("   - \"action\": one of \"sql_query\", \"clarification\", or \"sql_exploration\"\n")
-	sb.WriteString("   - \"sql_query\": if action is \"sql_query\" or \"sql_exploration\", provide a valid SELECT query.\n")
+	sb.WriteString("   - \"action\": one of \"sql_query\", \"clarification\", \"sql_exploration\", or \"answer\"\n")
+	sb.WriteString("   - \"sql_query\": if action is \"sql_query\" or \"sql_exploration\", or \"answer\", provide a valid SELECT query.\n")
 	sb.WriteString("   - \"clarification_question\": if action is \"clarification\", ask a concise clarifying question.\n")
+	sb.WriteString("   - \"answer\": if action is \"answer\", provide a direct response to the user. Use \"answer\" when the question does not require querying the database — e.g., follow-ups about previously returned data, general knowledge questions, or formatting/narrative requests. Do NOT use \"answer\" when the database has the definitive answer — prefer \"sql_query\" instead.\n")
 	sb.WriteString("   - \"explanation\": optional short explanation of your reasoning.\n")
 	dbTypeHint := "SQL"
 	if dbConnection != nil {
@@ -910,6 +962,7 @@ func buildSystemPrompt(schema *DataSchema, hasDB bool, dbConnection *models.Data
 		sb.WriteString("  * line = time series, trends, sequential data\n")
 		sb.WriteString("  * pie/doughnut = proportions, composition (<=8 categories)\n")
 		sb.WriteString("  * scatter = correlation, relationship between two numeric variables\n")
+		sb.WriteString("- Use visually distinct, non-gray colors for datasets (e.g. blue, red, green, orange, purple, teal) to make charts readable\n")
 		sb.WriteString("- Do NOT include viz_config unless the user explicitly asks for a chart or the data clearly benefits from one\n")
 		sb.WriteString("- The viz_config must be a valid JSON string (double-quote all keys and values, escape internal quotes)\n\n")
 	}
@@ -996,7 +1049,7 @@ func renderSQLResults(query *models.Query, resp LLMResponse, dbConnection *model
 }
 
 // summarizeResults sends query results back to the LLM for a natural-language summary.
-func summarizeResults(ctx context.Context, client LLMClient, userQuestion, sqlQuery string, results *QueryResult, skillsContent string) string {
+func summarizeResults(ctx context.Context, client LLMClient, userQuestion, sqlQuery string, results *QueryResult, skillsContent string, conversationID uint) string {
 	if results == nil || results.RowCount == 0 {
 		return ""
 	}
@@ -1027,10 +1080,22 @@ func summarizeResults(ctx context.Context, client LLMClient, userQuestion, sqlQu
 		{Role: "user", Content: prompt},
 	}
 
-	summary, err := client.ChatCompletion(ctx, summaryMessages)
+	summary, requestJSON, responseJSON, err := client.ChatCompletionWithPayload(ctx, summaryMessages)
 	if err != nil {
 		log.Printf("[DiscussionEngine] Summarization failed: %v", err)
 		return ""
+	}
+
+	// Store the summarization payload for technical details
+	if requestJSON != "" && responseJSON != "" {
+		payloadMeta := map[string]interface{}{
+			"request_json":   requestJSON,
+			"response_json":  responseJSON,
+			"llm_messages":   summaryMessages,
+		}
+		payloadJSON, _ := json.Marshal(payloadMeta)
+		payloadJSONStr := string(payloadJSON)
+		_, _ = CreateConversationMessage(conversationID, "exploration", "[Summarization — Full Payload]", nil, nil, &payloadJSONStr)
 	}
 
 	return strings.TrimSpace(summary)

@@ -238,9 +238,32 @@ func runMigration(name string, fn func() error) error {
 	return err
 }
 
+// safeSQLIdentifier checks that a string is a valid SQL identifier to guard
+// against injection in fmt.Sprintf-based ALTER TABLE and PRAGMA statements.
+func safeSQLIdentifier(name string) bool {
+	if len(name) == 0 {
+		return false
+	}
+	for i, r := range name {
+		if i == 0 {
+			if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && r != '_' {
+				return false
+			}
+		} else {
+			if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // ensureColumn adds a column if it doesn't already exist.
 // NON-DESTRUCTIVE: Uses ALTER TABLE ADD COLUMN only — never touches existing data.
 func ensureColumn(tableName, columnName, columnDef string) error {
+	if !safeSQLIdentifier(tableName) || !safeSQLIdentifier(columnName) {
+		return fmt.Errorf("invalid identifier in ensureColumn: table=%q column=%q", tableName, columnName)
+	}
 	exists, err := columnExists(tableName, columnName)
 	if err != nil {
 		return err
@@ -255,6 +278,9 @@ func ensureColumn(tableName, columnName, columnDef string) error {
 }
 
 func columnExists(tableName, columnName string) (bool, error) {
+	if !safeSQLIdentifier(tableName) || !safeSQLIdentifier(columnName) {
+		return false, fmt.Errorf("invalid identifier in columnExists: table=%q column=%q", tableName, columnName)
+	}
 	rows, err := DB.Query(fmt.Sprintf("PRAGMA table_info(%s)", tableName))
 	if err != nil {
 		return false, err
@@ -283,6 +309,10 @@ func columnExists(tableName, columnName string) (bool, error) {
 //
 // Tracked via runMigration so it never attempts twice on the same column.
 func dropColumnIfExists(tableName, columnName string) {
+	if !safeSQLIdentifier(tableName) || !safeSQLIdentifier(columnName) {
+		log.Printf("WARNING: Skipping dropColumnIfExists with invalid identifiers: table=%q column=%q", tableName, columnName)
+		return
+	}
 	exists, err := columnExists(tableName, columnName)
 	if err != nil || !exists {
 		return // nothing to do

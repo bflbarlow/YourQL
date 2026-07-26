@@ -293,6 +293,26 @@
     }
   }
 
+  async function handleSetDefaultLLM(id) {
+    try {
+      await SetDefaultLLMProvider(id)
+      llmStatus = 'Default provider updated'
+      onUpdate()
+    } catch (e) {
+      llmStatus = 'Error: ' + e.toString()
+    }
+  }
+
+  async function handleSetDefaultDataSource(id) {
+    try {
+      await SetDefaultDataSource(id)
+      dbStatus = 'Default data source updated'
+      onUpdate()
+    } catch (e) {
+      dbStatus = 'Error: ' + e.toString()
+    }
+  }
+
   async function handleTestLLM(id) {
     llmStatus = 'Testing connection...'
     try {
@@ -772,6 +792,7 @@
                   {/if}
                 </div>
                 <div class="provider-actions">
+                  <button class="btn btn-small" onclick={() => handleSetDefaultLLM(provider.id)}>Set as Default</button>
                   <button class="btn btn-small" onclick={() => startEditLLM(provider)}>Edit</button>
                   <button class="btn btn-small" onclick={() => handleTestLLM(provider.id)}>Test</button>
                   <button class="btn btn-small btn-danger" onclick={() => handleDeleteLLM(provider.id)}>Delete</button>
@@ -1046,8 +1067,13 @@
                   </div>
                 </div>
 
-                <!-- Actions -->
+                <!-- Actions (sticky at bottom; status message pinned alongside buttons) -->
                 <div class="db-detail-actions">
+                  {#if dbStatus}
+                    <div class="status-message {dbStatus.startsWith('Error') ? 'error' : 'success'}" style="width:100%; margin-bottom:var(--space-xl);">
+                      {dbStatus}
+                    </div>
+                  {/if}
                   <div class="db-actions-left">
                     <button class="btn btn-primary" onclick={handleSaveDBDetail}>Save</button>
                     <button class="btn btn-secondary" onclick={() => isNewConnection ? handleTestNewConnection() : handleTestSource(selectedDataSource.id)}>Test Connection</button>
@@ -1059,14 +1085,6 @@
                     <button class="btn btn-danger" onclick={() => handleDeleteSource(selectedDataSource.id)}>Delete</button>
                   {/if}
                 </div>
-
-                {#if dbStatus}
-                  <div class="status-message {dbStatus.startsWith('Error') ? 'error' : 'success'}">
-                    {dbStatus}
-                  </div>
-                {/if}
-
-                <!-- Schema Preview (editable) -->
                 {#if schemaLoading}
                   <div class="db-section">
                     <h4>Schema</h4>
@@ -1155,6 +1173,12 @@
               <h4>Configured Connections</h4>
               <button class="btn btn-primary" onclick={openNewConnection}>+ Add Connection</button>
 
+              {#if dbStatus}
+                <div class="status-message {dbStatus.startsWith('Error') ? 'error' : 'success'}">
+                  {dbStatus}
+                </div>
+              {/if}
+
               {#if dataSources.length === 0}
                 <p class="empty-hint">No data sources configured</p>
               {:else}
@@ -1190,6 +1214,7 @@
                       </div>
                     </div>
                     <div class="data-source-actions">
+                      <button class="btn btn-small" onclick={() => handleSetDefaultDataSource(connection.id)}>Set as Default</button>
                       <button class="btn btn-small" onclick={() => openSourceDetail(connection)}>Edit</button>
                       <button class="btn btn-small" onclick={() => handleTestSource(connection.id)}>Test</button>
                       <button class="btn btn-small" onclick={() => handleViewSchema(connection.id)}>Schema</button>
@@ -1374,7 +1399,7 @@
   .settings-content {
     flex: 1;
     overflow-y: auto;
-    padding: var(--space-6xl) var(--space-7xl);
+    padding: var(--space-6xl) var(--space-7xl) 0;
     background: #ffffff;
   }
 
@@ -2262,10 +2287,15 @@
 
   .db-detail-actions {
     display: flex;
+    flex-wrap: wrap;
     justify-content: space-between;
     align-items: center;
-    padding-top: var(--space-3xl);
+    padding: var(--space-3xl) 0 var(--space-6xl) 0;
     border-top: 1px solid #e0e0e0;
+    position: sticky;
+    bottom: 0;
+    background: #ffffff;
+    z-index: 10;
   }
 
   .db-actions-left {

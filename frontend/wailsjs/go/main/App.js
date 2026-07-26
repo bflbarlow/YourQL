@@ -58,6 +58,10 @@ export function ExecuteQuery(arg1, arg2) {
   return window['go']['main']['App']['ExecuteQuery'](arg1, arg2);
 }
 
+export function ExportConversationPDF() {
+  return window['go']['main']['App']['ExportConversationPDF']();
+}
+
 export function GetConversationMessages(arg1) {
   return window['go']['main']['App']['GetConversationMessages'](arg1);
 }
