@@ -59,11 +59,16 @@ package services
 
 import (
     "context"
+    "database/sql"
     "encoding/json"
     "fmt"
     "net/http"
+    "os"
     "strings"
+    "sync"
     "time"
+
+    "YourQL/pkg/models"
 
     "golang.org/x/oauth2"
     "golang.org/x/oauth2/google"
@@ -114,10 +119,14 @@ type DeviceAuthResponse struct {
 // RequestDeviceCode initiates the device authorization flow.
 // Returns a user_code the user enters at google.com/device, and a DeviceAuthResponse
 // the frontend can poll with.
+//
+// Note: `access_type=offline` and `prompt=consent` are included to force Google to
+// return a refresh_token even on re-authorization. Without these, Google only issues
+// a refresh_token on the very first authorization, so reconnects would silently omit it.
 func RequestDeviceCode() (*DeviceAuthResponse, error) {
     cfg := googleOAuthConfig()
     data := fmt.Sprintf(
-        "client_id=%s&scope=%s",
+        "client_id=%s&scope=%s&access_type=offline&prompt=consent",
         cfg.ClientID,
         strings.Join(cfg.Scopes, " "),
     )
@@ -149,11 +158,28 @@ func RequestDeviceCode() (*DeviceAuthResponse, error) {
 ### 2.2 Token Exchange
 
 ```go
-// ExchangeDeviceCode polls Google's token endpoint until the user authorizes or the code expires.
-func ExchangeDeviceCode(deviceCode string) (*oauth2.Token, error) {
+// ExchangeDeviceCode polls Google's token endpoint until the user authorizes, the code expires,
+// or the user denies access. Must be called with the original DeviceAuthResponse's Interval
+// (Google's recommended polling cadence) and ExpiresIn (expiration timeout).
+//
+// The ctx parameter allows cancellation (e.g., when the user closes the settings panel
+// or clicks Cancel). Callers should typically pass the App's context.
+func ExchangeDeviceCode(ctx context.Context, deviceCode string, interval time.Duration, expiresAt time.Time) (*oauth2.Token, error) {
     cfg := googleOAuthConfig()
+    ticker := time.NewTicker(interval)
+    defer ticker.Stop()
+
     for {
-        tok, err := cfg.Exchange(context.Background(), deviceCode,
+        select {
+        case <-ticker.C:
+            if time.Now().After(expiresAt) {
+                return nil, fmt.Errorf("device authorization code expired")
+            }
+        case <-ctx.Done():
+            return nil, fmt.Errorf("polling cancelled: %w", ctx.Err())
+        }
+
+        tok, err := cfg.Exchange(ctx, deviceCode,
             oauth2.SetAuthURLParam("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
         )
         if err == nil {
@@ -162,14 +188,24 @@ func ExchangeDeviceCode(deviceCode string) (*oauth2.Token, error) {
 
         // "authorization_pending" means the user hasn't authorized yet — keep polling
         if strings.Contains(err.Error(), "authorization_pending") {
-            time.Sleep(5 * time.Second)
             continue
         }
 
-        // "slow_down" means we're polling too fast
+        // "slow_down" means we're polling too fast — back off by extending the ticker
         if strings.Contains(err.Error(), "slow_down") {
-            time.Sleep(10 * time.Second)
+            interval += 5 * time.Second
+            ticker.Reset(interval)
             continue
+        }
+
+        // "expired_device_code" means the user took too long to authorize
+        if strings.Contains(err.Error(), "expired_device_code") {
+            return nil, fmt.Errorf("authorization code expired — please start the OAuth flow again")
+        }
+
+        // "access_denied" means the user explicitly denied access
+        if strings.Contains(err.Error(), "access_denied") {
+            return nil, fmt.Errorf("user denied access to Google Sheets")
         }
 
         return nil, fmt.Errorf("token exchange failed: %w", err)
@@ -177,11 +213,17 @@ func ExchangeDeviceCode(deviceCode string) (*oauth2.Token, error) {
 }
 ```
 
+> **Important**: The caller must pass `expiresAt` (derived from `resp.ExpiresIn` seconds from the device code request) and `interval` (from `resp.Interval`, Google's recommended polling cadence) to avoid `slow_down` errors. See Section 5.1 for how the App layer stores these values in `PendingEntry` alongside the device code and passes them into `ExchangeDeviceCode` from a background goroutine.
+
+> **Architecture note**: `ExchangeDeviceCode` blocks in a polling loop. It should be called from a goroutine — not directly from a Wails-exposed method — and the result should be delivered to the frontend via Wails events (`googleAuthComplete` / `googleAuthError`). See Section 5.1 for the full pattern.
+
 ### 2.3 Token Storage & Refresh
 
+Both functions are **exported** so `app.go` can call them via `services.StoreAuthConfig` / `services.LoadAuthConfig`.
+
 ```go
-// storeAuthConfig serializes an OAuth2 token into the data source's auth_config column.
-func storeAuthConfig(connID uint, token *oauth2.Token) error {
+// StoreAuthConfig serializes an OAuth2 token into the data source's auth_config column.
+func StoreAuthConfig(connID uint, token *oauth2.Token) error {
     data, err := json.Marshal(token)
     if err != nil {
         return err
@@ -193,8 +235,8 @@ func storeAuthConfig(connID uint, token *oauth2.Token) error {
     return err
 }
 
-// loadAuthConfig deserializes the OAuth2 token from the data source's auth_config column.
-func loadAuthConfig(connID uint) (*oauth2.Token, error) {
+// LoadAuthConfig deserializes the OAuth2 token from the data source's auth_config column.
+func LoadAuthConfig(connID uint) (*oauth2.Token, error) {
     var raw sql.NullString
     err := models.DB.QueryRow(
         "SELECT auth_config FROM data_sources WHERE id = ?", connID,
@@ -210,14 +252,107 @@ func loadAuthConfig(connID uint) (*oauth2.Token, error) {
 }
 
 // getSheetsClient returns an authenticated Google Sheets API client for a data source.
+// It detects expired tokens and returns a specific error that the caller should handle
+// by prompting the user to re-authenticate.
 func getSheetsClient(conn *models.DataSource) (*sheets.Service, error) {
-    tok, err := loadAuthConfig(conn.ID)
+    tok, err := LoadAuthConfig(conn.ID)
     if err != nil {
         return nil, err
     }
+
+    // Detect expired token — if the access token is expired and there's no refresh token,
+    // we can't recover automatically. Return a sentinel error.
+    if tok.Expiry.Before(time.Now()) {
+        if tok.RefreshToken == "" {
+            return nil, fmt.Errorf("oauth_token_expired")
+        }
+        // If a refresh token exists, oauth2.Config.Client() will auto-refresh.
+        // But if the refresh token is also expired, the HTTP request will fail with 401.
+        // The Sheets API client will surface this as an error; the frontend should
+        // detect it and prompt re-authentication.
+    }
+
     cfg := googleOAuthConfig()
     client := cfg.Client(context.Background(), tok)
     return sheets.New(client)
+}
+```
+
+### 2.4 Pending Device Code Storage
+
+The device code must be stored temporarily so the background polling goroutine can retrieve it, along with Google's recommended polling `Interval` and the code's `ExpiresAt`. Use a thread-safe in-memory map with automatic cleanup:
+
+```go
+var pendingDeviceCodes = struct {
+    sync.Mutex
+    m map[uint]PendingEntry
+}{m: make(map[uint]PendingEntry)}
+
+// PendingEntry holds everything needed to poll for the token exchange.
+type PendingEntry struct {
+    Code      string        // Google device_code from the device auth response
+    Interval  time.Duration // Google-recommended polling cadence
+    ExpiresAt time.Time     // When the code becomes invalid
+}
+
+// StorePendingDeviceCode saves a device code + polling params for a data source.
+func StorePendingDeviceCode(dataSourceID uint, entry PendingEntry) {
+    pendingDeviceCodes.Lock()
+    defer pendingDeviceCodes.Unlock()
+    pendingDeviceCodes.m[dataSourceID] = entry
+}
+
+// GetPendingDeviceCode retrieves the pending entry WITHOUT deleting it.
+// The polling loop calls this once at the start; the entry is removed via
+// ClearPendingDeviceCode after success, failure, or cancellation.
+func GetPendingDeviceCode(dataSourceID uint) (PendingEntry, error) {
+    pendingDeviceCodes.Lock()
+    defer pendingDeviceCodes.Unlock()
+    entry, ok := pendingDeviceCodes.m[dataSourceID]
+    if !ok {
+        return PendingEntry{}, fmt.Errorf("no pending device code for data source %d", dataSourceID)
+    }
+    return entry, nil
+}
+
+// ClearPendingDeviceCode removes a pending device code (on cancel, success, or failure).
+func ClearPendingDeviceCode(dataSourceID uint) {
+    pendingDeviceCodes.Lock()
+    defer pendingDeviceCodes.Unlock()
+    delete(pendingDeviceCodes.m, dataSourceID)
+}
+
+// CleanupPendingCodes removes all entries whose ExpiresAt was more than 5 minutes ago.
+// Call this periodically (e.g., every 5 min) from a goroutine — see Section 5.1.1.
+func CleanupPendingCodes() {
+    pendingDeviceCodes.Lock()
+    defer pendingDeviceCodes.Unlock()
+    now := time.Now()
+    for id, entry := range pendingDeviceCodes.m {
+        if now.After(entry.ExpiresAt.Add(5 * time.Minute)) {
+            delete(pendingDeviceCodes.m, id)
+        }
+    }
+}
+```
+
+> **Why peek, not delete?** The token-exchange polling loop needs to re-check the entry (or at least, holding the reference for the duration of polling requires stable state). Ownership is: the App layer creates the entry, spawns the polling goroutine, and is responsible for calling `ClearPendingDeviceCode` on completion or cancellation.
+
+### 2.5 Token Revocation
+
+```go
+// ClearAuthConfig removes OAuth tokens for a data source.
+func ClearAuthConfig(connID uint) error {
+    _, err := models.DB.Exec(
+        "UPDATE data_sources SET auth_config = NULL WHERE id = ?", connID,
+    )
+    return err
+}
+
+// RevokeToken revokes the access token with Google's revocation endpoint.
+func RevokeToken(token *oauth2.Token) error {
+    cfg := googleOAuthConfig()
+    return cfg.Revoke(token.AccessToken)
 }
 ```
 
@@ -296,7 +431,7 @@ func introspectGoogleSheets(conn *models.DataSource) (*DataSchema, error) {
         return nil, fmt.Errorf("failed to fetch spreadsheet: %w", err)
     }
 
-    schema := &DataSchema{Tables: make([]TableSchema, 0)}
+    schema := &DataSchema{Tables: make([]TableInfo, 0)}
     for _, sheet := range spreadsheet.Sheets {
         title := sheet.Properties.Title
         tableName := sanitizeColumnName(title)
@@ -304,14 +439,15 @@ func introspectGoogleSheets(conn *models.DataSource) (*DataSchema, error) {
             tableName = "sheet"
         }
 
-        // Fetch up to 3 rows to infer column types
-        range_ := fmt.Sprintf("'%s'!A1:Z3", title)
+        // Fetch up to 3 rows to infer column types. Use unbounded column range so sheets
+        // with more than 26 columns aren't silently truncated.
+        range_ := fmt.Sprintf("'%s'!1:3", title)
         resp, err := svc.Spreadsheets.Values.Get(*conn.FilePath, range_).Do()
         if err != nil || len(resp.Values) == 0 {
             // Sheet is empty — still include it with no columns
-            schema.Tables = append(schema.Tables, TableSchema{
+            schema.Tables = append(schema.Tables, TableInfo{
                 Name:    tableName,
-                Columns: []ColumnSchema{},
+                Columns: []ColumnInfo{},
             })
             continue
         }
@@ -324,13 +460,13 @@ func introspectGoogleSheets(conn *models.DataSource) (*DataSchema, error) {
 
         // Infer types from rows 2-3 (if available)
         sampleRows := resp.Values[1:]
-        columns := make([]ColumnSchema, len(cleanHeaders))
+        columns := make([]ColumnInfo, len(cleanHeaders))
         for i, h := range cleanHeaders {
             colType := inferColumnType(i, sampleRows)
-            columns[i] = ColumnSchema{Name: h, Type: colType}
+            columns[i] = ColumnInfo{Name: h, DataType: colType, IsNullable: true}
         }
 
-        schema.Tables = append(schema.Tables, TableSchema{
+        schema.Tables = append(schema.Tables, TableInfo{
             Name:    tableName,
             Columns: columns,
         })
@@ -363,13 +499,14 @@ func queryGoogleSheets(conn *models.DataSource, query string) ([]string, [][]int
 
     for _, sheet := range spreadsheet.Sheets {
         title := sheet.Properties.Title
-        range_ := fmt.Sprintf("'%s'", title) // fetch entire sheet
-        resp, err := svc.Spreadsheets.Values.Get(*conn.FilePath, range_).Do()
-        if err != nil || len(resp.Values) == 0 {
+
+        // Use pagination for large sheets (see Section 3.2.1).
+        values, err := fetchSheetWithPagination(svc, *conn.FilePath, title)
+        if err != nil || len(values) == 0 {
             continue
         }
 
-        headers := toStringSlice(resp.Values[0])
+        headers := toStringSlice(values[0])
         cleanHeaders := make([]string, len(headers))
         for i, h := range headers {
             cleanHeaders[i] = sanitizeColumnName(h)
@@ -380,18 +517,19 @@ func queryGoogleSheets(conn *models.DataSource, query string) ([]string, [][]int
             tableName = "sheet"
         }
 
-        if err := createTableGS(db, tableName, cleanHeaders); err != nil {
+        if err := createTable(db, tableName, cleanHeaders); err != nil {
             continue
         }
 
-        // Insert data rows
-        for i := 1; i < len(resp.Values); i++ {
-            row := resp.Values[i]
+        // Insert data rows. Google Sheets API returns []interface{} per row; convert
+        // to []string to match the shared insertRow signature from sqlite_helpers.go.
+        for i := 1; i < len(values); i++ {
+            row := toStringSlice(values[i])
             // Pad row to match header count
             for len(row) < len(headers) {
                 row = append(row, "")
             }
-            _ = insertRowGS(db, tableName, cleanHeaders, row[:len(headers)])
+            _ = insertRow(db, tableName, cleanHeaders, row[:len(headers)])
         }
     }
 
@@ -399,45 +537,65 @@ func queryGoogleSheets(conn *models.DataSource, query string) ([]string, [][]int
 }
 ```
 
-### 3.3 Helpers
+#### 3.2.1 Pagination for Large Sheets
+
+Google Sheets API `Values.Get` has a soft cap of roughly **100K cells per response**. For large sheets we fetch in row-based chunks and stop when the API returns fewer rows than requested (signaling the end of data). Called by `queryGoogleSheets` above.
 
 ```go
-// createTableGS creates an in-memory SQLite table with TEXT columns.
-func createTableGS(db *sql.DB, name string, columns []string) error {
-    cols := make([]string, len(columns))
-    for i, c := range columns {
-        cols[i] = fmt.Sprintf("\"%s\" TEXT", c)
-    }
-    sqlStmt := fmt.Sprintf("CREATE TABLE IF NOT EXISTS \"%s\" (%s)", name, strings.Join(cols, ", "))
-    _, err := db.Exec(sqlStmt)
-    return err
-}
+// fetchSheetWithPagination fetches a sheet's data with pagination support.
+// Returns all rows (including the header row at index 0), splitting across multiple
+// API calls if the sheet is large. Uses an unbounded column range so wide sheets
+// aren't truncated at column Z.
+func fetchSheetWithPagination(svc *sheets.Service, spreadsheetID, sheetTitle string) ([][]interface{}, error) {
+    const rowsPerBatch = 10000 // rows per API call (~100K cells assuming ~10 cols)
 
-// insertRowGS inserts a single row into the table.
-func insertRowGS(db *sql.DB, table string, columns []string, values []interface{}) error {
-    quotedCols := make([]string, len(columns))
-    placeholders := make([]string, len(columns))
-    for i, c := range columns {
-        quotedCols[i] = fmt.Sprintf("\"%s\"", c)
-        placeholders[i] = "?"
+    var allValues [][]interface{}
+    startRow := 1
+    for {
+        endRow := startRow + rowsPerBatch - 1
+        // Unbounded column range: rows only, no column letters.
+        range_ := fmt.Sprintf("'%s'!%d:%d", sheetTitle, startRow, endRow)
+        resp, err := svc.Spreadsheets.Values.Get(spreadsheetID, range_).Do()
+        if err != nil {
+            return nil, fmt.Errorf("failed to fetch range %s: %w", range_, err)
+        }
+        if len(resp.Values) == 0 {
+            break // no more data
+        }
+        allValues = append(allValues, resp.Values...)
+        if len(resp.Values) < rowsPerBatch {
+            break // last (partial) batch
+        }
+        startRow += rowsPerBatch
     }
-    sqlStmt := fmt.Sprintf("INSERT INTO \"%s\" (%s) VALUES (%s)",
-        table, strings.Join(quotedCols, ", "), strings.Join(placeholders, ", "))
-    _, err := db.Exec(sqlStmt, values...)
-    return err
-}
 
-// toStringSlice converts []interface{} to []string.
+    return allValues, nil
+}
+```
+
+> **Note**: For sheets exceeding ~50K rows, consider adding a progress indicator in the UI (emit a Wails event per batch with `startRow` progress).
+
+### 3.3 Helpers
+
+The Google Sheets driver reuses the existing shared helpers `createTable`, `insertRow`, `runQuery`, `sanitizeColumnName`, and `inferColumnType` (extracted to `pkg/services/sqlite_helpers.go` — see Section 9). The only Sheets-specific helper is a converter from the API's `[]interface{}` row format to `[]string`:
+
+```go
+// toStringSlice converts []interface{} (Google Sheets API row format) to []string.
+// nil values become empty strings; all other values use fmt.Sprintf("%v", ...).
 func toStringSlice(vals []interface{}) []string {
     result := make([]string, len(vals))
     for i, v := range vals {
+        if v == nil {
+            result[i] = ""
+            continue
+        }
         result[i] = fmt.Sprintf("%v", v)
     }
     return result
 }
 ```
 
-**Reuse pattern**: The `createTable`, `insertRow`, `runQuery`, `sanitizeColumnName`, and `inferColumnType` functions already exist in `data_file.go`. They should be extracted to a shared `pkg/services/sqlite_helpers.go` file and used by both CSV/Excel and Google Sheets drivers.
+> **Signature compatibility**: The existing `insertRow(db, table, columns, values []string)` in `data_file.go` already takes `[]string`, so `toStringSlice` bridges the API's `[]interface{}` output to the shared helper's input. No changes to the shared helper are needed.
 
 ---
 
@@ -471,7 +629,23 @@ Update `GetDataSourceByID` to scan `auth_config`:
 
 Update `CreateDataSource` — no change needed (auth_config is NULL on creation, populated by OAuth flow later).
 
-Update `ListDataSourcesByWorkspace` — no change needed (auth_config is excluded from listing).
+Update `ListDataSourcesByWorkspace` — no change needed (auth_config is excluded from listing via `json:"-"` tag).
+
+> **Naming note**: The column is `auth_config` (snake_case) to match the existing `config` and `extra` column naming convention in the `data_sources` table. It stores raw `oauth2.Token` JSON. The `json:"-"` tag on the Go struct ensures it's never serialized to the frontend.
+
+### 4.4 Token JSON Structure
+
+Google's `oauth2.Token` struct serializes to:
+```json
+{
+  "access_token": "ya29.a0AfH6SM...",
+  "token_type": "Bearer",
+  "expiry": "2026-07-20T17:00:00Z",
+  "refresh_token": "1//0g..."
+}
+```
+
+The `Expiry` field is a `time.Time` — `json.Unmarshal` handles the RFC3339 format correctly. Always check `tok.Expiry.Before(time.Now())` before making API calls to detect expired tokens.
 
 ---
 
@@ -479,49 +653,141 @@ Update `ListDataSourcesByWorkspace` — no change needed (auth_config is exclude
 
 ### 5.1 OAuth Flow Endpoints
 
-Add three new exported methods that the frontend can call via Wails bindings:
+The OAuth device flow polls Google's token endpoint until the user authorizes (up to 15 minutes). Since Wails method calls block the JS caller until they return, we **cannot** synchronously poll from within a Wails method — the frontend would be frozen with no progress or cancel affordance.
+
+Instead, `StartGoogleSheetsAuth` returns immediately with the user code + verification URL, and spawns a background goroutine that emits Wails events when the exchange completes. This mirrors the existing pattern in `ProcessUserMessage` (which uses `runtime.EventsEmit` for phase updates).
+
+**Events emitted:**
+- `googleAuthComplete` — payload: `{dataSourceID: uint}` — token stored, ready to use
+- `googleAuthError` — payload: `{dataSourceID: uint, error: string}` — user denied, code expired, or cancelled
 
 ```go
-// RequestGoogleSheetsAuth starts the device authorization flow for a data source.
-// Returns the user code and verification URL for the frontend to display.
-func (a *App) RequestGoogleSheetsAuth(dataSourceID uint) (map[string]interface{}, error) {
+// Auth cancellation: one context per data source in flight. Cancelling the
+// context stops the polling goroutine.
+var (
+    authCancelMu sync.Mutex
+    authCancels  = map[uint]context.CancelFunc{}
+)
+
+// StartGoogleSheetsAuth begins the device authorization flow for a data source.
+// Returns the user_code and verification_url immediately so the frontend can
+// display them. The actual token exchange runs in a background goroutine and
+// emits Wails events on completion or failure.
+func (a *App) StartGoogleSheetsAuth(dataSourceID uint) (map[string]interface{}, error) {
     resp, err := services.RequestDeviceCode()
     if err != nil {
         return nil, err
     }
-    // Store device_code temporarily for polling
-    // (could use a simple in-memory map or the data_source itself)
-    services.StorePendingDeviceCode(dataSourceID, resp.DeviceCode)
+
+    expiresAt := time.Now().Add(time.Duration(resp.ExpiresIn) * time.Second)
+    interval := time.Duration(resp.Interval) * time.Second
+    if interval <= 0 {
+        interval = 5 * time.Second // safety fallback if Google omits the field
+    }
+
+    services.StorePendingDeviceCode(dataSourceID, services.PendingEntry{
+        Code:      resp.DeviceCode,
+        Interval:  interval,
+        ExpiresAt: expiresAt,
+    })
+
+    // Set up a cancellable context so CancelGoogleSheetsAuth can stop polling.
+    ctx, cancel := context.WithCancel(a.ctx)
+    authCancelMu.Lock()
+    if prev, ok := authCancels[dataSourceID]; ok {
+        prev() // cancel any previous in-flight auth for this data source
+    }
+    authCancels[dataSourceID] = cancel
+    authCancelMu.Unlock()
+
+    go func() {
+        defer func() {
+            authCancelMu.Lock()
+            delete(authCancels, dataSourceID)
+            authCancelMu.Unlock()
+            services.ClearPendingDeviceCode(dataSourceID)
+        }()
+
+        entry, err := services.GetPendingDeviceCode(dataSourceID)
+        if err != nil {
+            runtime.EventsEmit(a.ctx, "googleAuthError", map[string]interface{}{
+                "dataSourceID": dataSourceID,
+                "error":        err.Error(),
+            })
+            return
+        }
+
+        tok, err := services.ExchangeDeviceCode(ctx, entry.Code, entry.Interval, entry.ExpiresAt)
+        if err != nil {
+            runtime.EventsEmit(a.ctx, "googleAuthError", map[string]interface{}{
+                "dataSourceID": dataSourceID,
+                "error":        err.Error(),
+            })
+            return
+        }
+
+        if err := services.StoreAuthConfig(dataSourceID, tok); err != nil {
+            runtime.EventsEmit(a.ctx, "googleAuthError", map[string]interface{}{
+                "dataSourceID": dataSourceID,
+                "error":        "failed to store token: " + err.Error(),
+            })
+            return
+        }
+
+        runtime.EventsEmit(a.ctx, "googleAuthComplete", map[string]interface{}{
+            "dataSourceID": dataSourceID,
+        })
+    }()
+
     return map[string]interface{}{
         "user_code":        resp.UserCode,
         "verification_url": resp.VerificationURL,
         "expires_in":       resp.ExpiresIn,
+        "interval":         resp.Interval,
     }, nil
 }
 
-// PollGoogleSheetsAuth polls the token endpoint until the user authorizes.
-func (a *App) PollGoogleSheetsAuth(dataSourceID uint) (map[string]interface{}, error) {
-    deviceCode, err := services.GetPendingDeviceCode(dataSourceID)
-    if err != nil {
-        return nil, err
+// CancelGoogleSheetsAuth stops an in-flight auth flow (user clicked Cancel or
+// closed the settings panel). Safe to call even if no auth is in flight.
+func (a *App) CancelGoogleSheetsAuth(dataSourceID uint) error {
+    authCancelMu.Lock()
+    cancel, ok := authCancels[dataSourceID]
+    authCancelMu.Unlock()
+    if ok {
+        cancel() // triggers ctx.Done() in ExchangeDeviceCode
     }
-    tok, err := services.ExchangeDeviceCode(deviceCode)
-    if err != nil {
-        return nil, err
-    }
-    // Store the token
-    if err := services.StoreAuthConfig(dataSourceID, tok); err != nil {
-        return nil, err
-    }
-    return map[string]interface{}{
-        "status": "authorized",
-    }, nil
+    services.ClearPendingDeviceCode(dataSourceID)
+    return nil
 }
 
-// RevokeGoogleSheetsAuth removes OAuth tokens for a data source.
+// RevokeGoogleSheetsAuth removes OAuth tokens for a data source and revokes
+// them with Google (best-effort).
 func (a *App) RevokeGoogleSheetsAuth(dataSourceID uint) error {
+    tok, _ := services.LoadAuthConfig(dataSourceID)
+    if tok != nil {
+        _ = services.RevokeToken(tok) // best-effort; ignore errors
+    }
     return services.ClearAuthConfig(dataSourceID)
 }
+```
+
+> **Frontend flow**: Call `StartGoogleSheetsAuth(id)` → display returned `user_code` + `verification_url` → subscribe to `googleAuthComplete` / `googleAuthError` events via `EventsOn(...)` → update UI when event arrives. On Cancel button: call `CancelGoogleSheetsAuth(id)` and unsubscribe.
+
+> **Note on method rename**: `RequestGoogleSheetsAuth` + `PollGoogleSheetsAuth` (from earlier draft) are replaced by `StartGoogleSheetsAuth` + `CancelGoogleSheetsAuth`. The frontend no longer polls a Wails method; it subscribes to events.
+
+### 5.1.1 Background Cleanup Goroutine
+
+Start a cleanup goroutine in `startup()` to evict expired pending device codes:
+
+```go
+// In app.go startup:
+go func() {
+    ticker := time.NewTicker(5 * time.Minute)
+    defer ticker.Stop()
+    for range ticker.C {
+        services.CleanupPendingCodes()
+    }
+}()
 ```
 
 ### 5.2 Update `DataSourceSetting` struct
@@ -539,17 +805,13 @@ type DataSourceSetting struct {
 
 Update `ListDataSources` to populate these fields from the model.
 
-### 5.3 Update `TestNewDataSource` & List Schema
+### 5.3 Update `TestNewDataSource` & Schema Loading
 
-The existing `TestNewDataSource` should work for Google Sheets — it calls `driver.PingNative()` which checks auth + spreadsheet existence.
+The existing `TestNewDataSource` should work for Google Sheets — it calls `driver.PingNative()` which checks auth + spreadsheet existence via `svc.Spreadsheets.Get(...).Do()`.
 
-Add a `LoadSchema` endpoint (if not already existing) that returns the schema for a data source:
+Schema loading also works unchanged: `app.go` already exposes `GetSchemaPreview(id uint)` which calls `services.GetDataSchema(conn)` → `driver.GetSchema(conn)` → our new `introspectGoogleSheets`. No new endpoint needed.
 
-```go
-func (a *App) LoadSchema(dataSourceID uint) (*services.DataSchema, error) {
-    // ... calls driver.GetSchema()
-}
-```
+> **Edge case**: If `PingNative` fails with `oauth_token_expired` (from `getSheetsClient`), the frontend should treat it as a re-auth prompt (Section 6.4.1) rather than a hard connection failure.
 
 ---
 
@@ -580,17 +842,19 @@ When `dbDetailForm.type === 'google_sheets'`, show:
 1. **Spreadsheet ID/URL input** — maps to `filePath` field
    - Accepts: full URL (`https://docs.google.com/spreadsheets/d/ABC123/edit`) or raw ID (`ABC123`)
    - Parse on save: extract ID from URL if full URL is pasted
+   - **Note**: For Google Sheets, `filePath` = spreadsheet ID, not a file path. This is consistent with the existing CSV/Excel driver pattern where `filePath` = data source identifier.
 
 2. **Auth Status + Button** — three states:
    - **Unauthenticated**: "Connect Google Account" button
    - **Authorizing**: Shows user code + verification URL with copy button, then polls
    - **Authorized**: Shows green checkmark + "Reconnect" / "Disconnect" buttons
+   - **Expired**: Shows "Reconnect Google Account" button (detected on 401 from Sheets API)
 
 ### 6.4 OAuth Flow UI
 
 ```
 [Connect Google Account]
-    ↓ click
+    ↓ click → StartGoogleSheetsAuth(id)
 ┌─────────────────────────────────────┐
 │ 1. Go to google.com/device          │
 │ 2. Enter code: XXXX-XXXX            │  [Copy code]
@@ -600,9 +864,70 @@ When `dbDetailForm.type === 'google_sheets'`, show:
 │ [Cancel]                             │
 └─────────────────────────────────────┘
     ↓ user authorizes in browser
-    ↓ polling succeeds
-✅ Connected — ben@example.com
+    ↓ backend emits `googleAuthComplete` event
+✅ Connected
    [Disconnect]
+```
+
+**Svelte sketch:**
+```svelte
+<script>
+  import { EventsOn, EventsOff } from '../wailsjs/runtime/runtime';
+  import { StartGoogleSheetsAuth, CancelGoogleSheetsAuth } from '../wailsjs/go/main/App';
+
+  let authState = $state('idle'); // idle | pending | success | error
+  let userCode = $state('');
+  let verificationURL = $state('');
+  let errorMsg = $state('');
+
+  async function connect(id) {
+    authState = 'pending';
+    const resp = await StartGoogleSheetsAuth(id);
+    userCode = resp.user_code;
+    verificationURL = resp.verification_url;
+
+    EventsOn('googleAuthComplete', (payload) => {
+      if (payload.dataSourceID === id) {
+        authState = 'success';
+        EventsOff('googleAuthComplete');
+        EventsOff('googleAuthError');
+      }
+    });
+    EventsOn('googleAuthError', (payload) => {
+      if (payload.dataSourceID === id) {
+        authState = 'error';
+        errorMsg = payload.error;
+        EventsOff('googleAuthComplete');
+        EventsOff('googleAuthError');
+      }
+    });
+  }
+
+  async function cancel(id) {
+    await CancelGoogleSheetsAuth(id);
+    EventsOff('googleAuthComplete');
+    EventsOff('googleAuthError');
+    authState = 'idle';
+  }
+</script>
+```
+
+> **Important**: On Cancel or panel-close, always call `CancelGoogleSheetsAuth(id)` (which internally clears the pending device code AND cancels the polling goroutine's context) and `EventsOff(...)` for both event names. This prevents leaked event listeners across successive auth attempts.
+
+#### 6.4.1 Token Expiration Handling
+
+The frontend must detect when the stored access token has expired and prompt re-authentication:
+
+1. **On API call failure**: Backend returns the sentinel error string `oauth_token_expired` (from `getSheetsClient`) or a 401 wrapped in a Sheets API error.
+2. **Frontend detection**: Match on the error message substring `oauth_token_expired` or HTTP 401.
+3. **If expired**: Show a "Reconnect Google Account" button in the data source card.
+4. **On reconnect**: Call `StartGoogleSheetsAuth(id)` again (same flow as initial auth). Google will re-issue a refresh token because `prompt=consent` is set (Section 2.1).
+5. **On disconnect**: Call `RevokeGoogleSheetsAuth(id)` to revoke the token with Google and clear local storage.
+
+```svelte
+{#if authStatus === 'expired'}
+  <button onclick={() => reconnectGoogle(id)}>Reconnect Google Account</button>
+{/if}
 ```
 
 ### 6.5 Sheet Picker (Future Enhancement)
@@ -643,15 +968,46 @@ One-time setup for the developer:
 1. Go to [Google Cloud Console](https://console.cloud.google.com/)
 2. Create a new project or use existing
 3. Enable the **Google Sheets API**
+   - Go to **APIs & Services → Library**
+   - Search "Google Sheets API" → Enable
 4. Go to **APIs & Services → Credentials**
-5. Create **OAuth 2.0 Client ID** → Application type: **Desktop app**
-6. Note the Client ID and Client Secret
-7. Set as constants in `google_auth.go`:
+5. Click **Create Credentials → OAuth client ID**
+6. Application type: **Desktop app**
+7. Name it (e.g., "YourQL Desktop")
+8. Note the **Client ID** and **Client Secret**
+9. Set as constants in `google_auth.go`:
    ```go
    const defaultGoogleClientID = "YOUR_CLIENT_ID.apps.googleusercontent.com"
    const defaultGoogleClientSecret = "GOCSPX-YOUR_CLIENT_SECRET"
    ```
-8. Users can override via `YOURQL_GOOGLE_CLIENT_ID` and `YOURQL_GOOGLE_CLIENT_SECRET` env vars
+10. Users can override via `YOURQL_GOOGLE_CLIENT_ID` and `YOURQL_GOOGLE_CLIENT_SECRET` env vars
+
+### 8.1 OAuth Consent Screen Setup
+
+Before the app can authenticate users, you must configure the OAuth consent screen:
+
+1. Go to **APIs & Services → OAuth consent screen**
+2. User type: **External** (for public distribution) or **Internal** (for Google Workspace org only)
+3. Fill in:
+   - **App name**: "YourQL"
+   - **User support email**: Your support contact
+   - **Developer contact email**: Your email
+4. Add the scope `https://www.googleapis.com/auth/spreadsheets.readonly`
+   - Go to **APIs & Services → Credentials → OAuth scopes → Add Scope**
+   - Search and add the read-only Sheets scope
+5. Add test users (your email addresses) for development
+   - For production: you'll need to submit for verification
+6. Save and publish the consent screen
+
+> **Important**: Without a published consent screen, only the test users you added can authenticate. For public distribution, submit the app for Google's security review.
+
+### 8.2 Authorized Origins (Optional)
+
+For the device flow, you don't need to configure redirect URIs. However, if you add a web dashboard later, add these to **Authorized JavaScript origins**:
+```
+http://localhost
+https://yourql.app
+```
 
 ---
 
@@ -678,10 +1034,10 @@ Affected:
 | 6 | `pkg/services/db_connection.go` | +3 | Scan `auth_config` in `GetDataSourceByID` |
 | 7 | `pkg/services/google_auth.go` | ~120 | OAuth2 device flow (request, exchange, store, load) |
 | 8 | `pkg/services/db_google_sheets.go` | ~220 | Driver + schema + query execution |
-| 9 | `app.go` | ~80 | OAuth endpoints + `DataSourceSetting` updates |
-| 10 | `frontend/src/SettingsView.svelte` | ~80 | Google Sheets type + OAuth UI |
+| 9 | `app.go` | ~120 | `StartGoogleSheetsAuth` (goroutine + events), `CancelGoogleSheetsAuth`, `RevokeGoogleSheetsAuth`, cleanup goroutine in `startup()`, `DataSourceSetting` updates |
+| 10 | `frontend/src/SettingsView.svelte` | ~100 | Google Sheets type + OAuth UI with `EventsOn`/`EventsOff` |
 | 11 | Wails bindings regenerate | — | `wails generate module` |
-| **Total** | | **~470** | |
+| **Total** | | **~510** | |
 
 ---
 

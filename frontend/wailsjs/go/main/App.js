@@ -6,6 +6,14 @@ export function ArchiveConversation(arg1) {
   return window['go']['main']['App']['ArchiveConversation'](arg1);
 }
 
+export function CancelGoogleSheetsAuth(arg1) {
+  return window['go']['main']['App']['CancelGoogleSheetsAuth'](arg1);
+}
+
+export function CancelGoogleSheetsAuthTemp(arg1) {
+  return window['go']['main']['App']['CancelGoogleSheetsAuthTemp'](arg1);
+}
+
 export function ClearConversationMessages(arg1) {
   return window['go']['main']['App']['ClearConversationMessages'](arg1);
 }
@@ -90,12 +98,20 @@ export function ListSkills() {
   return window['go']['main']['App']['ListSkills']();
 }
 
+export function MigrateGoogleAuthConfig(arg1, arg2) {
+  return window['go']['main']['App']['MigrateGoogleAuthConfig'](arg1, arg2);
+}
+
 export function ProcessUserMessage(arg1, arg2) {
   return window['go']['main']['App']['ProcessUserMessage'](arg1, arg2);
 }
 
 export function RestoreConversation(arg1) {
   return window['go']['main']['App']['RestoreConversation'](arg1);
+}
+
+export function RevokeGoogleSheetsAuth(arg1) {
+  return window['go']['main']['App']['RevokeGoogleSheetsAuth'](arg1);
 }
 
 export function SetConversationSkill(arg1, arg2, arg3) {
@@ -112,6 +128,14 @@ export function SetDefaultLLMProvider(arg1) {
 
 export function SetSkillActive(arg1, arg2) {
   return window['go']['main']['App']['SetSkillActive'](arg1, arg2);
+}
+
+export function StartGoogleSheetsAuth(arg1) {
+  return window['go']['main']['App']['StartGoogleSheetsAuth'](arg1);
+}
+
+export function StartGoogleSheetsAuthTemp(arg1) {
+  return window['go']['main']['App']['StartGoogleSheetsAuthTemp'](arg1);
 }
 
 export function TestDataSource(arg1) {

@@ -247,6 +247,24 @@ type DataSourceSetting struct {
 	ExplorationSafety    string `json:"exploration_safety"`
 	Config               string `json:"config,omitempty"`
 	Extra                string `json:"extra,omitempty"`
+	FilePath             string `json:"file_path,omitempty"`
+	FileType             string `json:"file_type,omitempty"`
+}
+
+// filePathStr returns the file path string for a data source.
+func filePathStr(c *models.DataSource) string {
+	if c.FilePath != nil {
+		return *c.FilePath
+	}
+	return ""
+}
+
+// fileTypeStr returns the file type string for a data source.
+func fileTypeStr(c *models.DataSource) string {
+	if c.FileType != nil {
+		return *c.FileType
+	}
+	return ""
 }
 
 func (a *App) ListDataSources() ([]DataSourceSetting, error) {
@@ -317,6 +335,8 @@ func (a *App) ListDataSources() ([]DataSourceSetting, error) {
 			ExplorationSafety:    explorationSafety,
 			Config:               configStr,
 			Extra:                extraStr,
+			FilePath:             filePathStr(c),
+			FileType:             fileTypeStr(c),
 		})
 	}
 	return settings, nil
@@ -509,6 +529,98 @@ func (a *App) ExecuteQuery(connID uint, query string) (*QueryResult, error) {
 
 	result.TotalRows = len(result.Rows)
 	return &result, nil
+}
+
+// ==================== Google Sheets OAuth ====================
+
+// StartGoogleSheetsAuth begins the OAuth2 loopback flow for a saved data source.
+// Opens the default browser to Google's consent screen; Google redirects to
+// localhost and we catch the token. Returns the auth URL for the browser.
+func (a *App) StartGoogleSheetsAuth(dataSourceID uint) (map[string]interface{}, error) {
+	authURL, resultCh, err := services.StartLoopbackServer(a.ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	go func() {
+		result := <-resultCh
+		if result.Error != nil {
+			runtime.EventsEmit(a.ctx, "googleAuthError", map[string]interface{}{
+				"dataSourceID": dataSourceID,
+				"error":        result.Error.Error(),
+			})
+			return
+		}
+		if err := services.StoreAuthConfig(dataSourceID, result.Token); err != nil {
+			runtime.EventsEmit(a.ctx, "googleAuthError", map[string]interface{}{
+				"dataSourceID": dataSourceID,
+				"error":        fmt.Sprintf("failed to store token: %v", err),
+			})
+			return
+		}
+		runtime.EventsEmit(a.ctx, "googleAuthComplete", map[string]interface{}{
+			"dataSourceID": dataSourceID,
+		})
+	}()
+
+	return map[string]interface{}{
+		"auth_url": authURL,
+	}, nil
+}
+
+// CancelGoogleSheetsAuth cancels an in-flight auth flow.
+// The loopback server self-terminates when the callback arrives or the app exits.
+func (a *App) CancelGoogleSheetsAuth(dataSourceID uint) error {
+	return nil
+}
+
+// RevokeGoogleSheetsAuth removes OAuth tokens for a data source and revokes
+// them with Google (best-effort).
+func (a *App) RevokeGoogleSheetsAuth(dataSourceID uint) error {
+	tok, _ := services.LoadAuthConfig(dataSourceID)
+	if tok != nil {
+		_ = services.RevokeToken(tok) // best-effort; ignore errors
+	}
+	return services.ClearAuthConfig(dataSourceID)
+}
+
+// StartGoogleSheetsAuthTemp is like StartGoogleSheetsAuth but for unsaved
+// connections. Uses a string sessionID for in-memory storage.
+func (a *App) StartGoogleSheetsAuthTemp(sessionID string) (map[string]interface{}, error) {
+	authURL, resultCh, err := services.StartLoopbackServer(a.ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	go func() {
+		result := <-resultCh
+		if result.Error != nil {
+			runtime.EventsEmit(a.ctx, "googleAuthError", map[string]interface{}{
+				"sessionID": sessionID,
+				"error":     result.Error.Error(),
+			})
+			return
+		}
+		services.StoreTempAuthConfig(sessionID, result.Token)
+		runtime.EventsEmit(a.ctx, "googleAuthComplete", map[string]interface{}{
+			"sessionID": sessionID,
+		})
+	}()
+
+	return map[string]interface{}{
+		"auth_url": authURL,
+	}, nil
+}
+
+// MigrateGoogleAuthConfig moves a temp session's OAuth token into the real
+// data source DB record. Call this after saving a new Google Sheets connection.
+func (a *App) MigrateGoogleAuthConfig(sessionID string, dataSourceID uint) error {
+	return services.MigrateTempAuthToDB(sessionID, dataSourceID)
+}
+
+// CancelGoogleSheetsAuthTemp cancels an in-flight temp-session auth flow.
+func (a *App) CancelGoogleSheetsAuthTemp(sessionID string) error {
+	return nil
 }
 
 // ==================== General Settings ====================

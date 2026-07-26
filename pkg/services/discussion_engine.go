@@ -18,7 +18,6 @@ type LLMResponse struct {
 	SQLQuery              string `json:"sql_query,omitempty"`
 	ClarificationQuestion string `json:"clarification_question,omitempty"`
 	Explanation           string `json:"explanation,omitempty"`
-	Trailer               string `json:"trailer,omitempty"` // text appended to the visible message (used by skills)
 	VizConfig             string `json:"viz_config,omitempty"` // raw JSON for Chart.js (contains $column refs)
 }
 
@@ -299,7 +298,7 @@ func ProcessUserMessage(conversationID uint, userMessage string, onPhase func(st
 					Content: er.ToMessageContent(),
 				})
 			}
-			executeFinalQueryWithRetry(ctx, query, llmResp, client, llmMessages, dbConnection, conversation, userMessage, explorationResults, maxFinalRetries)
+			executeFinalQueryWithRetry(ctx, query, llmResp, client, llmMessages, dbConnection, conversation, userMessage, explorationResults, maxFinalRetries, skillsContent)
 			assistantMessageSaved = true
 			return nil
 
@@ -420,7 +419,7 @@ func ProcessUserMessage(conversationID uint, userMessage string, onPhase func(st
 		onPhase("Running query...")
 	}
 
-	executeFinalQueryWithRetry(ctx, query, finalResp, client, llmMessages, dbConnection, conversation, userMessage, explorationResults, maxFinalRetries)
+	executeFinalQueryWithRetry(ctx, query, finalResp, client, llmMessages, dbConnection, conversation, userMessage, explorationResults, maxFinalRetries, skillsContent)
 	assistantMessageSaved = true
 
 	// Phase: finalizing
@@ -569,8 +568,16 @@ func (er *ExplorationResult) ToMessageContent() string {
 	return sb.String()
 }
 
+// formatSkillsContext formats active skills into a prompt-friendly block.
+func formatSkillsContext(skillsContent string) string {
+	if skillsContent == "" {
+		return ""
+	}
+	return "\n## Additional Context (from Skills)\n" + skillsContent + "\n"
+}
+
 // executeFinalQueryWithRetry wraps SQL execution in a retry loop.
-func executeFinalQueryWithRetry(ctx context.Context, query *models.Query, resp LLMResponse, client LLMClient, llmMessages []ChatMessage, dbConnection *models.DataSource, conversation *models.Conversation, userMessage string, explorationResults []ExplorationResult, maxRetries int) {
+func executeFinalQueryWithRetry(ctx context.Context, query *models.Query, resp LLMResponse, client LLMClient, llmMessages []ChatMessage, dbConnection *models.DataSource, conversation *models.Conversation, userMessage string, explorationResults []ExplorationResult, maxRetries int, skillsContent string) {
 	lastSQL := ""
 	var lastErr error
 
@@ -635,7 +642,7 @@ func executeFinalQueryWithRetry(ctx context.Context, query *models.Query, resp L
 		if err == nil {
 			var summary *string
 			if conversation.Summarize {
-				s := summarizeResults(ctx, client, userMessage, resp.SQLQuery, results)
+				s := summarizeResults(ctx, client, userMessage, resp.SQLQuery, results, skillsContent)
 				if s != "" {
 					summary = &s
 				}
@@ -665,9 +672,6 @@ func handleClarification(query *models.Query, resp LLMResponse, conversationID u
 	message := resp.ClarificationQuestion
 	if resp.Explanation != "" {
 		message = fmt.Sprintf("%s\n\n*(%s)*", resp.ClarificationQuestion, resp.Explanation)
-	}
-	if resp.Trailer != "" {
-		message += "\n\n" + resp.Trailer
 	}
 
 	llmContentJSON, _ := json.Marshal(resp)
@@ -851,7 +855,6 @@ func buildSystemPrompt(schema *DataSchema, hasDB bool, dbConnection *models.Data
 	sb.WriteString("   - \"sql_query\": if action is \"sql_query\" or \"sql_exploration\", provide a valid SELECT query.\n")
 	sb.WriteString("   - \"clarification_question\": if action is \"clarification\", ask a concise clarifying question.\n")
 	sb.WriteString("   - \"explanation\": optional short explanation of your reasoning.\n")
-	sb.WriteString("   - \"trailer\": optional text appended to the end of the visible message (use if Additional Context asks for a signature, disclaimer, etc.).\n")
 	dbTypeHint := "SQL"
 	if dbConnection != nil {
 		driver, driverErr := GetDriver(dbConnection.Type)
@@ -946,15 +949,6 @@ func renderSQLResults(query *models.Query, resp LLMResponse, dbConnection *model
 		}
 	}
 
-	// Append skill trailer (if any) to the visible explanation
-	if resp.Trailer != "" {
-		if explanation != "" {
-			explanation += "\n\n" + resp.Trailer
-		} else {
-			explanation = resp.Trailer
-		}
-	}
-
 	assistantResp := AssistantResponse{
 		Explanation:     explanation,
 		SQL:             resp.SQLQuery,
@@ -1002,7 +996,7 @@ func renderSQLResults(query *models.Query, resp LLMResponse, dbConnection *model
 }
 
 // summarizeResults sends query results back to the LLM for a natural-language summary.
-func summarizeResults(ctx context.Context, client LLMClient, userQuestion, sqlQuery string, results *QueryResult) string {
+func summarizeResults(ctx context.Context, client LLMClient, userQuestion, sqlQuery string, results *QueryResult, skillsContent string) string {
 	if results == nil || results.RowCount == 0 {
 		return ""
 	}
@@ -1027,7 +1021,7 @@ func summarizeResults(ctx context.Context, client LLMClient, userQuestion, sqlQu
 - Keep it concise — 3-5 sentences is ideal.
 - If the results are empty, clearly state that no data matched the query.
 - Do NOT include a markdown table — this is a prose summary.
-- Do NOT suggest next steps — just answer the question.`, userQuestion, sqlQuery, formatted)
+- Do NOT suggest next steps — just answer the question.%s`, userQuestion, sqlQuery, formatted, formatSkillsContext(skillsContent))
 
 	summaryMessages := []ChatMessage{
 		{Role: "user", Content: prompt},

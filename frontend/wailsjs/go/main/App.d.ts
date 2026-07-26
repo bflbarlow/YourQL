@@ -6,6 +6,10 @@ import {services} from '../models';
 
 export function ArchiveConversation(arg1:number):Promise<void>;
 
+export function CancelGoogleSheetsAuth(arg1:number):Promise<void>;
+
+export function CancelGoogleSheetsAuthTemp(arg1:string):Promise<void>;
+
 export function ClearConversationMessages(arg1:number):Promise<void>;
 
 export function CreateConversation(arg1:string,arg2:any,arg3:any):Promise<models.Conversation>;
@@ -48,9 +52,13 @@ export function ListLLMProviders():Promise<Array<main.LLMProviderSetting>>;
 
 export function ListSkills():Promise<Array<models.Skill>>;
 
+export function MigrateGoogleAuthConfig(arg1:string,arg2:number):Promise<void>;
+
 export function ProcessUserMessage(arg1:number,arg2:string):Promise<void>;
 
 export function RestoreConversation(arg1:number):Promise<void>;
+
+export function RevokeGoogleSheetsAuth(arg1:number):Promise<void>;
 
 export function SetConversationSkill(arg1:number,arg2:number,arg3:boolean):Promise<void>;
 
@@ -59,6 +67,10 @@ export function SetDefaultDataSource(arg1:number):Promise<void>;
 export function SetDefaultLLMProvider(arg1:number):Promise<void>;
 
 export function SetSkillActive(arg1:number,arg2:boolean):Promise<void>;
+
+export function StartGoogleSheetsAuth(arg1:number):Promise<Record<string, any>>;
+
+export function StartGoogleSheetsAuthTemp(arg1:string):Promise<Record<string, any>>;
 
 export function TestDataSource(arg1:number):Promise<string>;
 
