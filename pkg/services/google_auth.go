@@ -23,8 +23,8 @@ import (
 
 // Default Google OAuth2 client ID (bundled with the app).
 // Users can override via YOURQL_GOOGLE_CLIENT_ID / YOURQL_GOOGLE_CLIENT_SECRET env vars.
-const defaultGoogleClientID = ""
-const defaultGoogleClientSecret = ""
+const defaultGoogleClientID = "28965423931-o5jj105tk48inilk60irgd072iqktin7.apps.googleusercontent.com"
+const defaultGoogleClientSecret = "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"
 
 // Google OAuth2 scopes — read-only access to spreadsheets.
 var googleSheetsScopes = []string{
