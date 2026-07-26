@@ -187,5 +187,5 @@ func TestLocalConnection(baseURL, model string) (string, error) {
 		return "", fmt.Errorf("local model API error: status %d: %s", resp.StatusCode, string(body))
 	}
 
-	return "Local model API connection successful", nil
+	return "Model API connection successful", nil
 }

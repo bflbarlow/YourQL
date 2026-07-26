@@ -97,7 +97,8 @@ func (c *OpenAIClient) ChatCompletionWithPayload(ctx context.Context, messages [
 		return "", "", "", fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	log.Printf("[OpenAI] Sending request to %s/chat/completions: %s", c.baseURL, string(jsonData))
+	log.Printf("[OpenAI] Sending request to %s/chat/completions — model=%s, messages=%d",
+		c.baseURL, c.model, len(openAIMessages))
 
 	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/chat/completions", bytes.NewBuffer(jsonData))
 	if err != nil {

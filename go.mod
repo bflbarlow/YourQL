@@ -5,6 +5,7 @@ go 1.25.7
 require (
 	cloud.google.com/go/bigquery v1.79.0
 	github.com/go-sql-driver/mysql v1.10.0
+	github.com/gomarkdown/markdown v0.0.0-20260725000948-8435af3f5984
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/joho/godotenv v1.5.1
 	github.com/microsoft/go-mssqldb v1.10.0

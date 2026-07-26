@@ -1,6 +1,7 @@
 <script>
-  import { Settings, Pin, Search, ChevronRight, ChevronDown, MessageSquare, BarChart3, Table } from 'lucide-svelte'
+  import { Settings, Pin, Search, ChevronRight, ChevronDown, MessageSquare, FileDown } from 'lucide-svelte'
   import VizChart from './VizChart.svelte'
+  import { ExportConversationPDF } from '../wailsjs/go/main/App.js'
   let { 
     activeConversation, 
     conversationMessages = [], 
@@ -15,9 +16,7 @@
     onSendMessage = () => {},
     onBack = () => {},
     onMessageChange = () => {},
-    onTechDetailsToggle = () => {},
-    onGearClick = () => {},
-    onMaxMessagesChange = () => {}
+    onGearClick = () => {}
   } = $props()
   
   let localMessage = $state(userMessage)
@@ -66,8 +65,8 @@
         ? enrichedMessages
         : enrichedMessages.filter(m => m.role === 'user' || m.role === 'assistant')
       
-      // Apply max_messages limit — show last N messages
-      if (maxMessages > 0 && msgs.length > maxMessages) {
+      // Apply max_messages limit — show last N messages (skip if showing all)
+      if (!showHiddenMessages && maxMessages > 0 && msgs.length > maxMessages) {
         return msgs.slice(msgs.length - maxMessages)
       }
       return msgs
@@ -77,10 +76,8 @@
   // Per-message payload toggles (§4.7)
   let payloadToggles = $state({})
 
-  // Per-message chart visibility (show chart by default when chart_config exists)
-  let chartViews = $state({})
-
-  // Token counting from message payloads
+  // Toggle for showing hidden messages when maxMessages is active
+  let showHiddenMessages = $state(false)
 
   function getChartConfig(message) {
     try {
@@ -90,10 +87,9 @@
     } catch { return null }
   }
 
-  function toggleChartView(messageId) {
-    chartViews[messageId] = !chartViews[messageId]
-    chartViews = chartViews // trigger reactivity
-  }
+  let visibleMessageCount = $derived(
+    conversationMessages.filter(m => m.role === 'user' || m.role === 'assistant').length
+  )
   let tokenSummary = $derived.by(() => {
     let promptTotal = 0
     let completionTotal = 0
@@ -226,31 +222,39 @@
             {fmtTokens(tokenSummary.promptTotal)}&uarr; {fmtTokens(tokenSummary.completionTotal)}&darr; tokens
           </span>
           <span class="meta-tag context-tag">
-            {conversationMessages.length} msg{conversationMessages.length !== 1 ? 's' : ''}
+            {visibleMessageCount} msg{visibleMessageCount !== 1 ? 's' : ''}
           </span>
         {/if}
       </div>
     </div>
-    <button 
-      class="tech-toggle {showTechDetails ? 'active' : ''}" 
-      onclick={onTechDetailsToggle}
-      title="Show technical details"
-    >
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <polyline points="16 18 22 12 16 6"></polyline>
-        <polyline points="8 6 2 12 8 18"></polyline>
-      </svg>
-      <span class="toggle-label">Tech</span>
-    </button>
     
+    <button class="export-btn-header" onclick={() => {
+      const scale = localStorage.getItem('yourql-ui-scale') || 'medium'
+      const fontSize = { small: '12px', medium: '13px', large: '14px' }[scale]
+      const style = document.createElement('style')
+      style.id = 'print-scale'
+      style.textContent = '@media print { html { font-size: ' + fontSize + ' !important; } }'
+      document.head.appendChild(style)
+      document.title = 'YourQL - ' + (activeConversation?.title || 'Untitled') + ' - ' + new Date().toLocaleDateString()
+      ExportConversationPDF()
+      setTimeout(() => {
+        document.title = 'YourQL'
+        const el = document.getElementById('print-scale')
+        if (el) el.remove()
+      }, 1000)
+    }} title="Export as PDF" type="button"><FileDown size={16} /></button>
     <button class="gear-btn-header" onclick={onGearClick} title="Conversation settings" type="button"><Settings size={16} /></button>
   </div>
   
   <div class="messages-container" bind:this={messagesEl}>
-    {#if maxMessages > 0 && conversationMessages.length > maxMessages}
+    {#if maxMessages > 0 && visibleMessageCount > maxMessages}
       <div class="collapsed-messages-banner">
-        <span><Pin size={14} class="pin-icon" /> {conversationMessages.length - maxMessages} older message(s) hidden</span>
-        <button class="show-all-btn" onclick={() => onMaxMessagesChange(0)}>Show all</button>
+        <span><Pin size={14} class="pin-icon" /> {visibleMessageCount - maxMessages} older message(s) hidden</span>
+        {#if showHiddenMessages}
+          <button class="show-all-btn" onclick={() => showHiddenMessages = false}>Show last {maxMessages}</button>
+        {:else}
+          <button class="show-all-btn" onclick={() => showHiddenMessages = true}>Show all</button>
+        {/if}
       </div>
     {/if}
     {#if filteredMessages.length === 0}
@@ -313,35 +317,13 @@
               <div class="assistant-message">{@html message.content}</div>
               <!-- Chart visualization -->
               {#if getChartConfig(message)}
-                {@const chartConfig = getChartConfig(message)}
-                {@const showChart = chartViews[message.id] !== false}
-                <div class="viz-toggle">
-                  <button class="btn btn-small" onclick={() => toggleChartView(message.id)}>
-                    {#if showChart}
-                      <Table size="14" /> Table
-                    {:else}
-                      <BarChart3 size="14" /> Chart
-                    {/if}
-                  </button>
-                </div>
-                {#if showChart}
-                  <VizChart config={chartConfig} />
-                {/if}
+                <VizChart config={getChartConfig(message)} />
               {/if}
             {/if}
           </div>
           <div class="message-time">
             {formatTime(message.created_at)}
           </div>
-          {#if showTechDetails && message.llm_content}
-            <div class="tech-details">
-              <div class="tech-details-header">
-                <span>Raw LLM Response</span>
-                <button class="copy-btn" onclick={() => navigator.clipboard.writeText(message.llm_content)}>Copy</button>
-              </div>
-              <pre>{message.llm_content}</pre>
-            </div>
-          {/if}
         </div>
       {/each}
       
@@ -405,31 +387,6 @@
     gap: var(--space-2xl);
   }
   
-  .tech-toggle {
-    display: flex;
-    align-items: center;
-    gap: var(--space-sm);
-    padding: var(--space-md) var(--space-xl);
-    background: #f5f5f5;
-    border: 1px solid #e0e0e0;
-    border-radius: var(--radius-md);
-    cursor: pointer;
-    font-size: var(--font-base);
-    color: #666666;
-    transition: all 0.2s ease;
-  }
-  
-  .tech-toggle:hover {
-    background: #e0e0e0;
-    color: #000000;
-  }
-  
-  .tech-toggle.active {
-    background: #0288d1;
-    color: #ffffff;
-    border-color: #0288d1;
-  }
-  
   .gear-btn-header {
     display: flex;
     align-items: center;
@@ -446,7 +403,42 @@
   }
   
   .gear-btn-header:hover { background: #e0e0e0; color: #000000; }
-  
+
+  .export-btn-header {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.25rem;
+    height: 2.25rem;
+    background: #f5f5f5;
+    border: 1px solid #e0e0e0;
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    font-size: var(--font-2xl);
+    transition: all 0.2s ease;
+    flex-shrink: 0;
+  }
+
+  .export-btn-header:hover { background: #e0e0e0; color: #000000; }
+
+  @media print {
+    @page { size: portrait; }
+    * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .conversation-header .back-btn,
+    .conversation-header .export-btn-header,
+    .conversation-header .gear-btn-header,
+    .conversation-header .conversation-meta,
+    .message-input-container,
+    .collapsed-messages-banner { display: none !important; }
+    .conversation-view { height: auto; overflow: visible; }
+    .messages-container { overflow: visible; padding: 0; }
+    .message { break-inside: avoid; page-break-inside: avoid; }
+    .assistant-message { background: #fff; border: 1px solid #ccc; }
+    .user-message { background: #0288d1; color: #fff; }
+    .results-details[open] .table-container { max-height: none; overflow: visible; }
+    .results-card .collapsed-row { display: table-row !important; }
+  }
+
   .back-btn {
     background: #f5f5f5;
     border: 1px solid #e0e0e0;
@@ -575,6 +567,12 @@
   .assistant-message th, .assistant-message td { border: 1px solid #e0e0e0; padding: var(--space-md) var(--space-xl); text-align: left; }
   .assistant-message th { background: #f5f5f5; font-weight: 600; }
 
+  /* Markdown content (summaries, explanations) */
+  .assistant-message .markdown-content ul,
+  .assistant-message .markdown-content ol { padding-left: 1.5rem; margin: 0.5rem 0; }
+  .assistant-message .markdown-content li { margin-bottom: 0.25rem; }
+  .assistant-message .markdown-content a { color: #0288d1; }
+
   .message-time { font-size: var(--font-sm); color: #999999; margin-top: 0.3125rem; }
   .message.user .message-time { text-align: right; }
 
@@ -697,31 +695,6 @@
   .exploration-icon { font-size: var(--font-xl); }
   .exploration-title { font-weight: 600; color: #0288d1; font-size: var(--font-md); }
   
-  .tech-details {
-    margin-top: var(--space-xl); padding: var(--space-xl);
-    background: #f5f5f5; border: 1px solid #e0e0e0;
-    border-radius: var(--radius-md);
-  }
-  
-  .tech-details-header {
-    display: flex; justify-content: space-between; align-items: center;
-    margin-bottom: var(--space-md); font-size: var(--font-sm); color: #666666; font-weight: 500;
-  }
-  
-  .copy-btn {
-    padding: var(--space-xs) var(--space-md); background: #ffffff; border: 1px solid #e0e0e0;
-    border-radius: var(--radius-md); font-size: var(--font-xs); cursor: pointer;
-    color: #666666; transition: all 0.2s ease;
-  }
-  .copy-btn:hover { background: #e0e0e0; color: #000000; }
-  
-  .tech-details pre {
-    background: #1e1e1e; color: #d4d4d4; padding: var(--space-xl);
-    border-radius: var(--radius-md); overflow-x: auto;
-    font-family: 'Courier New', monospace; font-size: var(--font-xs);
-    line-height: 1.4; margin: 0;
-  }
-  
   .payload-section {
     margin-top: var(--space-xl); border: 1px solid #e0e0e0;
     border-radius: var(--radius-md); overflow: hidden;
@@ -743,18 +716,5 @@
     line-height: 1.5; overflow-x: auto;
     white-space: pre-wrap; word-break: break-all;
     max-height: 25rem;
-  }
-
-  .viz-toggle {
-    display: flex;
-    justify-content: flex-end;
-    margin-top: 0.25rem;
-  }
-  .viz-toggle .btn-small {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-    font-size: var(--font-sm);
-    padding: 0.25rem 0.75rem;
   }
 </style>

@@ -22,8 +22,7 @@
   let conversationSkillIDs = $state([])
   let sidebarCollapsed = $state(false)
 
-  const appVersion = '0.1.0'
-  const appDescription = 'YourQL: Natural Language to SQL Desktop App'
+  const appVersion = '0.2.0'
 
   let llmNameByID = $derived(
     Object.fromEntries(llmProviders.map(p => [p.id, p.name]))
@@ -202,17 +201,6 @@
     activeView = 'discussions'
   }
 
-  async function handleTechDetailsToggle() {
-    showTechDetails = !showTechDetails
-    if (activeConversation) {
-      try {
-        await UpdateConversationTechDetails(activeConversation.id, showTechDetails)
-      } catch (e) {
-        console.error('Failed to save tech details toggle:', e)
-      }
-    }
-  }
-
   async function handleUpdateConversationSettings(llmProviderID, dataSourceID) {
     if (!activeConversation) return
     try {
@@ -288,9 +276,10 @@
 
   async function handleToggleTechDetails(id) {
     try {
-      await UpdateConversationTechDetails(id, true)
+      await UpdateConversationTechDetails(id, selectedConversation.tech_details)
       if (activeConversation && activeConversation.id === id) {
-        activeConversation.tech_details = true
+        activeConversation.tech_details = selectedConversation.tech_details
+        showTechDetails = selectedConversation.tech_details
       }
     } catch (e) {
       console.error('Failed to toggle tech details:', e)
@@ -299,9 +288,10 @@
 
   async function handleToggleContextDetails(id) {
     try {
-      await UpdateConversationContextDetails(id, true)
+      await UpdateConversationContextDetails(id, selectedConversation.context_details)
       if (activeConversation && activeConversation.id === id) {
-        activeConversation.context_details = true
+        activeConversation.context_details = selectedConversation.context_details
+        showContextDetails = selectedConversation.context_details
       }
     } catch (e) {
       console.error('Failed to toggle context details:', e)
@@ -529,7 +519,6 @@
         onSendMessage={handleSendMessage}
         onBack={backToConversations}
         onMessageChange={(val) => userMessage = val}
-        onTechDetailsToggle={handleTechDetailsToggle}
         onArchiveConversation={handleArchiveConversation}
         onUpdateConversationSettings={handleUpdateConversationSettings}
         onGearClick={async () => { selectedConversation = activeConversation; showGearPopover = true; allSkills = await ListSkills() || []; loadConversationSkills(activeConversation.id) }}
@@ -545,7 +534,7 @@
         <div class="about-content">
           <h2>YourQL</h2>
           <p class="version">Version {appVersion}</p>
-          <p class="description">{appDescription}</p>
+          <p class="description">Talk to your database in plain English.</p>
 
           <div class="about-disclaimer">
             <h3>Disclaimer</h3>
@@ -555,34 +544,39 @@
 
           <div class="about-section">
             <h3>What is YourQL?</h3>
-            <p>YourQL is a desktop application that lets you query databases using natural language. It uses Large Language Models (LLMs) to translate your questions into SQL queries and executes them against your configured databases.</p>
+            <p>YourQL is a desktop application that lets you query your databases using natural language. Instead of writing SQL by hand, ask questions the way you'd ask a colleague — and YourQL translates them into accurate, safe queries using your preferred AI model. Results come back as interactive tables, charts, and plain-English summaries. Everything runs locally on your machine.</p>
           </div>
 
           <div class="about-section">
             <h3>Key Features</h3>
             <ul>
-              <li>Natural language to SQL conversion</li>
-              <li>Support for multiple LLM providers (OpenAI, Anthropic, Ollama, Local)</li>
-              <li>Data sources (MySQL, SQLite, CSV, Excel)</li>
-              <li>Conversation history and management</li>
-              <li>Exploration queries for data discovery</li>
-              <li>Technical details toggle for debugging</li>
+              <li>Ask questions about your data in plain English and get answers backed by real SQL queries</li>
+              <li>Connect to MySQL, PostgreSQL, SQLite, SQL Server, Snowflake, BigQuery, Redshift, MariaDB, CSV files, Excel files, and Google Sheets</li>
+              <li>Use OpenAI, Anthropic Claude, Ollama, or any OpenAI-compatible endpoint — bring your own model</li>
+              <li>Safe data exploration with configurable safety modes (strict, moderate, relaxed) — read-only by default</li>
+              <li>Automatic chart generation — bar, line, pie, scatter, radar, and more</li>
+              <li>Plain-English result summaries so you don't have to decipher tables of numbers</li>
+              <li>Custom system prompts, business rules, and table/column descriptions per database connection</li>
+              <li>Reusable Skills — Markdown prompt fragments you can activate per conversation for domain knowledge</li>
+              <li>Pin, archive, duplicate, rename, and clear discussions — full conversation management</li>
+              <li>No telemetry, no analytics, no data collection — your credentials and history stay on your machine</li>
             </ul>
           </div>
 
           <div class="about-section">
-            <h3>Technology Stack</h3>
+            <h3>Technology</h3>
             <ul>
-              <li><strong>Backend:</strong> Go with Wails v2 framework</li>
-              <li><strong>Frontend:</strong> Svelte 5 with Vite</li>
-              <li><strong>Data:</strong> SQLite (local app data) + MySQL/SQLite (external connections)</li>
-              <li><strong>LLM Integration:</strong> OpenAI API, Anthropic Claude, Ollama, Local models</li>
+              <li><strong>Desktop framework:</strong> Wails v2</li>
+              <li><strong>Backend:</strong> Go, with native database drivers for every supported type</li>
+              <li><strong>Frontend:</strong> Svelte 5 + Vite + Chart.js</li>
+              <li><strong>Local storage:</strong> SQLite — all conversations, settings, and configurations stored in <code>~/.yourql/yourql.db</code></li>
+              <li><strong>LLM integration:</strong> Provider-agnostic interface supporting OpenAI, Anthropic, Ollama, and custom HTTP endpoints</li>
             </ul>
           </div>
 
           <div class="about-section">
             <h3>License</h3>
-            <p>YourQL is an open-source project. Source code available on GitHub.</p>
+            <p>YourQL is open-source software.</p>
           </div>
         </div>
       </div>
@@ -715,7 +709,7 @@
       <div class="gear-popover-section">
         <label>
           <input type="checkbox" bind:checked={selectedConversation.tech_details} onchange={() => handleToggleTechDetails(selectedConversation.id)} />
-          Show technical details by default
+          SHOW TECHNICAL DETAILS
         </label>
       </div>
 
@@ -1800,5 +1794,14 @@
   .about-section li strong {
     color: #000000;
     font-weight: 600;
+  }
+
+  @media print {
+    .sidebar, .sidebar-footer, .sidebar-nav, .sidebar-header,
+    .view-header, .view-header-actions,
+    .modal-overlay, .gear-popover-overlay, .gear-popover,
+    .error-banner { display: none !important; }
+    .main-content { width: 100% !important; }
+    .app-layout { display: block !important; }
   }
 </style>

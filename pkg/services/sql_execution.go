@@ -11,6 +11,10 @@ import (
 
 	"YourQL/pkg/models"
 
+	"github.com/gomarkdown/markdown"
+	mdhtml "github.com/gomarkdown/markdown/html"
+	"github.com/gomarkdown/markdown/parser"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -317,15 +321,30 @@ type AssistantResponse struct {
 	Summary         *string
 }
 
+// mdRenderer is a shared stateless markdown renderer (safe to reuse across calls).
+var mdRenderer = mdhtml.NewRenderer(mdhtml.RendererOptions{
+	Flags: mdhtml.UseXHTML | mdhtml.Smartypants | mdhtml.SmartypantsFractions | mdhtml.SmartypantsDashes,
+})
+
+// renderMarkdown converts markdown text to safe HTML. Each call creates a new
+// parser because gomarkdown parsers are not reusable across Parse() invocations.
+func renderMarkdown(text string) string {
+	if text == "" {
+		return ""
+	}
+	p := parser.NewWithExtensions(parser.CommonExtensions | parser.NoEmptyLineBeforeBlock)
+	return string(markdown.ToHTML([]byte(text), p, mdRenderer))
+}
+
 // ToHTML renders the assistant response as HTML.
 func (r *AssistantResponse) ToHTML() string {
 	var sb strings.Builder
 	if r.Summary != nil && *r.Summary != "" {
-		sb.WriteString(fmt.Sprintf("<p>%s</p>\n", html.EscapeString(*r.Summary)))
+		sb.WriteString(fmt.Sprintf("<div class=\"markdown-content\">%s</div>\n", renderMarkdown(*r.Summary)))
 	}
 	if r.Summary == nil || *r.Summary == "" {
 		if r.Explanation != "" {
-			sb.WriteString(fmt.Sprintf("<p>%s</p>\n", html.EscapeString(r.Explanation)))
+			sb.WriteString(fmt.Sprintf("<div class=\"markdown-content\">%s</div>\n", renderMarkdown(r.Explanation)))
 		}
 	}
 	if r.SQL != "" {
@@ -336,7 +355,7 @@ func (r *AssistantResponse) ToHTML() string {
 			// Collapse the table behind a details element
 			sb.WriteString(fmt.Sprintf("<details class=\"results-details\" style=\"margin-top:0.5rem;\"><summary style=\"cursor:pointer; color:#666; font-size:0.85rem; padding:4px 8px; background:#f5f5f5; border-radius:4px; display:inline-block;\">View raw results (%d rows)</summary><div style=\"margin-top:0.5rem;\">", r.Result.RowCount))
 			if r.Explanation != "" {
-				sb.WriteString(fmt.Sprintf("<p style=\"color:#666; font-size:0.9rem;\"><em>%s</em></p>\n", html.EscapeString(r.Explanation)))
+				sb.WriteString(fmt.Sprintf("<div class=\"markdown-content\" style=\"color:#666; font-size:0.9rem;\"><em>%s</em></div>\n", renderMarkdown(r.Explanation)))
 			}
 			sb.WriteString(formatResultsHTML(r.Result, r.SQL))
 			sb.WriteString("</div></details>")

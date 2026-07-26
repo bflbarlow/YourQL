@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	"YourQL/pkg/models"
 	"YourQL/pkg/services"
@@ -25,7 +26,15 @@ func NewApp() *App {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	if err := models.ConnectDatabase(); err != nil {
-		println("Database error:", err.Error())
+		slog.Error("database error", "error", err)
+	}
+}
+
+// shutdown is called when the app is about to quit.
+func (a *App) shutdown(ctx context.Context) {
+	slog.Info("shutting down")
+	if models.DB != nil {
+		models.DB.Close()
 	}
 }
 
@@ -625,6 +634,11 @@ func (a *App) CancelGoogleSheetsAuthTemp(sessionID string) error {
 
 // ==================== General Settings ====================
 
+// ExportConversationPDF triggers the native print dialog for PDF export.
+func (a *App) ExportConversationPDF() {
+	runtime.WindowPrint(a.ctx)
+}
+
 type GeneralSettings struct {
 	AppName            string `json:"app_name"`
 	AppVersion         string `json:"app_version"`
@@ -637,7 +651,7 @@ type GeneralSettings struct {
 func (a *App) GetGeneralSettings() GeneralSettings {
 	return GeneralSettings{
 		AppName:            "YourQL",
-		AppVersion:         "0.1.0",
+		AppVersion:         "0.2.0",
 		DefaultLLMProvider: "openai",
 		Theme:              "light",
 		Language:           "en",
