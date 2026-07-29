@@ -353,9 +353,9 @@ func (r *AssistantResponse) ToHTML() string {
 	if r.Result != nil {
 		if r.Summary != nil && *r.Summary != "" {
 			// Collapse the table behind a details element
-			sb.WriteString(fmt.Sprintf("<details class=\"results-details\" style=\"margin-top:0.5rem;\"><summary style=\"cursor:pointer; color:#666; font-size:0.85rem; padding:4px 8px; background:#f5f5f5; border-radius:4px; display:inline-block;\">View raw results (%d rows)</summary><div style=\"margin-top:0.5rem;\">", r.Result.RowCount))
+			sb.WriteString(fmt.Sprintf("<details class=\"results-details\" style=\"margin-top:0.5rem;\"><summary style=\"cursor:pointer; color:var(--text-secondary); font-size:0.85rem; padding:4px 8px; background:var(--bg-secondary); border-radius:4px; display:inline-block;\">View raw results (%d rows)</summary><div style=\"margin-top:0.5rem;\">", r.Result.RowCount))
 			if r.Explanation != "" {
-				sb.WriteString(fmt.Sprintf("<div class=\"markdown-content\" style=\"color:#666; font-size:0.9rem;\"><em>%s</em></div>\n", renderMarkdown(r.Explanation)))
+				sb.WriteString(fmt.Sprintf("<div class=\"markdown-content\" style=\"color:var(--text-secondary); font-size:0.9rem;\"><em>%s</em></div>\n", renderMarkdown(r.Explanation)))
 			}
 			sb.WriteString(formatResultsHTML(r.Result, r.SQL))
 			sb.WriteString("</div></details>")
@@ -391,19 +391,19 @@ func formatResultsHTML(result *QueryResult, sqlQuery string) string {
 	sb.WriteString(fmt.Sprintf("<div class=\"results-card\" style=\"margin:0.5rem 0;\">"))
 
 	// Compact toolbar: row count + SQL toggle + CSV button on one line
-	sb.WriteString(`<div class="results-toolbar" style="display:flex; align-items:center; gap:0.5rem; padding:6px 10px; background:#f8f9fa; border:1px solid #e8e8e8; border-radius:6px; margin-bottom:0.5rem; flex-wrap:wrap;">`)
+	sb.WriteString(`<div class="results-toolbar" style="display:flex; align-items:center; gap:0.5rem; padding:6px 10px; background:var(--bg-surface); border:1px solid var(--border-primary); border-radius:6px; margin-bottom:0.5rem; flex-wrap:wrap;">`)
 
 	// Row count
-	sb.WriteString(fmt.Sprintf(`<span class="row-count" style="font-size:0.85rem; color:#666; font-weight:500;">%d row(s)</span>`, result.RowCount))
+	sb.WriteString(fmt.Sprintf(`<span class="row-count" style="font-size:0.85rem; color:var(--text-secondary); font-weight:500;">%d row(s)</span>`, result.RowCount))
 
 	// SQL toggle button
-	sb.WriteString(fmt.Sprintf(`<span class="sql-toggle" style="font-size:0.8rem; color:#666;"><button class="sql-toggle-btn" onclick="toggleSQLSection(this, 'sql-popover-%d')" style="cursor:pointer; padding:2px 8px; background:#fff; border:1px solid #ddd; border-radius:4px; font-size:0.75rem; color:#666; user-select:none;">SQL</button></span>`, hash))
+	sb.WriteString(fmt.Sprintf(`<span class="sql-toggle" style="font-size:0.8rem; color:var(--text-secondary);"><button class="sql-toggle-btn" onclick="toggleSQLSection(this, 'sql-popover-%d')" style="cursor:pointer; padding:2px 8px; background:var(--bg-primary); border:1px solid var(--border-primary); border-radius:4px; font-size:0.75rem; color:var(--text-secondary); user-select:none;">SQL</button></span>`, hash))
 
 	// CSV button
-	sb.WriteString(fmt.Sprintf(`<button class="csv-btn" onclick="exportCSV(this, %d)" style="font-size:0.8rem; padding:4px 10px; border:1px solid #e8e8e8; border-radius:4px; background:white; cursor:pointer; color:#666;">↓ CSV</button>`, result.RowCount))
+	sb.WriteString(fmt.Sprintf(`<button class="csv-btn" onclick="exportCSV(this, %d)" style="font-size:0.8rem; padding:4px 10px; border:1px solid var(--border-primary); border-radius:4px; background:var(--bg-primary); cursor:pointer; color:var(--text-secondary);">↓ CSV</button>`, result.RowCount))
 
 	// SQL code (hidden by default, expands below buttons)
-	sb.WriteString(fmt.Sprintf(`<div id="sql-popover-%d" style="display:none; width:100%%; margin-top:0.5rem; padding:0.75rem 1rem; background:#fff; border:1px solid #e8e8e8; border-radius:6px;"><pre style="margin:0; padding:0; font-size:0.8rem; overflow-x:auto;"><code id="sql-code-%d">%s</code></pre><button class="copy-sql-btn" onclick="copySQL('sql-code-%d')" style="margin:0.5rem 0 0 0; font-size:0.75rem; padding:4px 10px; border:1px solid #ddd; border-radius:4px; background:white; cursor:pointer; color:#666;">Copy</button></div>`, hash, hash, html.EscapeString(sqlQuery), hash))
+	sb.WriteString(fmt.Sprintf(`<div id="sql-popover-%d" style="display:none; width:100%%; margin-top:0.5rem; padding:0.75rem 1rem; background:var(--bg-primary); border:1px solid var(--border-primary); border-radius:6px;"><pre style="margin:0; padding:0; font-size:0.8rem; overflow-x:auto;"><code id="sql-code-%d">%s</code></pre><button class="copy-sql-btn" onclick="copySQL('sql-code-%d')" style="margin:0.5rem 0 0 0; font-size:0.75rem; padding:4px 10px; border:1px solid var(--border-primary); border-radius:4px; background:var(--bg-primary); cursor:pointer; color:var(--text-secondary);">Copy</button></div>`, hash, hash, html.EscapeString(sqlQuery), hash))
 	sb.WriteString(`</div>`)
 
 	// Table
@@ -418,7 +418,7 @@ func formatResultsHTML(result *QueryResult, sqlQuery string) string {
 	sb.WriteString(`<thead><tr>`)
 	for i := range result.Columns {
 		humanized := humanizedCols[i]
-		sb.WriteString(fmt.Sprintf(`<th class="sort-header" data-col="%d" style="border:1px solid #e8e8e8; padding:10px 12px; text-align:left; background:#f8f9fa; position:sticky; top:0; z-index:2; font-weight:600; user-select:none; white-space:nowrap; cursor:pointer;">%s <span class="sort-indicator"></span></th>`,
+		sb.WriteString(fmt.Sprintf(`<th class="sort-header" data-col="%d" style="border:1px solid var(--border-primary); padding:10px 12px; text-align:left; background:var(--bg-surface); position:sticky; top:0; z-index:2; font-weight:600; user-select:none; white-space:nowrap; cursor:pointer;">%s <span class="sort-indicator"></span></th>`,
 			i, html.EscapeString(humanized)))
 	}
 	sb.WriteString(`</tr></thead>`)
@@ -440,7 +440,7 @@ func formatResultsHTML(result *QueryResult, sqlQuery string) string {
 			} else if isDate(cell) {
 				cellClass = "date-cell"
 			}
-			sb.WriteString(fmt.Sprintf(`<td class="%s" style="border:1px solid #e8e8e8; padding:8px 12px; max-width:400px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="%s">%s</td>`,
+			sb.WriteString(fmt.Sprintf(`<td class="%s" style="border:1px solid var(--border-primary); padding:8px 12px; max-width:400px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="%s">%s</td>`,
 				cellClass, html.EscapeString(cell), html.EscapeString(cell)))
 		}
 		sb.WriteString(`</tr>`)
@@ -450,7 +450,7 @@ func formatResultsHTML(result *QueryResult, sqlQuery string) string {
 
 	// Expand/collapse button for tall tables
 	if hasMore {
-		sb.WriteString(fmt.Sprintf(`<div style="margin-top:0.5rem;"><button class="table-expand-btn" onclick="var rs=this.closest('.results-card').querySelectorAll('.collapsed-row-%d');var ex=rs.length&&rs[0].style.display!=='none';rs.forEach(function(r){r.style.display=ex?'none':''});this.innerHTML=ex?'Show all %d rows &#9660;':'Show first 10 rows &#9650;'" style="font-size:0.8rem; padding:4px 12px; border:1px solid #e0e0e0; border-radius:4px; background:#f8f9fa; cursor:pointer; color:#666;">Show all %d rows &#9660;</button></div>`, hash, totalRows, totalRows))
+		sb.WriteString(fmt.Sprintf(`<div style="margin-top:0.5rem;"><button class="table-expand-btn" onclick="var rs=this.closest('.results-card').querySelectorAll('.collapsed-row-%d');var ex=rs.length&&rs[0].style.display!=='none';rs.forEach(function(r){r.style.display=ex?'none':''});this.innerHTML=ex?'Show all %d rows &#9660;':'Show first 10 rows &#9650;'" style="font-size:0.8rem; padding:4px 12px; border:1px solid var(--border-primary); border-radius:4px; background:var(--bg-surface); cursor:pointer; color:var(--text-secondary);">Show all %d rows &#9660;</button></div>`, hash, totalRows, totalRows))
 	}
 
 	sb.WriteString(`</div>`)
@@ -461,11 +461,11 @@ func formatResultsHTML(result *QueryResult, sqlQuery string) string {
 func buildCollapsibleSQLBlockHTML(sqlQuery string) string {
 	hash := sqlQueryHash(sqlQuery)
 	return fmt.Sprintf(`<details class="sql-block" style="margin: 1rem 0;">
-<summary style="cursor:pointer; color:#666; font-size:0.9rem; padding:0.5rem 0.75rem; background:#f5f5f5; border-radius:6px; display:flex; justify-content:space-between; align-items:center;">
+<summary style="cursor:pointer; color:var(--text-secondary); font-size:0.9rem; padding:0.5rem 0.75rem; background:var(--bg-secondary); border-radius:6px; display:flex; justify-content:space-between; align-items:center;">
   <span>Show SQL</span>
 </summary>
-<pre style="margin:0.5rem 0; padding:1rem; background:#f8f8f8; border-radius:6px; overflow-x:auto; border:1px solid #e8e8e8; position:relative;"><code class="sql-code" id="sql-code-%d">%s</code></pre>
-<button class="copy-sql-btn" onclick="copySQL('sql-code-%d')" style="position:absolute; top:8px; right:8px; font-size:0.8rem; padding:4px 10px; border:1px solid #ddd; border-radius:6px; background:white; cursor:pointer; color:#666; display:none;">Copy</button>
+<pre style="margin:0.5rem 0; padding:1rem; background:var(--bg-tertiary); border-radius:6px; overflow-x:auto; border:1px solid var(--border-primary); position:relative;"><code class="sql-code" id="sql-code-%d">%s</code></pre>
+<button class="copy-sql-btn" onclick="copySQL('sql-code-%d')" style="position:absolute; top:8px; right:8px; font-size:0.8rem; padding:4px 10px; border:1px solid var(--border-primary); border-radius:6px; background:var(--bg-primary); cursor:pointer; color:var(--text-secondary); display:none;">Copy</button>
 </details>`, hash, html.EscapeString(sqlQuery), hash)
 }
 
@@ -486,27 +486,27 @@ func formatExplorationHTML(results []ExplorationResult) string {
 
 	var sb strings.Builder
 	sb.WriteString(`<details class="explore-block" style="margin:1rem 0;">
-<summary style="cursor:pointer; color:#666; font-size:0.9rem; padding:0.5rem 0.75rem; background:#f0f4ff; border-radius:6px;">
+<summary style="cursor:pointer; color:var(--text-secondary); font-size:0.9rem; padding:0.5rem 0.75rem; background:var(--color-accent-light); border-radius:6px;">
   <span>&#8981; Show ` + fmt.Sprint(len(results)) + ` intermediate query(ies)</span>
 </summary>
 <div class="exploration-results">
 `)
 
 	for i, er := range results {
-		sb.WriteString(fmt.Sprintf(`<div class="explore-round" style="margin-bottom:0.75rem; padding:0.75rem 1rem; background:#f5f7fa; border-radius:6px; border:1px solid #e8e8e8;">
+		sb.WriteString(fmt.Sprintf(`<div class="explore-round" style="margin-bottom:0.75rem; padding:0.75rem 1rem; background:var(--bg-surface); border-radius:6px; border:1px solid var(--border-primary);">
 <div style="font-weight:600; font-size:0.9rem; margin-bottom:0.375rem;">Round %d</div>
 `, i+1))
 		if er.Explained != "" {
-			sb.WriteString(fmt.Sprintf(`<div style="color:#888; font-size:0.85rem; margin-bottom:0.5rem;">— %s</div>
+			sb.WriteString(fmt.Sprintf(`<div style="color:var(--text-tertiary); font-size:0.85rem; margin-bottom:0.5rem;">— %s</div>
 `, html.EscapeString(er.Explained)))
 		}
-		sb.WriteString(fmt.Sprintf(`<pre style="margin:0.375rem 0; font-size:0.85rem; overflow-x:auto; background:#fff; padding:0.5rem 0.75rem; border-radius:6px; border:1px solid #e8e8e8;"><code class="sql-code">%s</code></pre>
+		sb.WriteString(fmt.Sprintf(`<pre style="margin:0.375rem 0; font-size:0.85rem; overflow-x:auto; background:var(--bg-primary); padding:0.5rem 0.75rem; border-radius:6px; border:1px solid var(--border-primary);"><code class="sql-code">%s</code></pre>
 `, html.EscapeString(er.SQL)))
 		if er.Result != nil && er.Result.RowCount > 0 {
-			sb.WriteString(fmt.Sprintf(`<div style="margin-top:0.375rem; font-size:0.85rem; color:#27ae60;">&#10003; %d row(s)</div>
+			sb.WriteString(fmt.Sprintf(`<div style="margin-top:0.375rem; font-size:0.85rem; color:var(--color-success);">&#10003; %d row(s)</div>
 `, er.Result.RowCount))
 		} else if er.Result != nil {
-			sb.WriteString(`<div style="margin-top:0.375rem; font-size:0.85rem; color:#888;">&#10003; 0 rows</div>
+			sb.WriteString(`<div style="margin-top:0.375rem; font-size:0.85rem; color:var(--text-tertiary);">&#10003; 0 rows</div>
 `)
 		}
 		sb.WriteString("</div>\n")
