@@ -16,7 +16,7 @@ export function CreateConversation(arg1:string,arg2:any,arg3:any):Promise<models
 
 export function CreateDataSource(arg1:string,arg2:string,arg3:string,arg4:number,arg5:string,arg6:string,arg7:string,arg8:string,arg9:string,arg10:string,arg11:string,arg12:string):Promise<void>;
 
-export function CreateLLMProvider(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<void>;
+export function CreateLLMProvider(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:number):Promise<void>;
 
 export function CreateSkill(arg1:string,arg2:string):Promise<models.Skill>;
 
@@ -27,6 +27,8 @@ export function DeleteDataSource(arg1:number):Promise<void>;
 export function DeleteLLMProvider(arg1:number):Promise<void>;
 
 export function DeleteSkill(arg1:number):Promise<void>;
+
+export function DetectModelMaxTokens(arg1:number):Promise<number>;
 
 export function DuplicateConversation(arg1:number):Promise<models.Conversation>;
 
@@ -102,6 +104,6 @@ export function UpdateDataSource(arg1:number,arg2:string,arg3:string,arg4:string
 
 export function UpdateGeneralSettings(arg1:main.GeneralSettings):Promise<void>;
 
-export function UpdateLLMProvider(arg1:number,arg2:string,arg3:string,arg4:string,arg5:string):Promise<void>;
+export function UpdateLLMProvider(arg1:number,arg2:string,arg3:string,arg4:string,arg5:string,arg6:number):Promise<void>;
 
 export function UpdateSkill(arg1:number,arg2:string,arg3:string):Promise<models.Skill>;

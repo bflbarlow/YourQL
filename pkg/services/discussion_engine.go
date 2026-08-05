@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"log"
 	"regexp"
 	"strings"
@@ -43,9 +44,14 @@ func looksLikeSQL(s string) bool {
 func extractJSONFromResponse(response string) string {
 	response = strings.TrimSpace(response)
 
-	// Handle markdown code blocks
-	startIdx := strings.Index(response, "```")
-	if startIdx != -1 {
+	// Handle markdown code blocks — but ONLY when the response is wrapped
+	// in a code fence (not valid JSON). If the response starts with { or [,
+	// it's already JSON — skip code block extraction to avoid accidentally
+	// capturing code fences inside the JSON's string values (e.g. fenced
+	// code blocks in the answer field's markdown content).
+	if !strings.HasPrefix(response, "{") && !strings.HasPrefix(response, "[") {
+		startIdx := strings.Index(response, "```")
+		if startIdx != -1 {
 		remaining := response[startIdx+3:]
 		remaining = strings.TrimLeft(remaining, " \t\n\r")
 		langEnd := strings.Index(remaining, "\n")
@@ -57,6 +63,7 @@ func extractJSONFromResponse(response string) string {
 			response = remaining[:endIdx]
 		} else {
 			response = remaining
+		}
 		}
 	}
 
@@ -129,10 +136,11 @@ func ProcessUserMessage(conversationID uint, userMessage string, onPhase func(st
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("internal error: %v", r)
+			log.Printf("[DiscussionEngine] Panic recovered: %v", r)
 		}
 		if err != nil && !assistantMessageSaved {
-			errorMsg := fmt.Sprintf("I encountered an error: %s", err.Error())
-			_, _ = CreateConversationMessage(conversationID, "assistant", errorMsg, nil, nil, nil)
+			friendlyMsg := formatUserError(err)
+			_, _ = CreateConversationMessage(conversationID, "assistant", friendlyMsg, nil, nil, buildErrorMetadata(err.Error()))
 		}
 	}()
 
@@ -182,11 +190,12 @@ func ProcessUserMessage(conversationID uint, userMessage string, onPhase func(st
 	if dbConnection != nil {
 		schema, err = GetDataSchema(dbConnection)
 		if err != nil {
-			log.Printf("Failed to fetch schema for %s: %v", dbConnection.Type, err)
-			_ = UpdateQueryStatus(query.ID, "error", nil, nil, stringPtr(fmt.Sprintf("Failed to fetch database schema: %v", err)), nil, nil, nil)
-		} else if schema != nil {
-			log.Printf("Fetched schema: %d tables", len(schema.Tables))
+			log.Printf("[DiscussionEngine] Failed to fetch schema for %s: %v", dbConnection.Type, err)
+			_ = UpdateQueryStatus(query.ID, "error", nil, nil, stringPtr(formatUserError(err)), nil, nil, nil)
+			_ = UpdateQueryErrorCategory(query.ID, classifyErrorCategory(err))
+			return fmt.Errorf("failed to fetch database schema: %w", err)
 		}
+		log.Printf("Fetched schema: %d tables", len(schema.Tables))
 	}
 
 	// Step 8: Parse exploration config
@@ -194,7 +203,7 @@ func ProcessUserMessage(conversationID uint, userMessage string, onPhase func(st
 	var safetyMode ExplorationSafetyMode = ExplorationStrict
 	var explorationAllowed bool = true
 	var maxActionRetries int = 1
-	var maxFinalRetries int = 1
+	var maxFinalRetries int = 2
 	if dbConnection != nil {
 		config, cfgErr := dbConnection.ParseConfig()
 		if cfgErr == nil {
@@ -225,7 +234,8 @@ func ProcessUserMessage(conversationID uint, userMessage string, onPhase func(st
 	// Step 11: Call LLM
 	client, err := NewLLMClient(llmProvider)
 	if err != nil {
-		_ = UpdateQueryStatus(query.ID, "error", nil, nil, stringPtr(fmt.Sprintf("Failed to create LLM client: %v", err)), nil, nil, nil)
+		_ = UpdateQueryStatus(query.ID, "error", nil, nil, stringPtr(formatUserError(err)), nil, nil, nil)
+		_ = UpdateQueryErrorCategory(query.ID, classifyErrorCategory(err))
 		return fmt.Errorf("failed to create LLM client: %w", err)
 	}
 
@@ -249,7 +259,8 @@ func ProcessUserMessage(conversationID uint, userMessage string, onPhase func(st
 
 		responseText, requestJSON, responseJSON, err := client.ChatCompletionWithPayload(ctx, llmMessages)
 		if err != nil {
-			_ = UpdateQueryStatus(query.ID, "error", nil, nil, stringPtr(fmt.Sprintf("LLM request failed: %v", err)), nil, nil, nil)
+			_ = UpdateQueryStatus(query.ID, "error", nil, nil, stringPtr(formatUserError(err)), nil, nil, nil)
+			_ = UpdateQueryErrorCategory(query.ID, classifyErrorCategory(err))
 			return fmt.Errorf("LLM request failed: %w", err)
 		}
 
@@ -264,6 +275,25 @@ func ProcessUserMessage(conversationID uint, userMessage string, onPhase func(st
 
 		log.Printf("[DiscussionEngine] Round %d — action=%s", round+1, llmResp.Action)
 
+		// Handle malformed JSON — ask the LLM to fix its formatting.
+		if llmResp.Action == "_parse_error" {
+			if actionRetries < maxActionRetries {
+				log.Printf("[DiscussionEngine] Round %d — parse error, retry %d/%d", round+1, actionRetries+1, maxActionRetries)
+				llmMessages = append(llmMessages, ChatMessage{
+					Role: "system",
+					Content: "Your previous response was not valid JSON. " +
+						"Make sure ALL double-quotes inside string values are escaped with backslash. " +
+						"For example, write \"he said \\\"hello\\\"\" — NOT \"he said \"hello\"\". " +
+						"Respond with a corrected JSON object.",
+				})
+				actionRetries++
+				continue
+			}
+			// Max retries exhausted — show a friendly message, not raw JSON.
+			llmResp.Action = "clarification"
+			llmResp.ClarificationQuestion = "I received a response I couldn't understand. Could you try rephrasing your question?"
+		}
+
 		// Handle missing or unknown action
 		if llmResp.Action == "" {
 			if llmResp.SQLQuery != "" {
@@ -272,7 +302,7 @@ func ProcessUserMessage(conversationID uint, userMessage string, onPhase func(st
 				llmResp.Action = "clarification"
 				llmResp.ClarificationQuestion = "I received your response but couldn't determine what you wanted me to do. Please use one of: sql_query, clarification, sql_exploration, or answer."
 			}
-		} else if llmResp.Action != "sql_query" && llmResp.Action != "clarification" && llmResp.Action != "sql_exploration" && llmResp.Action != "answer" {
+		} else if llmResp.Action != "sql_query" && llmResp.Action != "clarification" && llmResp.Action != "sql_exploration" && llmResp.Action != "answer" && llmResp.Action != "_parse_error" {
 			if actionRetries < maxActionRetries {
 				log.Printf("[DiscussionEngine] Round %d — unknown action '%s', retry %d/%d", round+1, llmResp.Action, actionRetries+1, maxActionRetries)
 				llmMessages = append(llmMessages, ChatMessage{
@@ -298,7 +328,8 @@ func ProcessUserMessage(conversationID uint, userMessage string, onPhase func(st
 		switch llmResp.Action {
 		case "sql_query":
 			if dbConnection == nil {
-				_ = UpdateQueryStatus(query.ID, "error", nil, nil, stringPtr("Cannot execute SQL without a database connection"), nil, nil, nil)
+				_ = UpdateQueryStatus(query.ID, "error", nil, nil, stringPtr("No database connection configured. Please add a data source in Settings."), nil, nil, nil)
+				_ = UpdateQueryErrorCategory(query.ID, "no_db_connection")
 				return fmt.Errorf("no database connection for SQL query")
 			}
 			// Append exploration results to history for final execution
@@ -399,7 +430,8 @@ func ProcessUserMessage(conversationID uint, userMessage string, onPhase func(st
 
 	responseText, requestJSON, responseJSON, err := client.ChatCompletionWithPayload(ctx, llmMessages)
 	if err != nil {
-		_ = UpdateQueryStatus(query.ID, "error", nil, nil, stringPtr(fmt.Sprintf("LLM request failed: %v", err)), nil, nil, nil)
+		_ = UpdateQueryStatus(query.ID, "error", nil, nil, stringPtr(formatUserError(err)), nil, nil, nil)
+		_ = UpdateQueryErrorCategory(query.ID, classifyErrorCategory(err))
 		return fmt.Errorf("LLM request failed: %w", err)
 	}
 
@@ -411,6 +443,13 @@ func ProcessUserMessage(conversationID uint, userMessage string, onPhase func(st
 	finalResp, parseErr := parseLLMResponse(cleanedResponse)
 	if parseErr != nil {
 		return fmt.Errorf("failed to parse final LLM response: %w", parseErr)
+	}
+
+	if finalResp.Action == "_parse_error" {
+		return handleClarification(query, LLMResponse{
+			Action:                "clarification",
+			ClarificationQuestion: "I received a response I couldn't understand. Could you try rephrasing your question?",
+		}, conversationID)
 	}
 
 	if finalResp.Action == "clarification" {
@@ -431,7 +470,8 @@ func ProcessUserMessage(conversationID uint, userMessage string, onPhase func(st
 	}
 
 	if dbConnection == nil {
-		_ = UpdateQueryStatus(query.ID, "error", nil, nil, stringPtr("Cannot execute SQL without a database connection"), nil, nil, nil)
+		_ = UpdateQueryStatus(query.ID, "error", nil, nil, stringPtr("No database connection configured. Please add a data source in Settings."), nil, nil, nil)
+		_ = UpdateQueryErrorCategory(query.ID, "no_db_connection")
 		return fmt.Errorf("no database connection for SQL query")
 	}
 
@@ -452,24 +492,189 @@ func ProcessUserMessage(conversationID uint, userMessage string, onPhase func(st
 
 // parseLLMResponse parses a cleaned LLM response string into an LLMResponse.
 func parseLLMResponse(cleanedResponse string) (LLMResponse, error) {
+	// Fix double-encoded formatting newlines: the LLM response JSON is
+	// embedded inside the API response JSON, which double-escapes \n in
+	// the JSON structure (e.g. {\n  "action"...}). Repair these to real
+	// newlines so json.Unmarshal can parse the structure. String value
+	// \n escapes are left intact for the parser to handle normally.
+	cleanedResponse = fixJSONFormatting(cleanedResponse)
 	var resp LLMResponse
 	if err := json.Unmarshal([]byte(cleanedResponse), &resp); err != nil {
 		if looksLikeSQL(cleanedResponse) {
-			return LLMResponse{Action: "sql_query", SQLQuery: cleanedResponse}, nil
+			resp := LLMResponse{Action: "sql_query", SQLQuery: cleanedResponse}
+			resp.unescapeFields()
+			return resp, nil
 		}
 		trimmed := strings.TrimSpace(cleanedResponse)
 		if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+			// Try lenient extraction before showing a raw parse error.
+			// LLMs frequently produce JSON with unescaped quotes in
+			// string values (e.g. "he said "hello" and left").
+			if lenient, ok := parseLenientJSON(trimmed); ok {
+				lenient.unescapeFields()
+				return lenient, nil
+			}
+			// Lenient parsing also failed — the JSON is truly broken.
+			// Return a parse-error action so the caller can retry with
+			// the LLM instead of showing raw JSON to the user.
 			return LLMResponse{
-				Action:                "clarification",
-				ClarificationQuestion: fmt.Sprintf("The LLM returned invalid JSON (parse error: %v). Raw:\n\n```\n%s\n```", err, truncateString(cleanedResponse, 300)),
+				Action: "_parse_error",
+				Explanation: fmt.Sprintf(
+					"The LLM returned invalid JSON (parse error: %v). Raw:\n\n```\n%s\n```",
+					err, truncateString(cleanedResponse, 300),
+				),
 			}, nil
 		}
-		return LLMResponse{
+		resp := LLMResponse{
 			Action: "answer",
 			Answer: cleanedResponse,
-		}, nil
+		}
+		resp.unescapeFields()
+		return resp, nil
 	}
+	// Fix double-encoded newlines: the LLM response is embedded inside
+	// the API response JSON, which double-escapes \n. After two rounds of
+	// json.Unmarshal, string fields contain literal \n instead of real
+	// newlines. Apply unescaping here, on each field individually, so we
+	// don't corrupt the JSON with unescaped control characters.
+	resp.unescapeFields()
 	return resp, nil
+}
+
+// unescapeFields converts literal \n sequences (from double JSON encoding)
+// back to actual newline characters on all string fields of the response.
+func (r *LLMResponse) unescapeFields() {
+	r.Answer = unescapeNewlines(r.Answer)
+	r.Explanation = unescapeNewlines(r.Explanation)
+	r.ClarificationQuestion = unescapeNewlines(r.ClarificationQuestion)
+	r.SQLQuery = unescapeNewlines(r.SQLQuery)
+}
+
+// fixJSONFormatting converts literal \n sequences to real newlines, but
+// ONLY outside of JSON string values. This repairs formatting newlines that
+// the LLM API double-encodes (\n in raw JSON → literal \n in content)
+// without corrupting \\n inside string values (which must remain for the
+// JSON parser to correctly produce literal \n in field values, which
+// unescapeNewlines then converts to real newlines).
+func fixJSONFormatting(raw string) string {
+	var sb strings.Builder
+	sb.Grow(len(raw))
+	inString := false
+	escaped := false
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		if inString {
+			if escaped {
+				escaped = false
+				sb.WriteByte(c)
+			} else if c == '\\' {
+				escaped = true
+				sb.WriteByte(c)
+			} else if c == '"' {
+				inString = false
+				sb.WriteByte(c)
+			} else {
+				sb.WriteByte(c)
+			}
+		} else {
+			if c == '\\' && i+1 < len(raw) && raw[i+1] == 'n' {
+				sb.WriteByte('\n')
+				i++ // skip the 'n'
+			} else if c == '"' {
+				inString = true
+				sb.WriteByte(c)
+			} else {
+				sb.WriteByte(c)
+			}
+		}
+	}
+	return sb.String()
+}
+
+// parseLenientJSON attempts to extract the action and main content field
+// from a JSON response that failed strict parsing (e.g. unescaped quotes
+// inside a string value). It returns the extracted response and true on
+// success, or zero value and false if nothing could be salvaged.
+func parseLenientJSON(raw string) (LLMResponse, bool) {
+	// Extract the action field — it's short, always first, and rarely
+	// contains characters that break JSON.
+	actionRe := regexp.MustCompile(`"action"\s*:\s*"([^"]+)"`)
+	actionMatch := actionRe.FindStringSubmatch(raw)
+	if actionMatch == nil {
+		return LLMResponse{}, false
+	}
+	action := actionMatch[1]
+
+	// For each action type, extract the corresponding text field using
+	// a boundary-based approach that tolerates unescaped inner quotes.
+	switch action {
+	case "clarification":
+		if q := extractFieldValue(raw, "clarification_question"); q != "" {
+			e := extractFieldValue(raw, "explanation")
+			return LLMResponse{Action: "clarification", ClarificationQuestion: q, Explanation: e}, true
+		}
+	case "answer":
+		if a := extractFieldValue(raw, "answer"); a != "" {
+			e := extractFieldValue(raw, "explanation")
+			return LLMResponse{Action: "answer", Answer: a, Explanation: e}, true
+		}
+	case "sql_query":
+		if s := extractFieldValue(raw, "sql_query"); s != "" {
+			e := extractFieldValue(raw, "explanation")
+			vc := extractFieldValue(raw, "viz_config")
+			return LLMResponse{Action: "sql_query", SQLQuery: s, Explanation: e, VizConfig: vc}, true
+		}
+	case "sql_exploration":
+		if s := extractFieldValue(raw, "sql_query"); s != "" {
+			e := extractFieldValue(raw, "explanation")
+			return LLMResponse{Action: "sql_exploration", SQLQuery: s, Explanation: e}, true
+		}
+	}
+	return LLMResponse{}, false
+}
+
+// extractFieldValue extracts the value of a named string field from
+// broken JSON. It finds the last occurrence of `"}` after the field,
+// which correctly handles unescaped inner quotes because the field
+// value typically ends right before the closing brace (or before a
+// subsequent field like `,"explanation"`).
+func extractFieldValue(raw, fieldName string) string {
+	// Find the field key.
+	idx := strings.Index(raw, `"`+fieldName+`"`)
+	if idx < 0 {
+		return ""
+	}
+
+	// Find the opening quote of the value (after `:"` with possible spaces).
+	colon := strings.Index(raw[idx:], ":")
+	if colon < 0 {
+		return ""
+	}
+	valStart := strings.Index(raw[idx+colon:], `"`)
+	if valStart < 0 {
+		return ""
+	}
+	absStart := idx + colon + valStart + 1
+
+	// Find the closing quote. Search for `,"` (boundary to next field)
+	// first, and only fall back to `"}` (end of JSON object) if no next
+	// field exists. Use LastIndex so we find the actual JSON boundary,
+	// not an accidental `,"` or `"}` inside the field value.
+	valEnd := strings.LastIndex(raw[absStart:], "\",\"")
+	if valEnd < 0 {
+		valEnd = strings.LastIndex(raw[absStart:], "\"}")
+	}
+	if valEnd < 0 {
+		return ""
+	}
+
+	val := raw[absStart : absStart+valEnd]
+	// Unescape standard JSON escapes (\", \\, \n, \t)
+	val = strings.ReplaceAll(val, `\\`, `\`)
+	val = strings.ReplaceAll(val, `\"`, `"`)
+	val = strings.ReplaceAll(val, `\n`, "\n")
+	val = strings.ReplaceAll(val, `\t`, "\t")
+	return val
 }
 
 // storePayload creates a conversation message with the full request/response payload.
@@ -492,6 +697,141 @@ func storePayload(conversationID uint, round any, label, requestJSON, responseJS
 	return err
 }
 
+// formatUserError maps an error to a user-friendly message.
+// Raw error details are preserved in UpdateQueryStatus (for debugging) —
+// this function produces only the text shown in the chat bubble.
+func formatUserError(err error) string {
+	if err == nil {
+		return "I encountered an unexpected issue. Please try again."
+	}
+	msg := err.Error()
+	lower := strings.ToLower(msg)
+
+	// Auth / permission errors (LLM API keys and DB credentials)
+	if strings.Contains(lower, "api key") || strings.Contains(lower, "unauthorized") ||
+		strings.Contains(lower, "forbidden") || strings.Contains(lower, "authentication") ||
+		strings.Contains(lower, "access denied") || strings.Contains(lower, "permission denied") {
+		return "Authentication failed. Please check your API key and connection credentials in Settings."
+	}
+
+	// Rate limiting (LLM APIs)
+	if strings.Contains(lower, "rate limit") || strings.Contains(lower, "too many requests") {
+		return "The AI model is receiving too many requests right now. Please wait a moment and try again."
+	}
+
+	// Schema / connection setup errors
+	if strings.Contains(lower, "no database connection") || strings.Contains(lower, "cannot execute sql without") {
+		return "No database connection configured. Please add a data source in Settings."
+	}
+
+	// Transient connection problems
+	if strings.Contains(lower, "dial") || strings.Contains(lower, "connection refused") ||
+		strings.Contains(lower, "i/o timeout") || strings.Contains(lower, "connection reset") ||
+		strings.Contains(lower, "no such host") || strings.Contains(lower, "tls") {
+		return "I'm having trouble connecting to the database. Please check your connection settings and try again."
+	}
+
+	// Timeouts (LLM or DB)
+	if strings.Contains(lower, "timeout") || strings.Contains(lower, "deadline") {
+		return "The request is taking longer than expected. Please try again."
+	}
+
+	// SQL / LLM-generated errors (the LLM produced a bad query)
+	if strings.Contains(lower, "syntax error") || strings.Contains(lower, "unknown column") ||
+		strings.Contains(lower, "unknown table") || strings.Contains(lower, "doesn't exist") ||
+		strings.Contains(lower, "does not exist") || strings.Contains(lower, "you have an error in your") {
+		return "I had trouble understanding your question. Could you try rephrasing it?"
+	}
+
+	// Query loop detection (same query repeated)
+	if strings.Contains(lower, "twice in a row") || strings.Contains(lower, "loop detected") ||
+		strings.Contains(lower, "query loop") {
+		return "I'm having trouble generating a new query. Could you try rephrasing your question?"
+	}
+
+	// Schema fetch failure
+	if strings.Contains(lower, "failed to fetch database schema") || strings.Contains(lower, "unable to load database schema") {
+		return "Unable to load your database schema. Please check your connection settings."
+	}
+
+	// Fallback — generic, no raw error exposed
+	return "I encountered an issue processing your request. Please try again or rephrase your question."
+}
+
+// buildErrorMetadata creates metadata JSON for error messages with the raw error
+// string preserved for the tech-details panel.
+func buildErrorMetadata(rawError string) *string {
+	metadataJSON, _ := json.Marshal(map[string]interface{}{
+		"content_type": "html",
+		"raw_error":   rawError,
+		"is_error":    true,
+	})
+	metadata := string(metadataJSON)
+	return &metadata
+}
+
+// classifyErrorCategory maps an error to a stable error_category value for
+// tracking in the queries table (Phase 3).
+func classifyErrorCategory(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.ToLower(err.Error())
+
+	if strings.Contains(msg, "api key") || strings.Contains(msg, "unauthorized") ||
+		strings.Contains(msg, "forbidden") || strings.Contains(msg, "authentication") ||
+		strings.Contains(msg, "access denied") || strings.Contains(msg, "permission denied") {
+		return "auth_failure"
+	}
+	if strings.Contains(msg, "rate limit") || strings.Contains(msg, "too many requests") {
+		return "rate_limit"
+	}
+	if strings.Contains(msg, "dial") || strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "i/o timeout") || strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "no such host") || strings.Contains(msg, "tls") ||
+		strings.Contains(msg, "handshake") {
+		return "transient_network"
+	}
+	if strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline") {
+		return "llm_timeout"
+	}
+	if strings.Contains(msg, "syntax error") || strings.Contains(msg, "unknown column") ||
+		strings.Contains(msg, "unknown table") || strings.Contains(msg, "doesn't exist") ||
+		strings.Contains(msg, "does not exist") || strings.Contains(msg, "you have an error in your") {
+		return "bad_query"
+	}
+	if strings.Contains(msg, "twice in a row") || strings.Contains(msg, "loop detected") ||
+		strings.Contains(msg, "query loop") {
+		return "query_loop"
+	}
+	if strings.Contains(msg, "failed to fetch database schema") || strings.Contains(msg, "unable to load database schema") {
+		return "schema_failure"
+	}
+	if strings.Contains(msg, "no database connection") || strings.Contains(msg, "cannot execute sql without") {
+		return "no_db_connection"
+	}
+	return "internal_error"
+}
+
+// isErrorMessage checks whether a message's metadata flags it as an error
+// response that should be excluded from the LLM context window. Error
+// messages remain visible in the UI but the model never sees them.
+func isErrorMessage(metadata *string) bool {
+	if metadata == nil {
+		return false
+	}
+	var meta map[string]interface{}
+	if err := json.Unmarshal([]byte(*metadata), &meta); err != nil {
+		return false
+	}
+	if isErr, ok := meta["is_error"]; ok {
+		if b, ok := isErr.(bool); ok {
+			return b
+		}
+	}
+	return false
+}
+
 // buildLlmMessages constructs the message list for the LLM.
 func buildLlmMessages(userMessage string, history []*models.ConversationMessage, schema *DataSchema, dbConnection *models.DataSource, vizEnabled bool, skillsContent string) []ChatMessage {
 	messages := []ChatMessage{}
@@ -503,6 +843,11 @@ func buildLlmMessages(userMessage string, history []*models.ConversationMessage,
 	for _, msg := range history {
 		role := msg.Role
 		if role == "user" || role == "assistant" || role == "exploration" {
+			// Skip error messages — the user can see them in the UI, but the
+			// LLM shouldn't see raw error text in its context window.
+			if role == "assistant" && isErrorMessage(msg.Metadata) {
+				continue
+			}
 			content := msg.Content
 			if msg.LLMContent != nil && *msg.LLMContent != "" {
 				content = *msg.LLMContent
@@ -602,6 +947,15 @@ func executeFinalQueryWithRetry(ctx context.Context, query *models.Query, resp L
 	lastSQL := ""
 	var lastErr error
 
+	// Get the dialect hint for retry prompts so the LLM knows what
+	// SQL dialect to target when correcting errors.
+	dialectHint := ""
+	if dbConnection != nil {
+		if driver, driverErr := GetDriver(dbConnection.Type); driverErr == nil {
+			dialectHint = driver.SQLDialectHint()
+		}
+	}
+
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if ctx.Err() != nil {
 			lastErr = fmt.Errorf("context cancelled: %w", ctx.Err())
@@ -609,9 +963,35 @@ func executeFinalQueryWithRetry(ctx context.Context, query *models.Query, resp L
 		}
 
 		if attempt > 0 {
+			// Remove the most recent assistant message from the LLM context if it
+			// contains the failing SQL, so the model doesn't see its own wrong
+			// answer as established context and repeat it.
+			if len(llmMessages) >= 2 && llmMessages[len(llmMessages)-2].Role == "assistant" &&
+				strings.Contains(llmMessages[len(llmMessages)-2].Content, lastSQL) {
+				llmMessages = append(llmMessages[:len(llmMessages)-2], llmMessages[len(llmMessages)-1])
+			}
+
+			// Build the correction prompt with dialect-specific guidance.
+			dialectNote := ""
+			if dialectHint != "" {
+				dialectNote = fmt.Sprintf("\n\nImportant: this database uses %s. "+
+					"Do not use functions or syntax from other database dialects.", dialectHint)
+			}
+
 			llmMessages = append(llmMessages, ChatMessage{
 				Role: "system",
-				Content: fmt.Sprintf("The previous SQL query failed:\n\n```sql\n%s\n```\n\nError: %s\n\nPlease correct the query and respond with a new 'sql_query' action.", lastSQL, lastErr.Error()),
+				Content: fmt.Sprintf(
+					"Your previous query was REJECTED by the database and MUST NOT be repeated. "+
+						"You must produce a COMPLETELY DIFFERENT query. "+
+						"If you repeat the same query or a trivially modified version, the system will give up.\n\n"+
+						"The failing query was:\n"+
+						"```sql\n%s\n```\n\n"+
+						"The database error was: %s"+
+						"%s\n\n"+
+						"Respond with a new 'sql_query' action using a fundamentally different approach. "+
+						"Do not use any function or syntax from the failing query.",
+					lastSQL, lastErr.Error(), dialectNote,
+				),
 			})
 
 			responseText, requestJSON, responseJSON, err := client.ChatCompletionWithPayload(ctx, llmMessages)
@@ -637,29 +1017,41 @@ func executeFinalQueryWithRetry(ctx context.Context, query *models.Query, resp L
 					_ = handleAnswer(query, newResp, conversation.ID)
 					return
 				}
+				if newResp.Action == "_parse_error" {
+					newResp = LLMResponse{
+						Action:                "clarification",
+						ClarificationQuestion: "I received a response I couldn't understand. Could you try rephrasing your question?",
+					}
+				}
 				llmContentJSON, _ := json.Marshal(newResp)
 				llmContent := string(llmContentJSON)
 				llmContentPtr := &llmContent
 
 				var displayMsg string
-				if newResp.ClarificationQuestion != "" {
+				switch newResp.Action {
+				case "clarification":
 					displayMsg = newResp.ClarificationQuestion
-				} else if newResp.Explanation != "" {
-					displayMsg = newResp.Explanation
-				} else {
-					displayMsg = fmt.Sprintf("The query failed and the LLM responded with '%s'. Please rephrase your question.", newResp.Action)
+				default:
+					displayMsg = "I'm not sure how to help with that. Could you try rephrasing your question?"
 				}
 
-				_ = UpdateQueryStatus(query.ID, "error", &lastSQL, nil, stringPtr(fmt.Sprintf("%s: %v", newResp.Action, lastErr)), nil, nil, nil)
-				_, _ = CreateConversationMessage(conversation.ID, "assistant", displayMsg, llmContentPtr, nil, nil)
+				_ = UpdateQueryStatus(query.ID, "error", &lastSQL, nil, stringPtr(lastErr.Error()), nil, nil, nil)
+				_ = UpdateQueryErrorCategory(query.ID, classifyErrorCategory(lastErr))
+				_, _ = CreateConversationMessage(conversation.ID, "assistant", displayMsg, llmContentPtr, nil, buildErrorMetadata(lastErr.Error()))
 				return
 			}
 			resp = newResp
 		}
 
 		if resp.SQLQuery == lastSQL {
-			lastErr = fmt.Errorf("LLM produced the same query (%s) twice in a row; cannot make further progress", truncateString(resp.SQLQuery, 100))
-			break
+			friendlyMsg := "I'm having trouble generating a new query. Could you try rephrasing your question?"
+			llmContentJSON, _ := json.Marshal(resp)
+			llmContent := string(llmContentJSON)
+			llmContentPtr := &llmContent
+			_, _ = CreateConversationMessage(conversation.ID, "assistant", friendlyMsg, llmContentPtr, nil, buildErrorMetadata("query loop detected"))
+			_ = UpdateQueryStatus(query.ID, "error", &resp.SQLQuery, nil, stringPtr("query loop detected"), nil, nil, nil)
+			_ = UpdateQueryErrorCategory(query.ID, "query_loop")
+			return
 		}
 		lastSQL = resp.SQLQuery
 
@@ -680,12 +1072,22 @@ func executeFinalQueryWithRetry(ctx context.Context, query *models.Query, resp L
 		}
 
 		if !isRetryableError(err) {
+			// Give unknown non-auth errors one LLM correction attempt
+			// as a safety net before giving up.
+			if attempt == 0 {
+				lastErr = err
+				log.Printf("[DiscussionEngine] Unknown error on attempt 1, trying one LLM correction: %v", err)
+				time.Sleep(backoffDuration(attempt))
+				// continue — the retry loop will send a correction prompt
+			} else {
+				lastErr = err
+				break
+			}
+		} else {
 			lastErr = err
-			break
+			log.Printf("[DiscussionEngine] SQL execution failed (attempt %d/%d): %v", attempt+1, maxRetries+1, err)
+			time.Sleep(backoffDuration(attempt))
 		}
-
-		lastErr = err
-		log.Printf("[DiscussionEngine] SQL execution failed (attempt %d/%d): %v", attempt+1, maxRetries+1, err)
 	}
 
 	renderSQLError(query, resp, dbConnection, conversation.ID, explorationResults, lastErr)
@@ -698,6 +1100,12 @@ func handleAnswer(query *models.Query, resp LLMResponse, conversationID uint) er
 	}
 
 	htmlContent := renderMarkdown(resp.Answer)
+
+	// Fallback: if markdown produced no usable content (common with malformed
+	// code blocks from LLMs), show the raw answer as preformatted text.
+	if strings.TrimSpace(stripHTMLTags(htmlContent)) == "" && resp.Answer != "" {
+		htmlContent = fmt.Sprintf("<pre style=\"white-space:pre-wrap; font-family:inherit;\">%s</pre>", html.EscapeString(resp.Answer))
+	}
 
 	llmContentJSON, _ := json.Marshal(resp)
 	llmContent := string(llmContentJSON)
@@ -738,6 +1146,13 @@ func handleClarification(query *models.Query, resp LLMResponse, conversationID u
 }
 
 func stringPtr(s string) *string { return &s }
+
+// unescapeNewlines converts literal \n sequences (from double JSON encoding)
+// back to actual newline characters so renderMarkdown can parse line-oriented
+// constructs like fenced code blocks and multi-paragraph text.
+func unescapeNewlines(s string) string {
+	return strings.ReplaceAll(s, "\\n", "\n")
+}
 
 // stripHTMLTags removes HTML tags from a string.
 func stripHTMLTags(s string) string {
@@ -903,10 +1318,10 @@ func buildSystemPrompt(schema *DataSchema, hasDB bool, dbConnection *models.Data
 	sb.WriteString("2. Decide whether you can answer directly, generate a SQL query, request clarification, or first explore the data.\n")
 	sb.WriteString("3. Respond with a JSON object containing exactly the following fields:\n")
 	sb.WriteString("   - \"action\": one of \"sql_query\", \"clarification\", \"sql_exploration\", or \"answer\"\n")
-	sb.WriteString("   - \"sql_query\": if action is \"sql_query\" or \"sql_exploration\", or \"answer\", provide a valid SELECT query.\n")
+	sb.WriteString("   - \"sql_query\": if action is \"sql_query\" or \"sql_exploration\", provide a valid SELECT query to execute against the database. If action is \"answer\", omit this field or leave it empty — put any example SQL inside the \"answer\" markdown instead.\n")
 	sb.WriteString("   - \"clarification_question\": if action is \"clarification\", ask a concise clarifying question.\n")
 	sb.WriteString("   - \"answer\": if action is \"answer\", provide a direct response to the user. Use \"answer\" when the question does not require querying the database — e.g., follow-ups about previously returned data, general knowledge questions, or formatting/narrative requests. Do NOT use \"answer\" when the database has the definitive answer — prefer \"sql_query\" instead.\n")
-	sb.WriteString("   - \"explanation\": optional short explanation of your reasoning.\n")
+	sb.WriteString("   - \"explanation\": internal reasoning (not shown to user — used to improve your query quality). Keep it brief.\n")
 	dbTypeHint := "SQL"
 	if dbConnection != nil {
 		driver, driverErr := GetDriver(dbConnection.Type)
@@ -1152,20 +1567,16 @@ func formatSQLResultsForLLMFromQueryResult(result *QueryResult) string {
 func renderSQLError(query *models.Query, resp LLMResponse, dbConnection *models.DataSource, conversationID uint, explorationResults []ExplorationResult, lastErr error) {
 	if lastErr != nil {
 		_ = UpdateQueryStatus(query.ID, "error", &resp.SQLQuery, nil, stringPtr(lastErr.Error()), nil, nil, nil)
+		_ = UpdateQueryErrorCategory(query.ID, classifyErrorCategory(lastErr))
 	}
 
-	var sqlBlock string
-	if resp.SQLQuery != "" {
-		sqlBlock = fmt.Sprintf("\n```sql\n%s\n```", resp.SQLQuery)
-	}
-
-	errorMsg := fmt.Sprintf("I tried to execute the SQL query but encountered an error:%s\n\n**Error**: %s", sqlBlock, lastErr.Error())
+	msg := formatUserError(lastErr)
 
 	llmContentJSON, _ := json.Marshal(resp)
 	llmContent := string(llmContentJSON)
 	llmContentPtr := &llmContent
 
-	_, err := CreateConversationMessage(conversationID, "assistant", errorMsg, llmContentPtr, nil, nil)
+	_, err := CreateConversationMessage(conversationID, "assistant", msg, llmContentPtr, nil, buildErrorMetadata(lastErr.Error()))
 	if err != nil {
 		log.Printf("[DiscussionEngine] Failed to create error message: %v", err)
 	}

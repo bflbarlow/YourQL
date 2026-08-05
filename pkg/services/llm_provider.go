@@ -2,15 +2,18 @@ package services
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"time"
 
 	"YourQL/pkg/models"
 )
 
-func CreateLLMProvider(name, provider, model, baseURL, apiKey string, isDefault bool, configJSON string) (*models.LLMProvider, error) {
+func CreateLLMProvider(name, provider, model, baseURL, apiKey string, isDefault bool, configJSON string, maxTokens *int) (*models.LLMProvider, error) {
 	now := time.Now().UTC()
 	isActive := true
 
@@ -21,9 +24,16 @@ func CreateLLMProvider(name, provider, model, baseURL, apiKey string, isDefault 
 		configArg = configJSON
 	}
 
+	var maxTokensArg interface{}
+	if maxTokens != nil {
+		maxTokensArg = *maxTokens
+	} else {
+		maxTokensArg = 2000
+	}
+
 	result, err := models.DB.Exec(
-		"INSERT INTO llm_providers (name, provider, model, base_url, api_key, is_default, is_active, config, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		name, provider, model, baseURL, apiKey, isDefault, isActive, configArg, now, now,
+		"INSERT INTO llm_providers (name, provider, model, base_url, api_key, is_default, is_active, config, max_tokens, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		name, provider, model, baseURL, apiKey, isDefault, isActive, configArg, maxTokensArg, now, now,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create LLM provider: %w", err)
@@ -57,13 +67,14 @@ func CreateLLMProvider(name, provider, model, baseURL, apiKey string, isDefault 
 func GetLLMProviderByID(id uint) (*models.LLMProvider, error) {
 	var p models.LLMProvider
 	var modelNull, baseURLNull, apiKeyNull sql.NullString
+	var maxTokensNull, modelMaxTokensNull, contextWindowNull sql.NullInt64
 	var configNull []byte
 	err := models.DB.QueryRow(
-		"SELECT id, name, provider, model, base_url, api_key, is_default, is_active, config, created_at, updated_at FROM llm_providers WHERE id = ? LIMIT 1",
+		"SELECT id, name, provider, model, base_url, api_key, is_default, is_active, max_tokens, model_max_tokens, context_window, config, created_at, updated_at FROM llm_providers WHERE id = ? LIMIT 1",
 		id,
 	).Scan(
 		&p.ID, &p.Name, &p.Provider, &modelNull, &baseURLNull, &apiKeyNull,
-		&p.IsDefault, &p.IsActive, &configNull, &p.CreatedAt, &p.UpdatedAt,
+		&p.IsDefault, &p.IsActive, &maxTokensNull, &modelMaxTokensNull, &contextWindowNull, &configNull, &p.CreatedAt, &p.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, errors.New("LLM provider not found")
@@ -84,12 +95,24 @@ func GetLLMProviderByID(id uint) (*models.LLMProvider, error) {
 		s := string(configNull)
 		p.Config = &s
 	}
+	if maxTokensNull.Valid {
+		v := int(maxTokensNull.Int64)
+		p.MaxTokens = &v
+	}
+	if modelMaxTokensNull.Valid {
+		v := int(modelMaxTokensNull.Int64)
+		p.ModelMaxTokens = &v
+	}
+	if contextWindowNull.Valid {
+		v := int(contextWindowNull.Int64)
+		p.ContextWindow = &v
+	}
 	return &p, nil
 }
 
 func ListLLMProvidersByWorkspace() ([]*models.LLMProvider, error) {
 	rows, err := models.DB.Query(
-		"SELECT id, name, provider, model, base_url, api_key, is_default, is_active, config, created_at, updated_at FROM llm_providers ORDER BY is_default DESC, created_at DESC",
+		"SELECT id, name, provider, model, base_url, api_key, is_default, is_active, max_tokens, model_max_tokens, context_window, config, created_at, updated_at FROM llm_providers ORDER BY is_default DESC, created_at DESC",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list LLM providers: %w", err)
@@ -100,10 +123,11 @@ func ListLLMProvidersByWorkspace() ([]*models.LLMProvider, error) {
 	for rows.Next() {
 		var p models.LLMProvider
 		var modelNull, baseURLNull, apiKeyNull sql.NullString
+		var maxTokensNull, modelMaxTokensNull, contextWindowNull sql.NullInt64
 		var configNull []byte
 		err := rows.Scan(
 			&p.ID, &p.Name, &p.Provider, &modelNull, &baseURLNull, &apiKeyNull,
-			&p.IsDefault, &p.IsActive, &configNull, &p.CreatedAt, &p.UpdatedAt,
+			&p.IsDefault, &p.IsActive, &maxTokensNull, &modelMaxTokensNull, &contextWindowNull, &configNull, &p.CreatedAt, &p.UpdatedAt,
 		)
 		if err != nil {
 			continue
@@ -121,12 +145,24 @@ func ListLLMProvidersByWorkspace() ([]*models.LLMProvider, error) {
 			s := string(configNull)
 			p.Config = &s
 		}
+		if maxTokensNull.Valid {
+			v := int(maxTokensNull.Int64)
+			p.MaxTokens = &v
+		}
+		if modelMaxTokensNull.Valid {
+			v := int(modelMaxTokensNull.Int64)
+			p.ModelMaxTokens = &v
+		}
+		if contextWindowNull.Valid {
+			v := int(contextWindowNull.Int64)
+			p.ContextWindow = &v
+		}
 		providers = append(providers, &p)
 	}
 	return providers, nil
 }
 
-func UpdateLLMProvider(id uint, name *string, model *string, baseURL *string, apiKey *string, configJSON *string) (*models.LLMProvider, error) {
+func UpdateLLMProvider(id uint, name *string, model *string, baseURL *string, apiKey *string, configJSON *string, maxTokens *int) (*models.LLMProvider, error) {
 	p, err := GetLLMProviderByID(id)
 	if err != nil {
 		return nil, err
@@ -158,6 +194,10 @@ func UpdateLLMProvider(id uint, name *string, model *string, baseURL *string, ap
 		} else {
 			args = append(args, *configJSON)
 		}
+	}
+	if maxTokens != nil {
+		updates = append(updates, "max_tokens = ?")
+		args = append(args, *maxTokens)
 	}
 
 	if len(updates) == 0 {
@@ -283,4 +323,148 @@ func setDefaultLLMProvider(providerID uint) error {
 	}
 	_, err = models.DB.Exec("UPDATE llm_providers SET is_default = 1 WHERE id = ?", providerID)
 	return err
+}
+
+// DetectModelMaxTokens attempts to detect a model's maximum output tokens
+// from the provider's API. Returns nil,nil when detection is not supported
+// or fails.
+func DetectModelMaxTokens(provider *models.LLMProvider) (*int, error) {
+	switch provider.Provider {
+	case "openai":
+		return detectOpenAIModelMaxTokens(provider)
+	case "ollama":
+		return detectOllamaModelMaxTokens(provider)
+	default:
+		// anthropic and local do not support detection
+		return nil, nil
+	}
+}
+
+// UpdateModelMaxTokens persists the detected model max tokens for a provider.
+func UpdateModelMaxTokens(providerID uint, modelMaxTokens *int) error {
+	var arg interface{}
+	if modelMaxTokens != nil {
+		arg = *modelMaxTokens
+	} else {
+		arg = nil
+	}
+	_, err := models.DB.Exec("UPDATE llm_providers SET model_max_tokens = ? WHERE id = ?", arg, providerID)
+	return err
+}
+
+func detectOpenAIModelMaxTokens(provider *models.LLMProvider) (*int, error) {
+	baseURL := "https://api.openai.com/v1"
+	if provider.BaseURL != nil && *provider.BaseURL != "" {
+		baseURL = *provider.BaseURL
+	}
+	modelName := ""
+	if provider.Model != nil {
+		modelName = *provider.Model
+	}
+	if modelName == "" {
+		return nil, nil
+	}
+
+	apiKey := ""
+	if provider.APIKey != nil {
+		apiKey = *provider.APIKey
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	req, err := http.NewRequest("GET", baseURL+"/models/"+modelName, nil)
+	if err != nil {
+		return nil, nil
+	}
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, nil
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, nil
+	}
+
+	// Try to extract max_tokens, context_length, or context_window
+	var result map[string]interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, nil
+	}
+
+	// Check common field names
+	for _, key := range []string{"max_tokens", "context_length", "context_window", "max_output_tokens"} {
+		if v, ok := result[key]; ok {
+			switch val := v.(type) {
+			case float64:
+				n := int(val)
+				return &n, nil
+			case int:
+				return &val, nil
+			}
+		}
+	}
+
+	return nil, nil
+}
+
+func detectOllamaModelMaxTokens(provider *models.LLMProvider) (*int, error) {
+	baseURL := "http://localhost:11434"
+	if provider.BaseURL != nil && *provider.BaseURL != "" {
+		baseURL = *provider.BaseURL
+	}
+	modelName := ""
+	if provider.Model != nil {
+		modelName = *provider.Model
+	}
+	if modelName == "" {
+		return nil, nil
+	}
+
+	reqBody, _ := json.Marshal(map[string]string{"name": modelName})
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Post(baseURL+"/api/show", "application/json", strings.NewReader(string(reqBody)))
+	if err != nil {
+		return nil, nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, nil
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, nil
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, nil
+	}
+
+	// Check model_info for context parameters
+	if modelInfo, ok := result["model_info"].(map[string]interface{}); ok {
+		for _, key := range []string{"num_ctx", "context_length", "max_tokens"} {
+			if v, ok := modelInfo[key]; ok {
+				switch val := v.(type) {
+				case float64:
+					n := int(val)
+					return &n, nil
+				case int:
+					return &val, nil
+				}
+			}
+		}
+	}
+
+	return nil, nil
 }

@@ -17,6 +17,7 @@ type Query struct {
 	Status          string    `json:"status"` // pending, running, success, error
 	ResultSummary   *string   `json:"result_summary,omitempty"`
 	ErrorMessage    *string   `json:"error_message,omitempty"`
+	ErrorCategory  *string   `json:"error_category,omitempty"`
 	ExecutionTimeMS *int      `json:"execution_time_ms,omitempty"`
 	TokensUsed      *int      `json:"tokens_used,omitempty"`
 	CostEstimate    *string   `json:"cost_estimate,omitempty"`

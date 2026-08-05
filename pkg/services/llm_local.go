@@ -18,6 +18,7 @@ import (
 type LocalClient struct {
 	baseURL    string
 	model      string
+	maxTokens  int
 	httpClient *http.Client
 }
 
@@ -36,6 +37,7 @@ func NewLocalClient(provider *models.LLMProvider) (LLMClient, error) {
 	return &LocalClient{
 		baseURL:    removeTrailingSlash(*provider.BaseURL),
 		model:      model,
+		maxTokens:  effectiveMaxTokens(provider),
 		httpClient: &http.Client{Timeout: 180 * time.Second},
 	}, nil
 }
@@ -51,6 +53,9 @@ func (c *LocalClient) ChatCompletionWithPayload(ctx context.Context, messages []
 		"model":    c.model,
 		"messages": toOpenAIMessages(messages),
 		"stream":   false,
+	}
+	if c.maxTokens > 0 {
+		openAIReq["max_tokens"] = c.maxTokens
 	}
 
 	jsonData, err := json.Marshal(openAIReq)

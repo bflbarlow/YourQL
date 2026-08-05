@@ -20,27 +20,92 @@
   } = $props()
   
   let localMessage = $state(userMessage)
+  let textareaEl = $state(null)
+  let customHeights = $state({})
   
   $effect(() => {
     localMessage = userMessage
   })
   
+  // Restore saved height (or reset) when conversation changes
+  $effect(() => {
+    const el = textareaEl
+    const cid = activeConversation?.id
+    if (!el || !cid) return
+    if (customHeights[cid]) {
+      el.style.height = customHeights[cid]
+    } else {
+      el.style.height = ''
+    }
+  })
+  
   function handleInput(e) {
     localMessage = e.target.value
     onMessageChange(localMessage)
+    // Skip auto-resize if user manually set a height for this conversation
+    const cid = activeConversation?.id
+    if (cid && customHeights[cid]) return
     // Auto-resize textarea
     const el = e.target
     el.style.height = 'auto'
-    el.style.height = Math.min(el.scrollHeight, 200) + 'px'
+    el.style.height = Math.min(el.scrollHeight, Math.floor(window.innerHeight * 0.5)) + 'px'
   }
+  
+  let isDragging = $state(false)
+  let dragStartY = $state(0)
+  let dragStartHeight = $state(0)
+
+  function startResize(e) {
+    e.preventDefault()
+    isDragging = true
+    dragStartY = e.clientY
+    dragStartHeight = textareaEl ? textareaEl.getBoundingClientRect().height : 44
+  }
+
+  // Drag-to-resize: move the top edge up/down
+  $effect(() => {
+    if (!isDragging) return
+    const handleMove = (e) => {
+      const delta = dragStartY - e.clientY // up = positive
+      const minH = 44
+      const maxH = Math.floor(window.innerHeight * 0.5)
+      const newH = Math.max(minH, Math.min(dragStartHeight + delta, maxH))
+      if (textareaEl) textareaEl.style.height = newH + 'px'
+    }
+    const handleUp = () => {
+      isDragging = false
+      const cid = activeConversation?.id
+      if (cid && textareaEl) {
+        customHeights = { ...customHeights, [cid]: textareaEl.style.height }
+      }
+    }
+    document.addEventListener('mousemove', handleMove)
+    document.addEventListener('mouseup', handleUp)
+    return () => {
+      document.removeEventListener('mousemove', handleMove)
+      document.removeEventListener('mouseup', handleUp)
+    }
+  })
   
   function handleKeyDown(e) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       if (localMessage.trim()) {
-        onSendMessage()
+        sendAndReset()
       }
     }
+  }
+  
+  function sendAndReset() {
+    // Clear custom height and reset textarea to default after submit
+    const cid = activeConversation?.id
+    if (cid && customHeights[cid]) {
+      const newHeights = { ...customHeights }
+      delete newHeights[cid]
+      customHeights = newHeights
+    }
+    if (textareaEl) textareaEl.style.height = ''
+    onSendMessage()
   }
   
   function parsePayload(metadata) {
@@ -319,6 +384,18 @@
               {#if getChartConfig(message)}
                 <VizChart config={getChartConfig(message)} />
               {/if}
+              <!-- Raw error detail (visible when tech details is enabled) -->
+              {#if showTechDetails && message.payload?.raw_error}
+                <div class="payload-section error-detail">
+                  <div class="payload-toggle" onclick={() => togglePayload(message.id, 'error')}>
+                    <span>⚠ Raw Error Details</span>
+                    <span class="toggle-icon">{#if payloadToggles[message.id + '-error']}<ChevronDown size={12} />{:else}<ChevronRight size={12} />{/if}</span>
+                  </div>
+                  {#if payloadToggles[message.id + '-error']}
+                    <pre class="payload-content">{message.payload.raw_error}</pre>
+                  {/if}
+                </div>
+              {/if}
             {/if}
           </div>
           <div class="message-time">
@@ -345,12 +422,22 @@
   </div>
   
   <div class="message-input-container">
+    <div
+      class="resize-handle"
+      class:resize-handle--dragging={isDragging}
+      onmousedown={startResize}
+      role="separator"
+      aria-label="Drag to resize message input"
+    >
+      <div class="resize-handle__grip"></div>
+    </div>
     {#if messageError}
       <div class="error-message">{messageError}</div>
     {/if}
     
     <div class="message-input-wrapper">
       <textarea
+        bind:this={textareaEl}
         value={localMessage}
         placeholder="Type your message..."
         oninput={handleInput}
@@ -359,7 +446,7 @@
       ></textarea>
       <button 
         class="send-btn" 
-        onclick={onSendMessage}
+        onclick={sendAndReset}
         disabled={processingMessage || !localMessage.trim()}
       >
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -612,7 +699,7 @@
     }
   }
 
-  .message-input-container { padding: var(--space-4xl) var(--space-6xl); border-top: 1px solid #e0e0e0; background: var(--bg-primary)fff; }
+  .message-input-container { padding: 0 var(--space-6xl) var(--space-4xl); border-top: 1px solid #e0e0e0; background: var(--bg-primary); }
 
   .error-message {
     background: rgba(239, 83, 80, 0.1);
@@ -621,10 +708,33 @@
     padding: var(--space-xl) var(--space-3xl);
     border-radius: var(--radius-md);
     font-size: var(--font-md);
-    margin-bottom: var(--space-2xl);
+    margin: var(--space-4xl) var(--space-6xl) var(--space-2xl);
   }
 
   .message-input-wrapper { display: flex; gap: var(--space-lg); align-items: flex-end; }
+
+  .resize-handle {
+    height: 10px;
+    cursor: ns-resize;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: var(--space-md) 0;
+    transition: background 0.15s ease;
+    border-radius: 3px;
+  }
+  .resize-handle__grip {
+    width: 36px;
+    height: 4px;
+    background: var(--border-primary);
+    border-radius: 2px;
+    transition: background 0.15s ease, width 0.15s ease;
+  }
+  .resize-handle:hover .resize-handle__grip,
+  .resize-handle--dragging .resize-handle__grip {
+    background: var(--color-accent);
+    width: 48px;
+  }
 
   .message-input-wrapper textarea {
     flex: 1;
@@ -638,7 +748,7 @@
     font-family: inherit;
     line-height: 1.5;
     min-height: 2.75rem;
-    max-height: 12.5rem;
+    max-height: 50vh;
     transition: border-color 0.2s ease;
   }
 

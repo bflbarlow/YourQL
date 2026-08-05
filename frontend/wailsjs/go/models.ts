@@ -49,6 +49,8 @@ export namespace main {
 	    app_version: string;
 	    default_llm_provider: string;
 	    theme: string;
+	    accent: string;
+	    scale: string;
 	    language: string;
 	
 	    static createFrom(source: any = {}) {
@@ -61,6 +63,8 @@ export namespace main {
 	        this.app_version = source["app_version"];
 	        this.default_llm_provider = source["default_llm_provider"];
 	        this.theme = source["theme"];
+	        this.accent = source["accent"];
+	        this.scale = source["scale"];
 	        this.language = source["language"];
 	    }
 	}
@@ -72,6 +76,9 @@ export namespace main {
 	    baseURL?: string;
 	    is_default: boolean;
 	    is_active: boolean;
+	    maxTokens: number;
+	    modelMaxTokens: number;
+	    contextWindow: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new LLMProviderSetting(source);
@@ -86,6 +93,9 @@ export namespace main {
 	        this.baseURL = source["baseURL"];
 	        this.is_default = source["is_default"];
 	        this.is_active = source["is_active"];
+	        this.maxTokens = source["maxTokens"];
+	        this.modelMaxTokens = source["modelMaxTokens"];
+	        this.contextWindow = source["contextWindow"];
 	    }
 	}
 	export class QueryResult {

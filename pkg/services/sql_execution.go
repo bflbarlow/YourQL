@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"math"
+	"math/rand"
 	"regexp"
 	"strings"
 	"time"
@@ -323,8 +325,19 @@ type AssistantResponse struct {
 
 // mdRenderer is a shared stateless markdown renderer (safe to reuse across calls).
 var mdRenderer = mdhtml.NewRenderer(mdhtml.RendererOptions{
-	Flags: mdhtml.UseXHTML | mdhtml.Smartypants | mdhtml.SmartypantsFractions | mdhtml.SmartypantsDashes,
+	Flags: mdhtml.UseXHTML,
 })
+
+// fencedCodeRe matches a fenced code block opening that follows a non-blank
+// line. Used by normalizeMarkdown to ensure robust parsing.
+var fencedCodeRe = regexp.MustCompile(`([^\n])\n(\x60{3,})`)
+
+// normalizeMarkdown preprocesses LLM-generated markdown to avoid common
+// parser failures. Specifically, it ensures a blank line before fenced code
+// blocks, which LLMs frequently omit despite most parsers requiring it.
+func normalizeMarkdown(text string) string {
+	return fencedCodeRe.ReplaceAllString(text, "$1\n\n$2")
+}
 
 // renderMarkdown converts markdown text to safe HTML. Each call creates a new
 // parser because gomarkdown parsers are not reusable across Parse() invocations.
@@ -332,6 +345,7 @@ func renderMarkdown(text string) string {
 	if text == "" {
 		return ""
 	}
+	text = normalizeMarkdown(text)
 	p := parser.NewWithExtensions(parser.CommonExtensions | parser.NoEmptyLineBeforeBlock)
 	return string(markdown.ToHTML([]byte(text), p, mdRenderer))
 }
@@ -342,11 +356,6 @@ func (r *AssistantResponse) ToHTML() string {
 	if r.Summary != nil && *r.Summary != "" {
 		sb.WriteString(fmt.Sprintf("<div class=\"markdown-content\">%s</div>\n", renderMarkdown(*r.Summary)))
 	}
-	if r.Summary == nil || *r.Summary == "" {
-		if r.Explanation != "" {
-			sb.WriteString(fmt.Sprintf("<div class=\"markdown-content\">%s</div>\n", renderMarkdown(r.Explanation)))
-		}
-	}
 	if r.SQL != "" {
 		// SQL is now shown in the results toolbar toggle, not as a separate block
 	}
@@ -354,9 +363,6 @@ func (r *AssistantResponse) ToHTML() string {
 		if r.Summary != nil && *r.Summary != "" {
 			// Collapse the table behind a details element
 			sb.WriteString(fmt.Sprintf("<details class=\"results-details\" style=\"margin-top:0.5rem;\"><summary style=\"cursor:pointer; color:var(--text-secondary); font-size:0.85rem; padding:4px 8px; background:var(--bg-secondary); border-radius:4px; display:inline-block;\">View raw results (%d rows)</summary><div style=\"margin-top:0.5rem;\">", r.Result.RowCount))
-			if r.Explanation != "" {
-				sb.WriteString(fmt.Sprintf("<div class=\"markdown-content\" style=\"color:var(--text-secondary); font-size:0.9rem;\"><em>%s</em></div>\n", renderMarkdown(r.Explanation)))
-			}
 			sb.WriteString(formatResultsHTML(r.Result, r.SQL))
 			sb.WriteString("</div></details>")
 		} else {
@@ -561,46 +567,92 @@ const (
 // isRetryableError determines whether a SQL execution error is retryable.
 func isRetryableError(err error) bool {
 	msg := err.Error()
-
-	fatalPatterns := []string{
-		"dial", "handshake", "authentication", "max connections",
-		"connection reset", "i/o timeout", "connection refused",
-		"no such host", "tls:", "certificate",
-	}
 	upper := strings.ToUpper(msg)
-	for _, pat := range fatalPatterns {
-		if strings.Contains(upper, strings.ToUpper(pat)) {
+
+	// 1. PERMANENTLY FATAL — auth/permission failures never retry.
+	permanentlyFatal := []string{
+		"AUTHENTICATION", "ACCESS DENIED", "PERMISSION DENIED",
+		"INVALID PASSWORD", "INVALID API KEY", "COMMAND DENIED",
+		"UNAUTHORIZED", "FORBIDDEN",
+	}
+	for _, pat := range permanentlyFatal {
+		if strings.Contains(upper, pat) {
 			return false
 		}
 	}
 
-	retryablePatterns := []string{
-		"unknown column", "unknown table", "doesn't exist", "syntax error",
-		"you have an error in your", "truncated incorrect", "incorrect string value",
-		"invalid use of group", "ambiguous column", "multiple primary key",
-		"deadlock", "lock wait timeout", "too many connections",
-		"table is marked as crashed", "incorrect key value", "data too long",
-		"out of range", "division by zero",
-		"subquery returns more than 1 row", "subquery", "1242",
-		"invalid character", "invalid utf8", "invalid utf8mb4",
-		"field doesn't have", "not found", "not exists",
-		"access denied", "permission denied", "command denied",
-		"function doesn't exist", "column '.*' in", "not in group by",
-		"invalid reference", "conflicting types", "can't drop",
-		"duplicate entry", "foreign key constraint", "cannot add foreign key",
-		"cannot truncate", "view's", "stored function", "prepared statement",
-		"invalid collation", "incorrect date value", "incorrect datetime value",
-		"incorrect time value", "incorrect year value", "incorrect double value",
-		"overflow", "underflow", "truncated", "out of memory",
-		"temporary file", "disk full",
+	// 2. SQL ENGINE ERROR — any error that looks like it originated from the
+	//    database engine (has an error code, mentions database objects, or
+	//    contains SQL-level keywords) is potentially LLM-correctable. This
+	//    replaces the previous 40+ driver-specific patterns with a few broad
+	//    structural checks that work across MySQL, PostgreSQL, SQLite, etc.
+	if looksLikeSQLError(msg) {
+		return true
 	}
-	for _, pat := range retryablePatterns {
-		if regexp.MustCompile("(?i)" + pat).MatchString(msg) {
+
+	// 3. TRANSIENT CONNECTION — retryable with exponential backoff.
+	transientConnection := []string{
+		"DIAL", "HANDSHAKE", "CONNECTION RESET", "I/O TIMEOUT",
+		"CONNECTION REFUSED", "NO SUCH HOST", "TLS:", "CERTIFICATE",
+		"MAX CONNECTIONS", "TOO MANY CONNECTIONS", "DEADLOCK",
+		"LOCK WAIT TIMEOUT", "CONNECTION",
+	}
+	for _, pat := range transientConnection {
+		if strings.Contains(upper, pat) {
 			return true
 		}
 	}
 
-	return true
+	// 4. UNKNOWN — default to false. The retry loop gives unknown
+	//    non-auth errors one correction attempt as a safety net.
+	return false
+}
+
+// looksLikeSQLError checks whether an error message matches the broad
+// structural signature of a database-level SQL error (as opposed to a
+// connection, auth, or infrastructure error). This uses error-code patterns
+// and SQL-related keywords that are common across MySQL, PostgreSQL, SQLite,
+// SQL Server, Snowflake, BigQuery, Redshift, and MariaDB.
+func looksLikeSQLError(msg string) bool {
+	upper := strings.ToUpper(msg)
+
+	// Has a database error code: MySQL "Error 1305", PG "ERROR:",
+	// SQLite "Error:", SQL Server "Msg 208", etc.
+	if regexp.MustCompile(`(?i)(error|msg|sqlstate)\s+\d+`).MatchString(msg) {
+		return true
+	}
+
+	// Contains database-object references or SQL-level error keywords.
+	// These appear in errors from all major database engines.
+	sqlIndicators := []string{
+		"COLUMN", "TABLE", "FUNCTION", "PROCEDURE", "TRIGGER",
+		"SYNTAX", "UNKNOWN", "DOES NOT EXIST", "DOESN'T EXIST",
+		"AMBIGUOUS", "TRUNCATED", "INCORRECT", "INVALID",
+		"DUPLICATE", "FOREIGN KEY", "PRIMARY KEY", "NOT NULL",
+		"CONSTRAINT", "SUBQUERY", "GROUP BY", "ORDER BY",
+		"DIVISION BY ZERO", "OUT OF RANGE", "OVERFLOW",
+		"DOESN'T HAVE", "CANNOT", "NOT FOUND",
+	}
+	for _, pat := range sqlIndicators {
+		if strings.Contains(upper, pat) {
+			return true
+		}
+	}
+	return false
+}
+
+// backoffDuration returns an exponential backoff duration with jitter.
+// base = 500ms, max = 15s. Used before retrying transient connection errors.
+func backoffDuration(attempt int) time.Duration {
+	base := 500 * time.Millisecond
+	max := 15 * time.Second
+	backoff := time.Duration(float64(base) * math.Pow(2, float64(attempt)))
+	if backoff > max {
+		backoff = max
+	}
+	// Add ±25% jitter
+	jitter := time.Duration(float64(backoff) * 0.5 * (rand.Float64() - 0.5))
+	return backoff + jitter
 }
 
 // ParseExplorationSafety parses a string into an ExplorationSafetyMode.

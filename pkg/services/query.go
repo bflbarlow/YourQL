@@ -119,3 +119,12 @@ func UpdateQueryStatus(id uint, status string, generatedSQL *string, resultSumma
 	_, err := models.DB.Exec(query, args...)
 	return err
 }
+
+// UpdateQueryErrorCategory sets the error_category field on a query record.
+// This is a separate function from UpdateQueryStatus to avoid signature churn
+// on the widely-used UpdateQueryStatus call.
+func UpdateQueryErrorCategory(id uint, category string) error {
+	_, err := models.DB.Exec("UPDATE queries SET error_category = ?, updated_at = ? WHERE id = ?",
+		category, time.Now().UTC(), id)
+	return err
+}

@@ -202,7 +202,11 @@ func migrate() error {
 	ensureColumn("conversations", "pinned", "INTEGER DEFAULT 0")
 	ensureColumn("conversation_messages", "llm_content", "TEXT")
 	ensureColumn("conversation_messages", "sql_results", "TEXT")
+	ensureColumn("llm_providers", "max_tokens", "INTEGER DEFAULT 2000")
+	ensureColumn("llm_providers", "model_max_tokens", "INTEGER")
+	ensureColumn("llm_providers", "context_window", "INTEGER")
 	ensureColumn("conversation_messages", "metadata", "TEXT")
+	ensureColumn("queries", "error_category", "TEXT DEFAULT ''")
 
 	// Migration: data sources rebrand (v0.3.1)
 	_ = runMigration("migrate_db_to_data_sources", func() error {
@@ -215,6 +219,15 @@ func migrate() error {
 
 	// Remove legacy user_id column if it exists (from older schemas)
 	dropColumnIfExists("conversations", "user_id")
+
+	// App settings table (v0.3.1) — persists theme, accent, scale across refreshes
+	_ = runMigration("create_app_settings", func() error {
+		_, err := DB.Exec(`CREATE TABLE IF NOT EXISTS app_settings (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL
+		)`)
+		return err
+	})
 
 	return nil
 }
