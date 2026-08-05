@@ -1,6 +1,7 @@
 import { mount } from 'svelte'
 import App from './App.svelte'
 import { EventsOn } from '../wailsjs/runtime/runtime.js'
+import { GetGeneralSettings, UpdateGeneralSettings } from '../wailsjs/go/main/App.js'
 import './variables.css'
 
 // ==================== UI Scale ====================
@@ -8,6 +9,8 @@ const SCALE_KEY = 'yourql-ui-scale'
 function applyScale(scale) {
   document.documentElement.setAttribute('data-ui-scale', scale)
   localStorage.setItem(SCALE_KEY, scale)
+  // Persist to DB (fire-and-forget — don't block the UI)
+  UpdateGeneralSettings({ scale }).catch(() => {})
 }
 const savedScale = localStorage.getItem(SCALE_KEY) || 'medium'
 applyScale(savedScale)
@@ -147,6 +150,8 @@ function applyResolvedTheme(resolved) {
 function setThemeSelection(selection) {
   localStorage.setItem(THEME_KEY, selection)
   applyResolvedTheme(resolveTheme(selection))
+  // Persist to DB
+  UpdateGeneralSettings({ theme: selection }).catch(() => {})
 }
 
 function applyThemeAndAccent() {
@@ -163,6 +168,8 @@ window.setAccent = (hex) => {
   // Re-resolve theme so dark-mode variant updates
   const selection = localStorage.getItem(THEME_KEY) || DEFAULT_THEME_SELECTION
   applyResolvedTheme(resolveTheme(selection))
+  // Persist to DB
+  UpdateGeneralSettings({ accent: hex }).catch(() => {})
 }
 
 // System preference listener — only fires when user chose "system"
@@ -177,6 +184,54 @@ if (typeof window !== 'undefined' && window.matchMedia) {
 
 // Initialize theme & accent before mounting app
 applyThemeAndAccent()
+
+// Sync settings from the persistent DB on startup.
+// Wails bindings queue calls until the runtime is ready, so this is safe to call early.
+GetGeneralSettings().then(settings => {
+  // If DB has values, use them (they're the source of truth).
+  // If DB is empty (fresh migration), migrate localStorage values to the DB.
+  const localTheme = localStorage.getItem(THEME_KEY)
+  const localAccent = localStorage.getItem(ACCENT_KEY)
+  const localScale = localStorage.getItem(SCALE_KEY)
+
+  const dbTheme = settings.theme
+  const dbAccent = settings.accent
+  const dbScale = settings.scale
+
+  // Decide which source wins: if DB has a non-default value, DB wins.
+  // Otherwise migrate localStorage to DB.
+  const hasDBTheme = dbTheme && dbTheme !== 'system'
+  const hasDBAccent = dbAccent && dbAccent !== '#0288d1'
+  const hasDBScale = dbScale && dbScale !== 'medium'
+
+  // If localStorage has a value but DB doesn't (fresh migration), save to DB
+  if (localTheme && !hasDBTheme && localTheme !== 'system') {
+    UpdateGeneralSettings({ theme: localTheme }).catch(() => {})
+  }
+  if (localAccent && !hasDBAccent && localAccent !== '#0288d1') {
+    UpdateGeneralSettings({ accent: localAccent }).catch(() => {})
+  }
+  if (localScale && !hasDBScale && localScale !== 'medium') {
+    UpdateGeneralSettings({ scale: localScale }).catch(() => {})
+  }
+
+  // Apply DB values if they differ from localStorage (DB is source of truth)
+  const finalTheme = hasDBTheme ? dbTheme : (localTheme || 'system')
+  const finalAccent = hasDBAccent ? dbAccent : (localAccent || '#0288d1')
+  const finalScale = hasDBScale ? dbScale : (localScale || 'medium')
+
+  if (finalTheme !== localTheme) setThemeSelection(finalTheme)
+  if (finalAccent !== localAccent) {
+    applyAccent(finalAccent)
+    applyResolvedTheme(resolveTheme(finalTheme))
+  }
+  if (finalScale !== localScale) applyScale(finalScale)
+
+  // Ensure localStorage matches final state
+  localStorage.setItem(THEME_KEY, finalTheme)
+  localStorage.setItem(ACCENT_KEY, finalAccent)
+  localStorage.setItem(SCALE_KEY, finalScale)
+}).catch(() => {})
 
 mount(App, {
   target: document.getElementById('app')

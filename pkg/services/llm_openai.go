@@ -16,6 +16,7 @@ import (
 
 // OpenAIClient implements LLMClient for OpenAI's API.
 type OpenAIClient struct {
+	maxTokens  int
 	baseURL    string
 	apiKey     string
 	model      string
@@ -42,7 +43,7 @@ func NewOpenAIClient(provider *models.LLMProvider) (LLMClient, error) {
 		return nil, fmt.Errorf("OpenAI API key is required for https://api.openai.com/v1")
 	}
 
-	return &OpenAIClient{baseURL: baseURL, apiKey: apiKey, model: model, httpClient: &http.Client{Timeout: 300 * time.Second}}, nil
+	return &OpenAIClient{baseURL: baseURL, apiKey: apiKey, model: model, maxTokens: effectiveMaxTokens(provider), httpClient: &http.Client{Timeout: 300 * time.Second}}, nil
 }
 
 type openAIChatRequest struct {
@@ -89,7 +90,7 @@ func (c *OpenAIClient) ChatCompletionWithPayload(ctx context.Context, messages [
 		Model:       c.model,
 		Messages:    openAIMessages,
 		Temperature: 0.1,
-		MaxTokens:   2000,
+		MaxTokens:   c.maxTokens,
 	}
 
 	jsonData, err := json.Marshal(reqBody)

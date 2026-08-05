@@ -172,13 +172,16 @@ func (a *App) SetConversationSkill(conversationID uint, skillID uint, enabled bo
 
 // LLMProviderSetting represents an LLM provider configuration for the frontend
 type LLMProviderSetting struct {
-	ID        uint   `json:"id"`
-	Name      string `json:"name"`
-	Provider  string `json:"provider"`
-	Model     string `json:"model,omitempty"`
-	BaseURL   string `json:"baseURL,omitempty"`
-	IsDefault bool   `json:"is_default"`
-	IsActive  bool   `json:"is_active"`
+	ID             uint   `json:"id"`
+	Name           string `json:"name"`
+	Provider       string `json:"provider"`
+	Model          string `json:"model,omitempty"`
+	BaseURL        string `json:"baseURL,omitempty"`
+	IsDefault      bool   `json:"is_default"`
+	IsActive       bool   `json:"is_active"`
+	MaxTokens      int    `json:"maxTokens"`
+	ModelMaxTokens int    `json:"modelMaxTokens"`
+	ContextWindow  int    `json:"contextWindow"`
 }
 
 func (a *App) ListLLMProviders() ([]LLMProviderSetting, error) {
@@ -197,31 +200,74 @@ func (a *App) ListLLMProviders() ([]LLMProviderSetting, error) {
 		if p.BaseURL != nil {
 			baseURL = *p.BaseURL
 		}
+		maxTokens := 0
+		if p.MaxTokens != nil {
+			maxTokens = *p.MaxTokens
+		}
+		modelMaxTokens := 0
+		if p.ModelMaxTokens != nil {
+			modelMaxTokens = *p.ModelMaxTokens
+		}
+		contextWindow := 0
+		if p.ContextWindow != nil {
+			contextWindow = *p.ContextWindow
+		}
 		settings = append(settings, LLMProviderSetting{
-			ID:        p.ID,
-			Name:      p.Name,
-			Provider:  p.Provider,
-			Model:     model,
-			BaseURL:   baseURL,
-			IsDefault: p.IsDefault,
-			IsActive:  p.IsActive,
+			ID:             p.ID,
+			Name:           p.Name,
+			Provider:       p.Provider,
+			Model:          model,
+			BaseURL:        baseURL,
+			IsDefault:      p.IsDefault,
+			IsActive:       p.IsActive,
+			MaxTokens:      maxTokens,
+			ModelMaxTokens: modelMaxTokens,
+			ContextWindow:  contextWindow,
 		})
 	}
 	return settings, nil
 }
 
-func (a *App) CreateLLMProvider(name, provider, model, baseURL, apiKey string) error {
-	_, err := services.CreateLLMProvider(name, provider, model, baseURL, apiKey, true, "")
+func (a *App) CreateLLMProvider(name, provider, model, baseURL, apiKey string, maxTokens int) error {
+	var mt *int
+	if maxTokens > 0 {
+		mt = &maxTokens
+	}
+	_, err := services.CreateLLMProvider(name, provider, model, baseURL, apiKey, true, "", mt)
 	return err
 }
 
-func (a *App) UpdateLLMProvider(id uint, name, model, baseURL, apiKey string) error {
-	_, err := services.UpdateLLMProvider(id, &name, &model, &baseURL, &apiKey, nil)
+func (a *App) UpdateLLMProvider(id uint, name, model, baseURL, apiKey string, maxTokens int) error {
+	var mt *int
+	if maxTokens > 0 {
+		mt = &maxTokens
+	}
+	var ak *string
+	if apiKey != "" {
+		ak = &apiKey
+	}
+	_, err := services.UpdateLLMProvider(id, &name, &model, &baseURL, ak, nil, mt)
 	return err
 }
 
 func (a *App) DeleteLLMProvider(id uint) error {
 	return services.DeleteLLMProvider(id)
+}
+
+// DetectModelMaxTokens attempts to detect the model's maximum output tokens.
+// Returns 0 if detection failed or is not supported.
+func (a *App) DetectModelMaxTokens(id uint) (int, error) {
+	provider, err := services.GetLLMProviderByID(id)
+	if err != nil {
+		return 0, err
+	}
+	detected, err := services.DetectModelMaxTokens(provider)
+	if err != nil || detected == nil {
+		return 0, nil
+	}
+	// Persist the detected value
+	_ = services.UpdateModelMaxTokens(id, detected)
+	return *detected, nil
 }
 
 func (a *App) SetDefaultLLMProvider(id uint) error {
@@ -234,6 +280,14 @@ func (a *App) TestLLMProviderConnection(id uint) (string, error) {
 		return "", err
 	}
 	result, err := services.TestLLMProvider(provider)
+	if err != nil {
+		return result, err
+	}
+	// Also attempt model max token detection as a side effect
+	if detected, _ := services.DetectModelMaxTokens(provider); detected != nil {
+		_ = services.UpdateModelMaxTokens(id, detected)
+		result += fmt.Sprintf("\nModel max output: %d tokens.", *detected)
+	}
 	return result, err
 }
 
@@ -644,21 +698,50 @@ type GeneralSettings struct {
 	AppVersion         string `json:"app_version"`
 	DefaultLLMProvider string `json:"default_llm_provider"`
 	Theme              string `json:"theme"`
+	Accent             string `json:"accent"`
+	Scale              string `json:"scale"`
 	Language           string `json:"language"`
 }
 
-// GetGeneralSettings returns hard-coded defaults (not persisted)
+// GetGeneralSettings returns persisted settings from the local database.
 func (a *App) GetGeneralSettings() GeneralSettings {
-	return GeneralSettings{
+	settings := GeneralSettings{
 		AppName:            "YourQL",
 		AppVersion:         "0.3.0",
 		DefaultLLMProvider: "openai",
-		Theme:              "light",
+		Theme:              "system",
+		Accent:             "#0288d1",
+		Scale:              "medium",
 		Language:           "en",
 	}
+	if v, err := services.GetAppSetting("theme"); err == nil && v != "" {
+		settings.Theme = v
+	}
+	if v, err := services.GetAppSetting("accent"); err == nil && v != "" {
+		settings.Accent = v
+	}
+	if v, err := services.GetAppSetting("scale"); err == nil && v != "" {
+		settings.Scale = v
+	}
+	return settings
 }
 
-// UpdateGeneralSettings is a no-op — settings are not persisted (§4.6)
+// UpdateGeneralSettings persists the provided settings to the local database.
 func (a *App) UpdateGeneralSettings(settings GeneralSettings) error {
+	if settings.Theme != "" {
+		if err := services.SetAppSetting("theme", settings.Theme); err != nil {
+			return err
+		}
+	}
+	if settings.Accent != "" {
+		if err := services.SetAppSetting("accent", settings.Accent); err != nil {
+			return err
+		}
+	}
+	if settings.Scale != "" {
+		if err := services.SetAppSetting("scale", settings.Scale); err != nil {
+			return err
+		}
+	}
 	return nil
 }

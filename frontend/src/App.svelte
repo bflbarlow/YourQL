@@ -7,6 +7,7 @@
   })
   EventsOn('processingComplete', () => {
     processingMessage = ''
+    processingConversationId = null
   })
 
   import { ListConversations, CreateConversation, GetConversationMessages, ProcessUserMessage, DeleteConversation, UpdateConversationTechDetails, ArchiveConversation, RestoreConversation, UpdateConversationSettings, ListLLMProviders, ListDataSources, UpdateConversationTitle, UpdateConversationMaxMessages, UpdateConversationMaxContextMessages, UpdateConversationPinned, DuplicateConversation, ClearConversationMessages, UpdateConversationContextDetails, UpdateConversationSummarize, UpdateConversationVizEnabled, ListSkills, GetConversationSkillIDs, SetConversationSkill } from '../wailsjs/go/main/App.js'
@@ -45,11 +46,18 @@
   let conversationMessages = $state([])
   let userMessage = $state('')
   let processingMessage = $state('')
+  let processingConversationId = $state(null)
   let messageError = $state(null)
   let showTechDetails = $state(false)
   let showContextDetails = $state(false)
   let selectedConversation = $state(null)
   let showGearPopover = $state(false)
+
+  // Reset the message input when switching discussions.
+  $effect(() => {
+    activeConversation?.id
+    userMessage = ''
+  })
 
   $effect(() => {
     activeView
@@ -128,8 +136,12 @@
     showContextDetails = conversation.context_details ?? false
 
     try {
-      conversationMessages = await GetConversationMessages(conversation.id)
+      const msgs = await GetConversationMessages(conversation.id)
+      console.log('[openConversation] conv.id=' + conversation.id + ' got ' + (msgs ? msgs.length : 'null/undefined') + ' messages. First msg role=' + (msgs && msgs.length > 0 ? msgs[0].role : 'N/A'))
+      conversationMessages = msgs
+      console.log('[openConversation] after assign, conversationMessages.length=' + conversationMessages.length)
     } catch (e) {
+      console.error('[openConversation] ERROR for conv.id=' + conversation.id + ': ' + e)
       messageError = e.toString()
     }
   }
@@ -167,6 +179,7 @@
   async function handleSendMessage() {
     if (!userMessage.trim() || !activeConversation) return
 
+    processingConversationId = activeConversation.id
     processingMessage = 'Thinking...'
     messageError = null
 
@@ -192,13 +205,17 @@
       conversationMessages = conversationMessages.filter(m => m.id !== tempId)
     } finally {
       processingMessage = ''
+      processingConversationId = null
+      // Refresh the conversation list so the active conversation floats to the top
+      loadData()
     }
   }
 
-  function backToConversations() {
+  async function backToConversations() {
     activeConversation = null
     conversationMessages = []
     activeView = 'discussions'
+    await loadData()
   }
 
   async function handleUpdateConversationSettings(llmProviderID, dataSourceID) {
@@ -216,9 +233,9 @@
   }
 
   async function handleArchiveConversation() {
-    if (!activeConversation) return
+    if (!selectedConversation) return
     try {
-      await ArchiveConversation(activeConversation.id)
+      await ArchiveConversation(selectedConversation.id)
       backToConversations()
       const convRes = await ListConversations()
       conversations = (convRes || []).filter(c => showArchived || c.status !== 'archived')
@@ -476,7 +493,7 @@
           {:else}
             <div class="conversations-list">
               {#each conversations as conv}
-                <div class="conversation-row">
+                <div class="conversation-row" class:archived={conv.status === 'archived'}>
                   <button class="conversation-item" onclick={() => openConversation(conv)} type="button">
                     <div class="conversation-title">{conv.title || 'Untitled'}</div>
                     <div class="conversation-meta">
@@ -509,7 +526,7 @@
         {conversationMessages}
         {llmProviders}
         {dataSources}
-        {processingMessage}
+        processingMessage={processingConversationId === activeConversation?.id ? processingMessage : ''}
         {messageError}
         userMessage={userMessage}
         showTechDetails={showTechDetails}
@@ -812,7 +829,7 @@
           </div>
 
           <div class="form-group">
-            <label>LLM Provider (optional)</label>
+            <label>LLM Provider</label>
             <select bind:value={selectedLLMProvider}>
               <option value={null}>Default</option>
               {#each llmProviders as provider}
@@ -822,7 +839,7 @@
           </div>
 
           <div class="form-group">
-            <label>Data Source (optional)</label>
+            <label>Data Source</label>
             <select bind:value={selectedDataSource}>
               <option value={null}>Default</option>
               {#each dataSources as conn}
@@ -1110,6 +1127,19 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-lg);
+  }
+
+  .conversation-row.archived {
+    border-left: 3px solid var(--color-accent);
+  }
+
+  .conversation-row.archived .conversation-item {
+    border-left: none;
+    border-radius: 0 var(--radius-md) var(--radius-md) 0;
+  }
+
+  .conversation-row.archived .conversation-title {
+    opacity: 0.65;
   }
 
   .conversation-row {

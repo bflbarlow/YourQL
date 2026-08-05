@@ -16,6 +16,7 @@ import (
 type OllamaClient struct {
 	baseURL    string
 	model      string
+	maxTokens  int
 	httpClient *http.Client
 }
 
@@ -23,6 +24,11 @@ type ollamaChatRequest struct {
 	Model    string              `json:"model"`
 	Messages []ollamaChatMessage `json:"messages"`
 	Stream   bool                `json:"stream,omitempty"`
+	Options  *ollamaOptions      `json:"options,omitempty"`
+}
+
+type ollamaOptions struct {
+	NumPredict int `json:"num_predict,omitempty"`
 }
 
 type ollamaChatMessage struct {
@@ -50,6 +56,7 @@ func NewOllamaClient(provider *models.LLMProvider) (LLMClient, error) {
 	return &OllamaClient{
 		baseURL:    baseURL,
 		model:      model,
+		maxTokens:  effectiveMaxTokens(provider),
 		httpClient: &http.Client{Timeout: 180 * time.Second},
 	}, nil
 }
@@ -66,6 +73,9 @@ func (c *OllamaClient) ChatCompletionWithPayload(ctx context.Context, messages [
 	}
 
 	reqBody := ollamaChatRequest{Model: c.model, Messages: ollamaMessages, Stream: false}
+	if c.maxTokens > 0 {
+		reqBody.Options = &ollamaOptions{NumPredict: c.maxTokens}
+	}
 	jsonData, err := json.Marshal(reqBody)
 	if err != nil {
 		return "", "", "", fmt.Errorf("failed to marshal request: %w", err)

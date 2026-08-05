@@ -26,8 +26,8 @@ export function CreateDataSource(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8,
   return window['go']['main']['App']['CreateDataSource'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12);
 }
 
-export function CreateLLMProvider(arg1, arg2, arg3, arg4, arg5) {
-  return window['go']['main']['App']['CreateLLMProvider'](arg1, arg2, arg3, arg4, arg5);
+export function CreateLLMProvider(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['CreateLLMProvider'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
 export function CreateSkill(arg1, arg2) {
@@ -48,6 +48,10 @@ export function DeleteLLMProvider(arg1) {
 
 export function DeleteSkill(arg1) {
   return window['go']['main']['App']['DeleteSkill'](arg1);
+}
+
+export function DetectModelMaxTokens(arg1) {
+  return window['go']['main']['App']['DetectModelMaxTokens'](arg1);
 }
 
 export function DuplicateConversation(arg1) {
@@ -198,8 +202,8 @@ export function UpdateGeneralSettings(arg1) {
   return window['go']['main']['App']['UpdateGeneralSettings'](arg1);
 }
 
-export function UpdateLLMProvider(arg1, arg2, arg3, arg4, arg5) {
-  return window['go']['main']['App']['UpdateLLMProvider'](arg1, arg2, arg3, arg4, arg5);
+export function UpdateLLMProvider(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['UpdateLLMProvider'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
 export function UpdateSkill(arg1, arg2, arg3) {

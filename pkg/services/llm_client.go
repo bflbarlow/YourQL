@@ -48,3 +48,25 @@ func toOpenAIMessages(messages []ChatMessage) []map[string]string {
 func removeTrailingSlash(s string) string {
 	return strings.TrimSuffix(s, "/")
 }
+
+// effectiveMaxTokens returns the max tokens to use for a provider, clamped
+// by the detected model max and context window if available.
+func effectiveMaxTokens(provider *models.LLMProvider) int {
+	configured := 2000
+	if provider.MaxTokens != nil && *provider.MaxTokens > 0 {
+		configured = *provider.MaxTokens
+	}
+	// Clamp to context window if known
+	if provider.ContextWindow != nil && *provider.ContextWindow > 0 {
+		if configured > *provider.ContextWindow {
+			configured = *provider.ContextWindow
+		}
+	}
+	// Also clamp to detected model max if available
+	if provider.ModelMaxTokens != nil && *provider.ModelMaxTokens > 0 {
+		if configured > *provider.ModelMaxTokens {
+			configured = *provider.ModelMaxTokens
+		}
+	}
+	return configured
+}

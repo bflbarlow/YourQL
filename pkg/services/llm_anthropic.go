@@ -14,6 +14,7 @@ import (
 
 // AnthropicClient implements LLMClient for Anthropic's Claude API.
 type AnthropicClient struct {
+	maxTokens  int
 	baseURL    string
 	apiKey     string
 	model      string
@@ -99,7 +100,7 @@ func (c *AnthropicClient) ChatCompletion(ctx context.Context, messages []ChatMes
 	reqBody := anthropicChatRequest{
 		Model:       c.model,
 		Messages:    filteredMessages,
-		MaxTokens:   2000,
+		MaxTokens:   c.maxTokens,
 		Temperature: floatPtr(0.1),
 	}
 	if systemContent != "" {
@@ -197,7 +198,7 @@ func (c *AnthropicClient) ChatCompletionWithPayload(ctx context.Context, message
 	reqBody := anthropicChatRequest{
 		Model:       c.model,
 		Messages:    filteredMessages,
-		MaxTokens:   2000,
+		MaxTokens:   c.maxTokens,
 		Temperature: floatPtr(0.1),
 	}
 	if systemContent != "" {
