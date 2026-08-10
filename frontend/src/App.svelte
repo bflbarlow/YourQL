@@ -9,8 +9,16 @@
     processingMessage = ''
     processingConversationId = null
   })
+  EventsOn('processingCancelled', async (data) => {
+    processingMessage = ''
+    processingConversationId = null
+    // Refresh messages to show the "Cancelled" system message.
+    if (data.conversation_id === activeConversation?.id) {
+      conversationMessages = await GetConversationMessages(activeConversation.id)
+    }
+  })
 
-  import { ListConversations, CreateConversation, GetConversationMessages, ProcessUserMessage, DeleteConversation, UpdateConversationTechDetails, ArchiveConversation, RestoreConversation, UpdateConversationSettings, ListLLMProviders, ListDataSources, UpdateConversationTitle, UpdateConversationMaxMessages, UpdateConversationMaxContextMessages, UpdateConversationPinned, DuplicateConversation, ClearConversationMessages, UpdateConversationContextDetails, UpdateConversationSummarize, UpdateConversationVizEnabled, ListSkills, GetConversationSkillIDs, SetConversationSkill } from '../wailsjs/go/main/App.js'
+  import { ListConversations, CreateConversation, GetConversationMessages, ProcessUserMessage, CancelProcessing, DeleteConversation, UpdateConversationTechDetails, ArchiveConversation, RestoreConversation, UpdateConversationSettings, ListLLMProviders, ListDataSources, UpdateConversationTitle, UpdateConversationMaxMessages, UpdateConversationMaxContextMessages, UpdateConversationPinned, DuplicateConversation, ClearConversationMessages, UpdateConversationContextDetails, UpdateConversationSummarize, UpdateConversationVizEnabled, UpdateConversationStreamingEnabled, ListSkills, GetConversationSkillIDs, SetConversationSkill, GetDiscussionDefaults, GetAppVersion, CheckForUpdate, DownloadUpdate, PerformUpgradeRestart } from '../wailsjs/go/main/App.js'
   import { MessageSquare, Settings, X, Copy, Trash2, Pin, ChevronRight, ChevronLeft, Plus } from 'lucide-svelte'
   import SettingsView from './SettingsView.svelte'
   import ConversationView from './ConversationView.svelte'
@@ -23,7 +31,63 @@
   let conversationSkillIDs = $state([])
   let sidebarCollapsed = $state(false)
 
-  const appVersion = '0.3.0'
+  // --- Version & auto-update state ---
+  let appVersion = $state('loading...')
+  let updateInfo = $state(null)
+  let updateChecking = $state(false)
+  let updateDownloading = $state(false)
+  let updateError = $state(null)
+  let updateReady = $state(false)
+
+  // Fetch the running version from the backend (injected at build time).
+  async function loadAppVersion() {
+    try {
+      appVersion = await GetAppVersion()
+    } catch {
+      appVersion = 'unknown'
+    }
+  }
+  loadAppVersion()
+
+  // --- Auto-update helpers ---
+  async function handleCheckForUpdate() {
+    updateChecking = true
+    updateError = null
+    updateReady = false
+    updateInfo = null
+    try {
+      updateInfo = await CheckForUpdate()
+    } catch (e) {
+      updateError = e || 'Unable to reach update server'
+    } finally {
+      updateChecking = false
+    }
+  }
+
+  async function handleDownloadUpdate() {
+    if (!updateInfo?.download_url || !updateInfo?.asset_checksum) {
+      updateError = 'No verified download available'
+      return
+    }
+    updateDownloading = true
+    updateError = null
+    try {
+      await DownloadUpdate(updateInfo.download_url, updateInfo.asset_checksum)
+      updateReady = true
+    } catch (e) {
+      updateError = e || 'Download failed'
+    } finally {
+      updateDownloading = false
+    }
+  }
+
+  async function handlePerformUpgradeRestart() {
+    try {
+      await PerformUpgradeRestart()
+    } catch {
+      // The app exits before this resolves; ignore.
+    }
+  }
 
   let llmNameByID = $derived(
     Object.fromEntries(llmProviders.map(p => [p.id, p.name]))
@@ -39,6 +103,22 @@
   let newDiscussionTitle = $state('')
   let selectedLLMProvider = $state(null)
   let selectedDataSource = $state(null)
+
+  async function openNewDiscussionModal() {
+    // Pre-fill with user's defaults
+    try {
+      const defaults = await GetDiscussionDefaults()
+      if (defaults && defaults.llm_provider_id) {
+        selectedLLMProvider = llmProviders.find(p => p.id === defaults.llm_provider_id) || null
+      }
+      if (defaults && defaults.data_source_id) {
+        selectedDataSource = dataSources.find(ds => ds.id === defaults.data_source_id) || null
+      }
+    } catch (e) {
+      // Ignore — defaults are a convenience, not a requirement
+    }
+    showNewDiscussion = true
+  }
   let creating = $state(false)
   let createError = $state(null)
 
@@ -136,12 +216,8 @@
     showContextDetails = conversation.context_details ?? false
 
     try {
-      const msgs = await GetConversationMessages(conversation.id)
-      console.log('[openConversation] conv.id=' + conversation.id + ' got ' + (msgs ? msgs.length : 'null/undefined') + ' messages. First msg role=' + (msgs && msgs.length > 0 ? msgs[0].role : 'N/A'))
-      conversationMessages = msgs
-      console.log('[openConversation] after assign, conversationMessages.length=' + conversationMessages.length)
+      conversationMessages = await GetConversationMessages(conversation.id)
     } catch (e) {
-      console.error('[openConversation] ERROR for conv.id=' + conversation.id + ': ' + e)
       messageError = e.toString()
     }
   }
@@ -177,7 +253,7 @@
   }
 
   async function handleSendMessage() {
-    if (!userMessage.trim() || !activeConversation) return
+    if (!userMessage.trim() || !activeConversation || processingConversationId) return
 
     processingConversationId = activeConversation.id
     processingMessage = 'Thinking...'
@@ -343,6 +419,20 @@
     }
   }
 
+  async function handleToggleStreamingEnabled(id, enabled) {
+    try {
+      await UpdateConversationStreamingEnabled(id, enabled)
+      if (activeConversation && activeConversation.id === id) {
+        activeConversation.streaming_enabled = enabled
+      }
+      if (selectedConversation && selectedConversation.id === id) {
+        selectedConversation.streaming_enabled = enabled
+      }
+    } catch (e) {
+      console.error('Failed to toggle streaming:', e)
+    }
+  }
+
   async function handleToggleConversationSkill(conversationId, skillId, enabled) {
     try {
       await SetConversationSkill(conversationId, skillId, enabled)
@@ -451,14 +541,14 @@
       {#if sidebarCollapsed}
         <button
           class="btn-new-discussion btn-new-discussion-icon"
-          onclick={() => showNewDiscussion = true}
+          onclick={openNewDiscussionModal}
           type="button"
           title="New Discussion"
         >
           <Plus size={16} />
         </button>
       {:else}
-        <button class="btn-new-discussion" onclick={() => showNewDiscussion = true} type="button">
+        <button class="btn-new-discussion" onclick={openNewDiscussionModal} type="button">
           <Plus size={14} /> New Discussion
         </button>
       {/if}
@@ -481,7 +571,7 @@
               <input type="checkbox" bind:checked={showArchived} onchange={() => loadData()} />
               Show archived
             </label>
-            <button class="btn btn-primary" onclick={() => showNewDiscussion = true}>+ New Discussion</button>
+            <button class="btn btn-primary" onclick={openNewDiscussionModal}>+ New Discussion</button>
           </div>
         </div>
         <div class="view-content">
@@ -553,6 +643,47 @@
           <p class="version">Version {appVersion}</p>
           <p class="description">Talk to your database in plain English.</p>
 
+          <!-- Auto-update controls -->
+          <div class="update-section">
+            {#if appVersion === 'dev' || appVersion === 'loading...'}
+              {#if appVersion === 'dev'}
+                <span class="update-dev-note">Development build — updates not available</span>
+              {:else}
+                <span class="update-dev-note">Checking version…</span>
+              {/if}
+            {:else if !updateInfo && !updateChecking && !updateError}
+              <button class="update-btn" onclick={handleCheckForUpdate}>Check for Updates</button>
+            {:else if updateChecking}
+              <span class="update-status">Checking for updates…</span>
+            {:else if updateError}
+              <span class="update-error">{updateError}</span>
+              <button class="update-btn update-btn-retry" onclick={handleCheckForUpdate}>Retry</button>
+            {:else if updateInfo && !updateInfo.update_available}
+              <span class="update-status update-uptodate">You're on the latest version</span>
+              <span class="update-checked">(checked just now)</span>
+            {:else if updateInfo && updateInfo.update_available && !updateReady}
+              <div class="update-available">
+                <p><strong>Update available:</strong> {updateInfo.latest_version}</p>
+                {#if updateInfo.release_notes}
+                  <details class="update-notes">
+                    <summary>Release notes</summary>
+                    <pre>{updateInfo.release_notes}</pre>
+                  </details>
+                {/if}
+                {#if updateDownloading}
+                  <span class="update-status">Downloading…</span>
+                {:else}
+                  <button class="update-btn" onclick={handleDownloadUpdate}>Download &amp; Install</button>
+                {/if}
+              </div>
+            {:else if updateReady}
+              <div class="update-ready">
+                <span class="update-status update-uptodate">Update downloaded and verified</span>
+                <button class="update-btn" onclick={handlePerformUpgradeRestart}>Restart Now</button>
+              </div>
+            {/if}
+          </div>
+
           <div class="about-disclaimer">
             <h3>Disclaimer</h3>
             <p>The models you configure will have access to the databases you configure. Databases with sensitive data should be used responsibly. If you are in doubt about the sensitivity of the data you have access to in your database, then do not use this application.</p>
@@ -575,6 +706,7 @@
               <li>Plain-English result summaries so you don't have to decipher tables of numbers</li>
               <li>Custom system prompts, business rules, and table/column descriptions per database connection</li>
               <li>Reusable Skills — Markdown prompt fragments you can activate per conversation for domain knowledge</li>
+              <li>Advanced agent loop settings — customize the exact prompts, tool descriptions, and instructions your AI model receives</li>
               <li>Pin, archive, duplicate, rename, and clear discussions — full conversation management</li>
               <li>No telemetry, no analytics, no data collection — your credentials and history stay on your machine</li>
             </ul>
@@ -694,24 +826,25 @@
         <label>Messages in LLM Context</label>
         <div class="message-limit-group">
           <button
-            class="msg-limit-btn {selectedConversation.max_context_messages === 0 ? 'active' : ''}"
-            onclick={() => handleSetMaxContextMessages(0)}
-          >All</button>
+            class="msg-limit-btn {selectedConversation.max_context_messages === 15 ? 'active' : ''}"
+            onclick={() => handleSetMaxContextMessages(15)}
+          >Max 15</button>
           <input
             type="number"
             value={selectedConversation.max_context_messages || ''}
-            placeholder="e.g. 20"
+            placeholder="e.g. 5"
             min="1"
-            max="500"
+            max="15"
             oninput={(e) => {
               const val = parseInt(e.target.value)
-              if (val >= 1 && val <= 500) {
+              if (val >= 1 && val <= 15) {
                 selectedConversation.max_context_messages = val
               }
             }}
             onblur={() => handleSetMaxContextMessages(selectedConversation.max_context_messages || 0)}
           />
         </div>
+        <div style="color: var(--text-tertiary); font-size: var(--font-xs); margin-top: var(--space-2xs);">Default: 5 messages. Hard cap: 15. Large context windows can cause empty responses.</div>
       </div>
 
       <!-- Pin -->
@@ -757,6 +890,17 @@
         </label>
         <div style="color: var(--text-tertiary); font-size: var(--font-xs); margin-top: var(--space-2xs);">
           LLM generates charts (bar, line, pie, scatter) when appropriate
+        </div>
+      </div>
+
+      <!-- Streaming -->
+      <div class="gear-popover-section">
+        <label>
+          <input type="checkbox" checked={selectedConversation.streaming_enabled === true} onchange={(e) => handleToggleStreamingEnabled(selectedConversation.id, e.target.checked)} />
+          Stream LLM output
+        </label>
+        <div style="color: var(--text-tertiary); font-size: var(--font-xs); margin-top: var(--space-2xs);">
+          Show model output character-by-character in real time
         </div>
       </div>
 
@@ -1691,6 +1835,112 @@
     color: var(--text-secondary);
     margin-bottom: 2.5rem;
     line-height: 1.6;
+  }
+
+  /* Update section */
+  .update-section {
+    margin-bottom: 2rem;
+    padding: var(--space-4xl) var(--space-5xl);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+  }
+
+  .update-btn {
+    padding: 0.5rem 1rem;
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: #ffffff;
+    background: var(--color-primary);
+    border: none;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+
+  .update-btn:hover {
+    background: var(--color-primary-hover);
+  }
+
+  .update-btn-retry {
+    margin-left: 0.75rem;
+    padding: 0.35rem 0.75rem;
+    font-size: 0.8rem;
+  }
+
+  .update-status {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+  }
+
+  .update-uptodate {
+    color: var(--color-success);
+  }
+
+  .update-dev-note {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    font-style: italic;
+  }
+
+  .update-error {
+    font-size: 0.875rem;
+    color: var(--color-danger);
+  }
+
+  .update-checked {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    margin-left: 0.5rem;
+    font-style: italic;
+  }
+
+  .update-available {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .update-available p {
+    margin: 0;
+    font-size: 0.95rem;
+    color: var(--text-primary);
+  }
+
+  .update-available p strong {
+    color: var(--color-warning, #f0a020);
+  }
+
+  .update-ready {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+
+  .update-notes {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+  }
+
+  .update-notes summary {
+    cursor: pointer;
+    color: var(--color-primary);
+    font-weight: 500;
+  }
+
+  .update-notes pre {
+    margin-top: 0.5rem;
+    padding: 0.75rem;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    font-size: 0.8rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    max-height: 12rem;
+    overflow-y: auto;
+    color: var(--text-primary);
   }
 
   .about-section {

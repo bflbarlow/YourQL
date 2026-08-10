@@ -26,24 +26,79 @@ func CreateConversation(title string, llmProviderID, dataSourceID *uint) (*model
 	}
 
 	return &models.Conversation{
-		ID:             uint(id),
-		Title:          &title,
-		LLMProviderID:  llmProviderID,
+		ID:            uint(id),
+		Title:         &title,
+		LLMProviderID: llmProviderID,
 		DataSourceID:  dataSourceID,
-		Status:         status,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		Status:        status,
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}, nil
+}
+
+// CreateConversationWithDefaults creates a conversation and applies the
+// user's configured discussion defaults (LLM provider, data source, max
+// messages, toggles, etc.) before returning. Defaults are a convenience —
+// any field without a configured default keeps the system default.
+func CreateConversationWithDefaults(title string, llmProviderID, dataSourceID *uint) (*models.Conversation, error) {
+	defaults, _ := GetDiscussionDefaults()
+
+	if llmProviderID == nil && defaults != nil {
+		llmProviderID = defaults.LLMProviderID
+	}
+	if dataSourceID == nil && defaults != nil {
+		dataSourceID = defaults.DataSourceID
+	}
+
+	conv, err := CreateConversation(title, llmProviderID, dataSourceID)
+	if err != nil {
+		return nil, err
+	}
+
+	if defaults != nil {
+		if defaults.MaxMessages != nil {
+			_ = UpdateConversationMaxMessages(conv.ID, *defaults.MaxMessages)
+		}
+		if defaults.MaxContextMessages != nil {
+			_ = UpdateConversationMaxContextMessages(conv.ID, *defaults.MaxContextMessages)
+		}
+		if defaults.Summarize != nil {
+			_ = UpdateConversationSummarize(conv.ID, *defaults.Summarize)
+		}
+		if defaults.VizEnabled != nil {
+			_ = UpdateConversationVizEnabled(conv.ID, *defaults.VizEnabled)
+		}
+		if defaults.TechDetails != nil {
+			_ = UpdateConversationTechDetails(conv.ID, *defaults.TechDetails)
+		}
+		if defaults.ContextDetails != nil {
+			_ = UpdateConversationContextDetails(conv.ID, *defaults.ContextDetails)
+		}
+		if defaults.StreamingEnabled != nil {
+			_ = UpdateConversationStreamingEnabled(conv.ID, *defaults.StreamingEnabled)
+		}
+	}
+
+	// Apply system floor for MaxContextMessages when nothing was configured.
+	// 0 = "no limit" is dangerous — it sends the entire conversation history
+	// to the LLM, which blows context windows and causes empty/hallucinated
+	// responses (see ANSWER_CLARIFICATION_ISSUE.md). The default of 5 keeps
+	// enough context for follow-up questions without overwhelming the model.
+	if conv.MaxContextMessages == 0 {
+		_ = UpdateConversationMaxContextMessages(conv.ID, 5)
+	}
+
+	return GetConversationByID(conv.ID)
 }
 
 func GetConversationByID(id uint) (*models.Conversation, error) {
 	var c models.Conversation
 	err := models.DB.QueryRow(
-		"SELECT id, title, llm_provider_id, data_source_id, status, max_messages, max_context_messages, pinned, created_at, updated_at, tech_details, context_details, summarize, viz_enabled FROM conversations WHERE id = ? LIMIT 1",
+		"SELECT id, title, llm_provider_id, data_source_id, status, max_messages, max_context_messages, pinned, created_at, updated_at, tech_details, context_details, summarize, viz_enabled, streaming_enabled FROM conversations WHERE id = ? LIMIT 1",
 		id,
 	).Scan(
 		&c.ID, &c.Title, &c.LLMProviderID, &c.DataSourceID,
-		&c.Status, &c.MaxMessages, &c.MaxContextMessages, &c.Pinned, &c.CreatedAt, &c.UpdatedAt, &c.TechDetails, &c.ContextDetails, &c.Summarize, &c.VizEnabled,
+		&c.Status, &c.MaxMessages, &c.MaxContextMessages, &c.Pinned, &c.CreatedAt, &c.UpdatedAt, &c.TechDetails, &c.ContextDetails, &c.Summarize, &c.VizEnabled, &c.StreamingEnabled,
 	)
 	if err == sql.ErrNoRows {
 		return nil, errors.New("conversation not found")
@@ -56,7 +111,7 @@ func GetConversationByID(id uint) (*models.Conversation, error) {
 
 func ListConversationsByUser() ([]*models.Conversation, error) {
 	rows, err := models.DB.Query(
-		"SELECT id, title, llm_provider_id, data_source_id, status, max_messages, max_context_messages, pinned, created_at, updated_at, tech_details, context_details, summarize, viz_enabled FROM conversations WHERE status != 'deleted' ORDER BY pinned DESC, updated_at DESC",
+		"SELECT id, title, llm_provider_id, data_source_id, status, max_messages, max_context_messages, pinned, created_at, updated_at, tech_details, context_details, summarize, viz_enabled, streaming_enabled FROM conversations WHERE status != 'deleted' ORDER BY pinned DESC, updated_at DESC",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list conversations: %w", err)
@@ -68,7 +123,7 @@ func ListConversationsByUser() ([]*models.Conversation, error) {
 		var c models.Conversation
 		err := rows.Scan(
 			&c.ID, &c.Title, &c.LLMProviderID, &c.DataSourceID,
-			&c.Status, &c.MaxMessages, &c.MaxContextMessages, &c.Pinned, &c.CreatedAt, &c.UpdatedAt, &c.TechDetails, &c.ContextDetails, &c.Summarize, &c.VizEnabled,
+			&c.Status, &c.MaxMessages, &c.MaxContextMessages, &c.Pinned, &c.CreatedAt, &c.UpdatedAt, &c.TechDetails, &c.ContextDetails, &c.Summarize, &c.VizEnabled, &c.StreamingEnabled,
 		)
 		if err != nil {
 			continue
@@ -249,6 +304,18 @@ func UpdateConversationVizEnabled(id uint, vizEnabled bool) error {
 	return nil
 }
 
+// UpdateConversationStreamingEnabled toggles streaming for a conversation.
+func UpdateConversationStreamingEnabled(id uint, enabled bool) error {
+	_, err := models.DB.Exec(
+		"UPDATE conversations SET streaming_enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+		enabled, id,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update conversation streaming_enabled: %w", err)
+	}
+	return nil
+}
+
 func DuplicateConversation(id uint) (*models.Conversation, error) {
 	c, err := GetConversationByID(id)
 	if err != nil {
@@ -271,7 +338,7 @@ func DuplicateConversation(id uint) (*models.Conversation, error) {
 
 	// Copy messages
 	rows, err := models.DB.Query(
-		"SELECT id, role, content, llm_content, sql_results, metadata, created_at FROM conversation_messages WHERE conversation_id = ? ORDER BY created_at ASC",
+		"SELECT id, role, content, llm_content, sql_results, metadata, tool_transcript, created_at FROM conversation_messages WHERE conversation_id = ? ORDER BY created_at ASC",
 		id,
 	)
 	if err != nil {
@@ -281,8 +348,8 @@ func DuplicateConversation(id uint) (*models.Conversation, error) {
 
 	for rows.Next() {
 		var msg models.ConversationMessage
-		var llmNull, sqlNull, metaNull sql.NullString
-		err := rows.Scan(&msg.ID, &msg.Role, &msg.Content, &llmNull, &sqlNull, &metaNull, &msg.CreatedAt)
+		var llmNull, sqlNull, metaNull, transcriptNull sql.NullString
+		err := rows.Scan(&msg.ID, &msg.Role, &msg.Content, &llmNull, &sqlNull, &metaNull, &transcriptNull, &msg.CreatedAt)
 		if err != nil {
 			continue
 		}
@@ -301,9 +368,14 @@ func DuplicateConversation(id uint) (*models.Conversation, error) {
 			s := metaNull.String
 			metaPtr = &s
 		}
+		var transcriptPtr *string
+		if transcriptNull.Valid {
+			s := transcriptNull.String
+			transcriptPtr = &s
+		}
 		_, err = models.DB.Exec(
-			"INSERT INTO conversation_messages (conversation_id, role, content, llm_content, sql_results, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-			newID, msg.Role, msg.Content, llmPtr, sqlPtr, metaPtr, msg.CreatedAt,
+			"INSERT INTO conversation_messages (conversation_id, role, content, llm_content, sql_results, metadata, tool_transcript, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+			newID, msg.Role, msg.Content, llmPtr, sqlPtr, metaPtr, transcriptPtr, msg.CreatedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to copy message: %w", err)
@@ -374,7 +446,7 @@ func CreateConversationMessage(conversationID uint, role, content string, llmCon
 
 func GetConversationMessages(conversationID uint) ([]*models.ConversationMessage, error) {
 	rows, err := models.DB.Query(
-		"SELECT id, conversation_id, role, content, llm_content, sql_results, metadata, created_at FROM conversation_messages WHERE conversation_id = ? ORDER BY created_at ASC",
+		"SELECT id, conversation_id, role, content, llm_content, sql_results, metadata, tool_transcript, created_at FROM conversation_messages WHERE conversation_id = ? ORDER BY created_at ASC",
 		conversationID,
 	)
 	if err != nil {
@@ -385,7 +457,7 @@ func GetConversationMessages(conversationID uint) ([]*models.ConversationMessage
 	messages := make([]*models.ConversationMessage, 0)
 	for rows.Next() {
 		var m models.ConversationMessage
-		err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.LLMContent, &m.SQLResults, &m.Metadata, &m.CreatedAt)
+		err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.LLMContent, &m.SQLResults, &m.Metadata, &m.ToolTranscript, &m.CreatedAt)
 		if err != nil {
 			continue
 		}

@@ -3,102 +3,28 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"html"
 	"log"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
 	"YourQL/pkg/models"
 )
 
-// LLMResponse defines the structured response expected from the LLM.
+// LLMResponse is a lightweight carrier used by the SQL-error-handling path
+// (renderSQLError, classifyErrorCategory, buildErrorMetadata) and by
+// handleClarification. It is not a wire-protocol type — tool calling never
+// parses LLM output into this struct; it exists only to give those shared
+// helpers a stable, minimal way to carry a SQL query / clarification text
+// alongside an error.
 type LLMResponse struct {
-	Action                string `json:"action"` // "sql_query", "clarification", "sql_exploration", or "answer"
+	Action                string `json:"action,omitempty"`
 	SQLQuery              string `json:"sql_query,omitempty"`
 	ClarificationQuestion string `json:"clarification_question,omitempty"`
-	Answer                string `json:"answer,omitempty"`
 	Explanation           string `json:"explanation,omitempty"`
-	VizConfig             string `json:"viz_config,omitempty"` // raw JSON for Chart.js (contains $column refs)
-}
-
-// looksLikeSQL checks if a string appears to be a SQL query.
-func looksLikeSQL(s string) bool {
-	trimmed := strings.TrimSpace(s)
-	if trimmed == "" {
-		return false
-	}
-	if (strings.HasPrefix(trimmed, "'") && strings.HasSuffix(trimmed, "'")) ||
-		(strings.HasPrefix(trimmed, "\"") && strings.HasSuffix(trimmed, "\"")) {
-		trimmed = trimmed[1 : len(trimmed)-1]
-		trimmed = strings.TrimSpace(trimmed)
-	}
-	if trimmed == "" {
-		return false
-	}
-	return regexp.MustCompile(`(?i)^\s*(SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|DESCRIBE|SHOW|EXPLAIN|TRUNCATE|WITH|UNION|INTERSECT|EXCEPT|\()`).MatchString(trimmed)
-}
-
-// extractJSONFromResponse extracts JSON from various LLM output formats.
-func extractJSONFromResponse(response string) string {
-	response = strings.TrimSpace(response)
-
-	// Handle markdown code blocks — but ONLY when the response is wrapped
-	// in a code fence (not valid JSON). If the response starts with { or [,
-	// it's already JSON — skip code block extraction to avoid accidentally
-	// capturing code fences inside the JSON's string values (e.g. fenced
-	// code blocks in the answer field's markdown content).
-	if !strings.HasPrefix(response, "{") && !strings.HasPrefix(response, "[") {
-		startIdx := strings.Index(response, "```")
-		if startIdx != -1 {
-		remaining := response[startIdx+3:]
-		remaining = strings.TrimLeft(remaining, " \t\n\r")
-		langEnd := strings.Index(remaining, "\n")
-		if langEnd != -1 {
-			remaining = remaining[langEnd+1:]
-		}
-		endIdx := strings.Index(remaining, "```")
-		if endIdx != -1 {
-			response = remaining[:endIdx]
-		} else {
-			response = remaining
-		}
-		}
-	}
-
-	// Handle Qwen-style thinking/response prefixes
-	lower := strings.ToLower(response)
-	respMarker := "\nresponse\n"
-	if idx := strings.Index(lower, respMarker); idx != -1 {
-		candidate := strings.TrimSpace(response[idx+len(respMarker):])
-		if strings.HasPrefix(candidate, "{") || strings.HasPrefix(candidate, "[") {
-			response = candidate
-		}
-	}
-
-	// Strip </think> and similar markers
-	reThink := regexp.MustCompile(`(?i)</think>\s*`)
-	response = reThink.ReplaceAllString(response, "")
-
-	// Find the first balanced JSON object with a brace counter
-	if !strings.HasPrefix(response, "{") && !strings.HasPrefix(response, "[") {
-		braceIdx := strings.Index(response, "{")
-		bracketIdx := strings.Index(response, "[")
-		jsonStart := braceIdx
-		if jsonStart == -1 || (bracketIdx != -1 && bracketIdx < jsonStart) {
-			jsonStart = bracketIdx
-		}
-		if jsonStart > 0 {
-			prefix := response[:jsonStart]
-			if strings.Contains(strings.ToLower(prefix), "thinking") || len(prefix) > 100 {
-				response = response[jsonStart:]
-			}
-		}
-	}
-
-	// Return verbatim – json.Unmarshal handles escapes natively
-	return strings.TrimSpace(response)
 }
 
 // truncateString truncates a string to maxLen with ellipsis.
@@ -109,8 +35,10 @@ func truncateString(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
-// ProcessUserMessage processes a user message in a conversation.
-func ProcessUserMessage(conversationID uint, userMessage string, onPhase func(string)) (err error) {
+// ProcessUserMessageWithContext processes a user message with an externally
+// cancellable context. When the context is cancelled, the pipeline stops at
+// the next check point and returns context.Canceled.
+func ProcessUserMessageWithContext(ctx context.Context, conversationID uint, userMessage string, onPhase func(string), onStream func(StreamEvent)) (err error) {
 	log.Printf("[DiscussionEngine] Processing conversation %d, message: %s", conversationID, userMessage)
 
 	// Step 1: Get conversation details
@@ -130,15 +58,17 @@ func ProcessUserMessage(conversationID uint, userMessage string, onPhase func(st
 		return fmt.Errorf("failed to save user message: %w", err)
 	}
 
-	// Defer: save an assistant error message if we fail, but guard against duplicates.
-	// recover() catches panics (e.g. parser bugs) so they don't leave the spinner stuck.
+	// Defer: save an assistant error message if we fail, but guard against
+	// duplicates. recover() catches panics (e.g. parser bugs) so they don't
+	// leave the spinner stuck. User-initiated cancellation (context.Canceled)
+	// is excluded — the app layer handles that with a clean system message.
 	assistantMessageSaved := false
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("internal error: %v", r)
 			log.Printf("[DiscussionEngine] Panic recovered: %v", r)
 		}
-		if err != nil && !assistantMessageSaved {
+		if err != nil && !assistantMessageSaved && !errors.Is(err, context.Canceled) {
 			friendlyMsg := formatUserError(err)
 			_, _ = CreateConversationMessage(conversationID, "assistant", friendlyMsg, nil, nil, buildErrorMetadata(err.Error()))
 		}
@@ -200,9 +130,7 @@ func ProcessUserMessage(conversationID uint, userMessage string, onPhase func(st
 
 	// Step 8: Parse exploration config
 	var maxRounds int = 2
-	var safetyMode ExplorationSafetyMode = ExplorationStrict
-	var explorationAllowed bool = true
-	var maxActionRetries int = 1
+	var safetyMode ExplorationSafetyMode = ExplorationRelaxed
 	var maxFinalRetries int = 2
 	if dbConnection != nil {
 		config, cfgErr := dbConnection.ParseConfig()
@@ -211,27 +139,31 @@ func ProcessUserMessage(conversationID uint, userMessage string, onPhase func(st
 				maxRounds = config.MaxExplorationRounds
 			}
 			safetyMode = ParseExplorationSafety(config.ExplorationSafety)
-			explorationAllowed = config.ExplorationAllowed
-			if config.MaxActionRetries >= 0 {
-				maxActionRetries = config.MaxActionRetries
-			}
 			if config.MaxFinalQueryRetries > 0 {
 				maxFinalRetries = config.MaxFinalQueryRetries
 			}
 		}
 	}
 
-	// Step 9: Limit conversation history sent to the LLM
-	if conversation.MaxContextMessages > 0 && len(history) > conversation.MaxContextMessages {
-		history = history[len(history)-conversation.MaxContextMessages:]
+	// Step 9: Limit conversation history sent to the LLM.
+	// A hard max of 15 prevents context-window exhaustion regardless of
+	// what the user configured. Beyond ~15 messages, prior query results
+	// balloon the prompt and cause empty/incomplete LLM responses.
+	const maxContextHardCap = 15
+	limit := conversation.MaxContextMessages
+	if limit <= 0 || limit > maxContextHardCap {
+		limit = maxContextHardCap
+	}
+	if len(history) > limit {
+		history = history[len(history)-limit:]
 	}
 
-	// Step 10: Build LLM messages
+	// Step 10: Build tool-calling LLM messages
 	skillsContent, _ := GetEnabledSkillsContent(conversation.ID)
-	llmMessages := buildLlmMessages(userMessage, history, schema, dbConnection, conversation.VizEnabled, skillsContent)
-	log.Printf("[DiscussionEngine] Message count for LLM: %d", len(llmMessages))
+	toolMessages := buildToolLlmMessages(userMessage, history, schema, dbConnection, conversation.VizEnabled, skillsContent)
+	log.Printf("[DiscussionEngine] Message count for LLM: %d", len(toolMessages))
 
-	// Step 11: Call LLM
+	// Step 11: Call LLM via the agentic loop
 	client, err := NewLLMClient(llmProvider)
 	if err != nil {
 		_ = UpdateQueryStatus(query.ID, "error", nil, nil, stringPtr(formatUserError(err)), nil, nil, nil)
@@ -239,462 +171,36 @@ func ProcessUserMessage(conversationID uint, userMessage string, onPhase func(st
 		return fmt.Errorf("failed to create LLM client: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 180*time.Second)
 	defer cancel()
 
-	var explorationResults []ExplorationResult
-	var llmResp LLMResponse
-	var actionRetries int
-
-	// Phase: LLM processing
 	if onPhase != nil {
 		onPhase("Thinking with LLM...")
 	}
 
-	// Exploration loop
-	for round := 0; round < maxRounds; round++ {
-		if ctx.Err() != nil {
-			return fmt.Errorf("exploration cancelled: %w", ctx.Err())
+	// Only pass the stream callback when the conversation has streaming
+	// enabled. When nil, the agentic loop falls back to the blocking path.
+	var streamCallback func(StreamEvent)
+	if conversation.StreamingEnabled {
+		streamCallback = onStream
+	}
+	if err := runAgenticLoop(ctx, query, client, toolMessages, dbConnection, conversation, maxRounds, maxFinalRetries, safetyMode, userMessage, skillsContent, streamCallback); err != nil {
+		if errors.Is(err, context.Canceled) {
+			_ = UpdateQueryStatus(query.ID, "cancelled", nil, nil, stringPtr("cancelled by user"), nil, nil, nil)
+			_ = UpdateQueryErrorCategory(query.ID, "user_cancelled")
+			// Save a system message so the chat shows the cancelled indicator.
+			_, _ = CreateConversationMessage(conversationID, "system", "⏹ Cancelled", nil, nil, nil)
 		}
-
-		responseText, requestJSON, responseJSON, err := client.ChatCompletionWithPayload(ctx, llmMessages)
-		if err != nil {
-			_ = UpdateQueryStatus(query.ID, "error", nil, nil, stringPtr(formatUserError(err)), nil, nil, nil)
-			_ = UpdateQueryErrorCategory(query.ID, classifyErrorCategory(err))
-			return fmt.Errorf("LLM request failed: %w", err)
-		}
-
-		// Store full payload for debugging
-		if requestJSON != "" && responseJSON != "" {
-			_ = storePayload(conversationID, round+1, "", requestJSON, responseJSON, llmMessages)
-		}
-
-		log.Printf("[DiscussionEngine] Round %d — Raw LLM response: %s", round+1, responseText)
-		cleanedResponse := extractJSONFromResponse(responseText)
-		llmResp, err = parseLLMResponse(cleanedResponse)
-
-		log.Printf("[DiscussionEngine] Round %d — action=%s", round+1, llmResp.Action)
-
-		// Handle malformed JSON — ask the LLM to fix its formatting.
-		if llmResp.Action == "_parse_error" {
-			if actionRetries < maxActionRetries {
-				log.Printf("[DiscussionEngine] Round %d — parse error, retry %d/%d", round+1, actionRetries+1, maxActionRetries)
-				llmMessages = append(llmMessages, ChatMessage{
-					Role: "system",
-					Content: "Your previous response was not valid JSON. " +
-						"Make sure ALL double-quotes inside string values are escaped with backslash. " +
-						"For example, write \"he said \\\"hello\\\"\" — NOT \"he said \"hello\"\". " +
-						"Respond with a corrected JSON object.",
-				})
-				actionRetries++
-				continue
-			}
-			// Max retries exhausted — show a friendly message, not raw JSON.
-			llmResp.Action = "clarification"
-			llmResp.ClarificationQuestion = "I received a response I couldn't understand. Could you try rephrasing your question?"
-		}
-
-		// Handle missing or unknown action
-		if llmResp.Action == "" {
-			if llmResp.SQLQuery != "" {
-				llmResp.Action = "sql_query"
-			} else {
-				llmResp.Action = "clarification"
-				llmResp.ClarificationQuestion = "I received your response but couldn't determine what you wanted me to do. Please use one of: sql_query, clarification, sql_exploration, or answer."
-			}
-		} else if llmResp.Action != "sql_query" && llmResp.Action != "clarification" && llmResp.Action != "sql_exploration" && llmResp.Action != "answer" && llmResp.Action != "_parse_error" {
-			if actionRetries < maxActionRetries {
-				log.Printf("[DiscussionEngine] Round %d — unknown action '%s', retry %d/%d", round+1, llmResp.Action, actionRetries+1, maxActionRetries)
-				llmMessages = append(llmMessages, ChatMessage{
-					Role:    "system",
-					Content: fmt.Sprintf("Your previous response was valid JSON but did not include a recognized action. You must use one of: \"sql_query\", \"clarification\", or \"sql_exploration\", or \"answer\". Please respond again with the correct format."),
-				})
-				actionRetries++
-				continue
-			}
-			if llmResp.SQLQuery != "" {
-				llmResp.Action = "sql_query"
-			} else {
-				llmResp.Action = "clarification"
-				llmResp.ClarificationQuestion = fmt.Sprintf("I couldn't understand your last response (action: %q). Please rephrase your question.", llmResp.Action)
-			}
-		}
-
-		if llmResp.Action == "answer" && llmResp.Answer == "" {
-			llmResp.Action = "clarification"
-			llmResp.ClarificationQuestion = "I tried to answer but received an empty response. Could you rephrase your question?"
-		}
-
-		switch llmResp.Action {
-		case "sql_query":
-			if dbConnection == nil {
-				_ = UpdateQueryStatus(query.ID, "error", nil, nil, stringPtr("No database connection configured. Please add a data source in Settings."), nil, nil, nil)
-				_ = UpdateQueryErrorCategory(query.ID, "no_db_connection")
-				return fmt.Errorf("no database connection for SQL query")
-			}
-			// Append exploration results to history for final execution
-			for _, er := range explorationResults {
-				history = append(history, &models.ConversationMessage{
-					Role:    "exploration",
-					Content: er.ToMessageContent(),
-				})
-			}
-			executeFinalQueryWithRetry(ctx, query, llmResp, client, llmMessages, dbConnection, conversation, userMessage, explorationResults, maxFinalRetries, skillsContent, onPhase)
-			assistantMessageSaved = true
-			return nil
-
-		case "clarification":
-			err := handleClarification(query, llmResp, conversationID)
-			if err == nil {
-				assistantMessageSaved = true
-			}
-			return err
-
-		case "answer":
-			err := handleAnswer(query, llmResp, conversationID)
-			if err == nil {
-				assistantMessageSaved = true
-			}
-			return err
-
-		case "sql_exploration":
-			if !explorationAllowed {
-				llmResp = LLMResponse{
-					Action: "clarification",
-					ClarificationQuestion: "Exploration queries are not allowed for this connection. Please rephrase your request.",
-				}
-				return handleClarification(query, llmResp, conversationID)
-			}
-
-			if err := validateExplorationQuery(llmResp.SQLQuery, safetyMode); err != nil {
-				log.Printf("[DiscussionEngine] Round %d — Exploration query rejected: %v", round+1, err)
-				llmMessages = append(llmMessages, ChatMessage{
-					Role:    "system",
-					Content: fmt.Sprintf("The previous exploration query was rejected: %s. Please revise it to comply with safety constraints.", err.Error()),
-				})
-				continue
-			}
-
-			result, err := executeSQLWithMode(dbConnection, llmResp.SQLQuery, true)
-			if err != nil {
-				log.Printf("[DiscussionEngine] Round %d — Exploration query failed: %v", round+1, err)
-				llmMessages = append(llmMessages, ChatMessage{
-					Role:    "system",
-					Content: fmt.Sprintf("The exploration query failed to execute: %s. Please try a different approach.", err.Error()),
-				})
-				continue
-			}
-
-			if onPhase != nil {
-				onPhase("Exploring data...")
-			}
-
-			er := ExplorationResult{
-				SQL:     llmResp.SQLQuery,
-				Result:  result,
-				Round:   round + 1,
-				Explained: llmResp.Explanation,
-			}
-			explorationResults = append(explorationResults, er)
-
-			history = append(history, &models.ConversationMessage{
-				Role:    "exploration",
-				Content: er.ToMessageContent(),
-			})
-			llmMessages = append(llmMessages, ChatMessage{
-				Role:    "system",
-				Content: er.ToMessageContent(),
-			})
-
-			remaining := maxRounds - round - 1
-			if remaining > 0 {
-				llmMessages = append(llmMessages, ChatMessage{
-					Role:    "system",
-					Content: fmt.Sprintf("You have %d more exploration round(s) available. Use them wisely.", remaining),
-				})
-			}
-		}
+		return err
 	}
-
-	// Max rounds exhausted — force final sql_query
-	log.Printf("[DiscussionEngine] Exploration limit reached (%d rounds). Forcing final query.", maxRounds)
-	llmMessages = append(llmMessages, ChatMessage{
-		Role:    "system",
-		Content: fmt.Sprintf("You have reached the exploration limit of %d rounds. You must now produce a final 'sql_query' action.", maxRounds),
-	})
-
-	// Phase: final LLM call
-	if onPhase != nil {
-		onPhase("Thinking with LLM...")
-	}
-
-	responseText, requestJSON, responseJSON, err := client.ChatCompletionWithPayload(ctx, llmMessages)
-	if err != nil {
-		_ = UpdateQueryStatus(query.ID, "error", nil, nil, stringPtr(formatUserError(err)), nil, nil, nil)
-		_ = UpdateQueryErrorCategory(query.ID, classifyErrorCategory(err))
-		return fmt.Errorf("LLM request failed: %w", err)
-	}
-
-	if requestJSON != "" && responseJSON != "" {
-		_ = storePayload(conversationID, 0, "final", requestJSON, responseJSON, llmMessages)
-	}
-
-	cleanedResponse := extractJSONFromResponse(responseText)
-	finalResp, parseErr := parseLLMResponse(cleanedResponse)
-	if parseErr != nil {
-		return fmt.Errorf("failed to parse final LLM response: %w", parseErr)
-	}
-
-	if finalResp.Action == "_parse_error" {
-		return handleClarification(query, LLMResponse{
-			Action:                "clarification",
-			ClarificationQuestion: "I received a response I couldn't understand. Could you try rephrasing your question?",
-		}, conversationID)
-	}
-
-	if finalResp.Action == "clarification" {
-		return handleClarification(query, finalResp, conversationID)
-	}
-
-	if finalResp.Action == "answer" {
-		return handleAnswer(query, finalResp, conversationID)
-	}
-
-	if finalResp.Action != "sql_query" {
-		// BUG FIX §5.2: Don't send comment-only SQL; convert to clarification
-		finalResp = LLMResponse{
-			Action:                "clarification",
-			ClarificationQuestion: fmt.Sprintf("I reached the exploration limit but couldn't produce a final query (got action: %s). Please rephrase your question.", finalResp.Action),
-		}
-		return handleClarification(query, finalResp, conversationID)
-	}
-
-	if dbConnection == nil {
-		_ = UpdateQueryStatus(query.ID, "error", nil, nil, stringPtr("No database connection configured. Please add a data source in Settings."), nil, nil, nil)
-		_ = UpdateQueryErrorCategory(query.ID, "no_db_connection")
-		return fmt.Errorf("no database connection for SQL query")
-	}
-
-	// Phase: SQL execution
-	if onPhase != nil {
-		onPhase("Running query...")
-	}
-
-	executeFinalQueryWithRetry(ctx, query, finalResp, client, llmMessages, dbConnection, conversation, userMessage, explorationResults, maxFinalRetries, skillsContent, onPhase)
 	assistantMessageSaved = true
-
-	// Phase: finalizing
-	if onPhase != nil {
-		onPhase("Analyzing results...")
-	}
 	return nil
 }
 
-// parseLLMResponse parses a cleaned LLM response string into an LLMResponse.
-func parseLLMResponse(cleanedResponse string) (LLMResponse, error) {
-	// Fix double-encoded formatting newlines: the LLM response JSON is
-	// embedded inside the API response JSON, which double-escapes \n in
-	// the JSON structure (e.g. {\n  "action"...}). Repair these to real
-	// newlines so json.Unmarshal can parse the structure. String value
-	// \n escapes are left intact for the parser to handle normally.
-	cleanedResponse = fixJSONFormatting(cleanedResponse)
-	var resp LLMResponse
-	if err := json.Unmarshal([]byte(cleanedResponse), &resp); err != nil {
-		if looksLikeSQL(cleanedResponse) {
-			resp := LLMResponse{Action: "sql_query", SQLQuery: cleanedResponse}
-			resp.unescapeFields()
-			return resp, nil
-		}
-		trimmed := strings.TrimSpace(cleanedResponse)
-		if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
-			// Try lenient extraction before showing a raw parse error.
-			// LLMs frequently produce JSON with unescaped quotes in
-			// string values (e.g. "he said "hello" and left").
-			if lenient, ok := parseLenientJSON(trimmed); ok {
-				lenient.unescapeFields()
-				return lenient, nil
-			}
-			// Lenient parsing also failed — the JSON is truly broken.
-			// Return a parse-error action so the caller can retry with
-			// the LLM instead of showing raw JSON to the user.
-			return LLMResponse{
-				Action: "_parse_error",
-				Explanation: fmt.Sprintf(
-					"The LLM returned invalid JSON (parse error: %v). Raw:\n\n```\n%s\n```",
-					err, truncateString(cleanedResponse, 300),
-				),
-			}, nil
-		}
-		resp := LLMResponse{
-			Action: "answer",
-			Answer: cleanedResponse,
-		}
-		resp.unescapeFields()
-		return resp, nil
-	}
-	// Fix double-encoded newlines: the LLM response is embedded inside
-	// the API response JSON, which double-escapes \n. After two rounds of
-	// json.Unmarshal, string fields contain literal \n instead of real
-	// newlines. Apply unescaping here, on each field individually, so we
-	// don't corrupt the JSON with unescaped control characters.
-	resp.unescapeFields()
-	return resp, nil
-}
-
-// unescapeFields converts literal \n sequences (from double JSON encoding)
-// back to actual newline characters on all string fields of the response.
-func (r *LLMResponse) unescapeFields() {
-	r.Answer = unescapeNewlines(r.Answer)
-	r.Explanation = unescapeNewlines(r.Explanation)
-	r.ClarificationQuestion = unescapeNewlines(r.ClarificationQuestion)
-	r.SQLQuery = unescapeNewlines(r.SQLQuery)
-}
-
-// fixJSONFormatting converts literal \n sequences to real newlines, but
-// ONLY outside of JSON string values. This repairs formatting newlines that
-// the LLM API double-encodes (\n in raw JSON → literal \n in content)
-// without corrupting \\n inside string values (which must remain for the
-// JSON parser to correctly produce literal \n in field values, which
-// unescapeNewlines then converts to real newlines).
-func fixJSONFormatting(raw string) string {
-	var sb strings.Builder
-	sb.Grow(len(raw))
-	inString := false
-	escaped := false
-	for i := 0; i < len(raw); i++ {
-		c := raw[i]
-		if inString {
-			if escaped {
-				escaped = false
-				sb.WriteByte(c)
-			} else if c == '\\' {
-				escaped = true
-				sb.WriteByte(c)
-			} else if c == '"' {
-				inString = false
-				sb.WriteByte(c)
-			} else {
-				sb.WriteByte(c)
-			}
-		} else {
-			if c == '\\' && i+1 < len(raw) && raw[i+1] == 'n' {
-				sb.WriteByte('\n')
-				i++ // skip the 'n'
-			} else if c == '"' {
-				inString = true
-				sb.WriteByte(c)
-			} else {
-				sb.WriteByte(c)
-			}
-		}
-	}
-	return sb.String()
-}
-
-// parseLenientJSON attempts to extract the action and main content field
-// from a JSON response that failed strict parsing (e.g. unescaped quotes
-// inside a string value). It returns the extracted response and true on
-// success, or zero value and false if nothing could be salvaged.
-func parseLenientJSON(raw string) (LLMResponse, bool) {
-	// Extract the action field — it's short, always first, and rarely
-	// contains characters that break JSON.
-	actionRe := regexp.MustCompile(`"action"\s*:\s*"([^"]+)"`)
-	actionMatch := actionRe.FindStringSubmatch(raw)
-	if actionMatch == nil {
-		return LLMResponse{}, false
-	}
-	action := actionMatch[1]
-
-	// For each action type, extract the corresponding text field using
-	// a boundary-based approach that tolerates unescaped inner quotes.
-	switch action {
-	case "clarification":
-		if q := extractFieldValue(raw, "clarification_question"); q != "" {
-			e := extractFieldValue(raw, "explanation")
-			return LLMResponse{Action: "clarification", ClarificationQuestion: q, Explanation: e}, true
-		}
-	case "answer":
-		if a := extractFieldValue(raw, "answer"); a != "" {
-			e := extractFieldValue(raw, "explanation")
-			return LLMResponse{Action: "answer", Answer: a, Explanation: e}, true
-		}
-	case "sql_query":
-		if s := extractFieldValue(raw, "sql_query"); s != "" {
-			e := extractFieldValue(raw, "explanation")
-			vc := extractFieldValue(raw, "viz_config")
-			return LLMResponse{Action: "sql_query", SQLQuery: s, Explanation: e, VizConfig: vc}, true
-		}
-	case "sql_exploration":
-		if s := extractFieldValue(raw, "sql_query"); s != "" {
-			e := extractFieldValue(raw, "explanation")
-			return LLMResponse{Action: "sql_exploration", SQLQuery: s, Explanation: e}, true
-		}
-	}
-	return LLMResponse{}, false
-}
-
-// extractFieldValue extracts the value of a named string field from
-// broken JSON. It finds the last occurrence of `"}` after the field,
-// which correctly handles unescaped inner quotes because the field
-// value typically ends right before the closing brace (or before a
-// subsequent field like `,"explanation"`).
-func extractFieldValue(raw, fieldName string) string {
-	// Find the field key.
-	idx := strings.Index(raw, `"`+fieldName+`"`)
-	if idx < 0 {
-		return ""
-	}
-
-	// Find the opening quote of the value (after `:"` with possible spaces).
-	colon := strings.Index(raw[idx:], ":")
-	if colon < 0 {
-		return ""
-	}
-	valStart := strings.Index(raw[idx+colon:], `"`)
-	if valStart < 0 {
-		return ""
-	}
-	absStart := idx + colon + valStart + 1
-
-	// Find the closing quote. Search for `,"` (boundary to next field)
-	// first, and only fall back to `"}` (end of JSON object) if no next
-	// field exists. Use LastIndex so we find the actual JSON boundary,
-	// not an accidental `,"` or `"}` inside the field value.
-	valEnd := strings.LastIndex(raw[absStart:], "\",\"")
-	if valEnd < 0 {
-		valEnd = strings.LastIndex(raw[absStart:], "\"}")
-	}
-	if valEnd < 0 {
-		return ""
-	}
-
-	val := raw[absStart : absStart+valEnd]
-	// Unescape standard JSON escapes (\", \\, \n, \t)
-	val = strings.ReplaceAll(val, `\\`, `\`)
-	val = strings.ReplaceAll(val, `\"`, `"`)
-	val = strings.ReplaceAll(val, `\n`, "\n")
-	val = strings.ReplaceAll(val, `\t`, "\t")
-	return val
-}
-
-// storePayload creates a conversation message with the full request/response payload.
-func storePayload(conversationID uint, round any, label, requestJSON, responseJSON string, llmMessages []ChatMessage) error {
-	payloadMeta := map[string]interface{}{
-		"round":          round,
-		"request_json":   requestJSON,
-		"response_json":  responseJSON,
-		"llm_messages":   llmMessages,
-	}
-	payloadJSON, _ := json.Marshal(payloadMeta)
-	payloadJSONStr := string(payloadJSON)
-	var msgLabel string
-	if label != "" {
-		msgLabel = fmt.Sprintf("[%s — Full Payload]", label)
-	} else {
-		msgLabel = fmt.Sprintf("[Round %v — Full Payload]", round)
-	}
-	_, err := CreateConversationMessage(conversationID, "exploration", msgLabel, nil, nil, &payloadJSONStr)
-	return err
+// ProcessUserMessage is the original entry point for backward compatibility.
+// It delegates to ProcessUserMessageWithContext with a background context.
+func ProcessUserMessage(conversationID uint, userMessage string, onPhase func(string), onStream func(StreamEvent)) error {
+	return ProcessUserMessageWithContext(context.Background(), conversationID, userMessage, onPhase, onStream)
 }
 
 // formatUserError maps an error to a user-friendly message.
@@ -763,15 +269,15 @@ func formatUserError(err error) string {
 func buildErrorMetadata(rawError string) *string {
 	metadataJSON, _ := json.Marshal(map[string]interface{}{
 		"content_type": "html",
-		"raw_error":   rawError,
-		"is_error":    true,
+		"raw_error":    sanitizeSQLError(rawError),
+		"is_error":     true,
 	})
 	metadata := string(metadataJSON)
 	return &metadata
 }
 
 // classifyErrorCategory maps an error to a stable error_category value for
-// tracking in the queries table (Phase 3).
+// tracking in the queries table.
 func classifyErrorCategory(err error) string {
 	if err == nil {
 		return ""
@@ -810,6 +316,9 @@ func classifyErrorCategory(err error) string {
 	if strings.Contains(msg, "no database connection") || strings.Contains(msg, "cannot execute sql without") {
 		return "no_db_connection"
 	}
+	if strings.Contains(msg, "cancelled") {
+		return "user_cancelled"
+	}
 	return "internal_error"
 }
 
@@ -830,60 +339,6 @@ func isErrorMessage(metadata *string) bool {
 		}
 	}
 	return false
-}
-
-// buildLlmMessages constructs the message list for the LLM.
-func buildLlmMessages(userMessage string, history []*models.ConversationMessage, schema *DataSchema, dbConnection *models.DataSource, vizEnabled bool, skillsContent string) []ChatMessage {
-	messages := []ChatMessage{}
-
-	hasDB := dbConnection != nil
-	systemPrompt := buildSystemPrompt(schema, hasDB, dbConnection, vizEnabled, skillsContent)
-	messages = append(messages, ChatMessage{Role: "system", Content: systemPrompt})
-
-	for _, msg := range history {
-		role := msg.Role
-		if role == "user" || role == "assistant" || role == "exploration" {
-			// Skip error messages — the user can see them in the UI, but the
-			// LLM shouldn't see raw error text in its context window.
-			if role == "assistant" && isErrorMessage(msg.Metadata) {
-				continue
-			}
-			content := msg.Content
-			if msg.LLMContent != nil && *msg.LLMContent != "" {
-				content = *msg.LLMContent
-			} else if role == "assistant" && strings.Contains(content, "<") {
-				content = stripHTMLTags(content)
-			}
-			if role == "exploration" {
-				role = "system"
-			}
-			messages = append(messages, ChatMessage{Role: role, Content: content})
-
-			if role == "assistant" && msg.SQLResults != nil && *msg.SQLResults != "" {
-				sqlContext := formatSQLResultsForLLM(*msg.SQLResults)
-				if sqlContext != "" {
-					messages = append(messages, ChatMessage{
-						Role:    "system",
-						Content: sqlContext,
-					})
-				}
-			}
-		}
-	}
-
-	messages = append(messages, ChatMessage{Role: "user", Content: userMessage})
-
-	// Merge consecutive user messages
-	merged := make([]ChatMessage, 0, len(messages))
-	for _, msg := range messages {
-		if len(merged) > 0 && merged[len(merged)-1].Role == "user" && msg.Role == "user" {
-			merged[len(merged)-1].Content += "\n\n" + msg.Content
-		} else {
-			merged = append(merged, msg)
-		}
-	}
-
-	return merged
 }
 
 // ExplorationResult holds the result of a single exploration round.
@@ -942,186 +397,6 @@ func formatSkillsContext(skillsContent string) string {
 	return "\n## Additional Context (from Skills)\n" + skillsContent + "\n"
 }
 
-// executeFinalQueryWithRetry wraps SQL execution in a retry loop.
-func executeFinalQueryWithRetry(ctx context.Context, query *models.Query, resp LLMResponse, client LLMClient, llmMessages []ChatMessage, dbConnection *models.DataSource, conversation *models.Conversation, userMessage string, explorationResults []ExplorationResult, maxRetries int, skillsContent string, onPhase func(string)) {
-	lastSQL := ""
-	var lastErr error
-
-	// Get the dialect hint for retry prompts so the LLM knows what
-	// SQL dialect to target when correcting errors.
-	dialectHint := ""
-	if dbConnection != nil {
-		if driver, driverErr := GetDriver(dbConnection.Type); driverErr == nil {
-			dialectHint = driver.SQLDialectHint()
-		}
-	}
-
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		if ctx.Err() != nil {
-			lastErr = fmt.Errorf("context cancelled: %w", ctx.Err())
-			break
-		}
-
-		if attempt > 0 {
-			// Remove the most recent assistant message from the LLM context if it
-			// contains the failing SQL, so the model doesn't see its own wrong
-			// answer as established context and repeat it.
-			if len(llmMessages) >= 2 && llmMessages[len(llmMessages)-2].Role == "assistant" &&
-				strings.Contains(llmMessages[len(llmMessages)-2].Content, lastSQL) {
-				llmMessages = append(llmMessages[:len(llmMessages)-2], llmMessages[len(llmMessages)-1])
-			}
-
-			// Build the correction prompt with dialect-specific guidance.
-			dialectNote := ""
-			if dialectHint != "" {
-				dialectNote = fmt.Sprintf("\n\nImportant: this database uses %s. "+
-					"Do not use functions or syntax from other database dialects.", dialectHint)
-			}
-
-			llmMessages = append(llmMessages, ChatMessage{
-				Role: "system",
-				Content: fmt.Sprintf(
-					"Your previous query was REJECTED by the database and MUST NOT be repeated. "+
-						"You must produce a COMPLETELY DIFFERENT query. "+
-						"If you repeat the same query or a trivially modified version, the system will give up.\n\n"+
-						"The failing query was:\n"+
-						"```sql\n%s\n```\n\n"+
-						"The database error was: %s"+
-						"%s\n\n"+
-						"Respond with a new 'sql_query' action using a fundamentally different approach. "+
-						"Do not use any function or syntax from the failing query.",
-					lastSQL, lastErr.Error(), dialectNote,
-				),
-			})
-
-			responseText, requestJSON, responseJSON, err := client.ChatCompletionWithPayload(ctx, llmMessages)
-			if err != nil {
-				lastErr = fmt.Errorf("LLM request failed during retry: %w", err)
-				break
-			}
-
-			if requestJSON != "" && responseJSON != "" {
-				_ = storePayload(conversation.ID, 0, fmt.Sprintf("retry-%d", attempt), requestJSON, responseJSON, llmMessages)
-			}
-
-			cleanedResponse := extractJSONFromResponse(responseText)
-			var newResp LLMResponse
-			newResp, err = parseLLMResponse(cleanedResponse)
-			if err != nil {
-				lastErr = fmt.Errorf("failed to parse retry response: %w", err)
-				break
-			}
-
-			if newResp.Action != "sql_query" {
-				if newResp.Action == "answer" {
-					_ = handleAnswer(query, newResp, conversation.ID)
-					return
-				}
-				if newResp.Action == "_parse_error" {
-					newResp = LLMResponse{
-						Action:                "clarification",
-						ClarificationQuestion: "I received a response I couldn't understand. Could you try rephrasing your question?",
-					}
-				}
-				llmContentJSON, _ := json.Marshal(newResp)
-				llmContent := string(llmContentJSON)
-				llmContentPtr := &llmContent
-
-				var displayMsg string
-				switch newResp.Action {
-				case "clarification":
-					displayMsg = newResp.ClarificationQuestion
-				default:
-					displayMsg = "I'm not sure how to help with that. Could you try rephrasing your question?"
-				}
-
-				_ = UpdateQueryStatus(query.ID, "error", &lastSQL, nil, stringPtr(lastErr.Error()), nil, nil, nil)
-				_ = UpdateQueryErrorCategory(query.ID, classifyErrorCategory(lastErr))
-				_, _ = CreateConversationMessage(conversation.ID, "assistant", displayMsg, llmContentPtr, nil, buildErrorMetadata(lastErr.Error()))
-				return
-			}
-			resp = newResp
-		}
-
-		if resp.SQLQuery == lastSQL {
-			friendlyMsg := "I'm having trouble generating a new query. Could you try rephrasing your question?"
-			llmContentJSON, _ := json.Marshal(resp)
-			llmContent := string(llmContentJSON)
-			llmContentPtr := &llmContent
-			_, _ = CreateConversationMessage(conversation.ID, "assistant", friendlyMsg, llmContentPtr, nil, buildErrorMetadata("query loop detected"))
-			_ = UpdateQueryStatus(query.ID, "error", &resp.SQLQuery, nil, stringPtr("query loop detected"), nil, nil, nil)
-			_ = UpdateQueryErrorCategory(query.ID, "query_loop")
-			return
-		}
-		lastSQL = resp.SQLQuery
-
-		results, err := executeSQL(dbConnection, resp.SQLQuery)
-		if err == nil {
-			var summary *string
-			if conversation.Summarize {
-				if onPhase != nil {
-					onPhase("Summarizing with LLM...")
-				}
-				s := summarizeResults(ctx, client, userMessage, resp.SQLQuery, results, skillsContent, conversation.ID)
-				if s != "" {
-					summary = &s
-				}
-			}
-			renderSQLResults(query, resp, dbConnection, conversation, explorationResults, results, summary)
-			return
-		}
-
-		if !isRetryableError(err) {
-			// Give unknown non-auth errors one LLM correction attempt
-			// as a safety net before giving up.
-			if attempt == 0 {
-				lastErr = err
-				log.Printf("[DiscussionEngine] Unknown error on attempt 1, trying one LLM correction: %v", err)
-				time.Sleep(backoffDuration(attempt))
-				// continue — the retry loop will send a correction prompt
-			} else {
-				lastErr = err
-				break
-			}
-		} else {
-			lastErr = err
-			log.Printf("[DiscussionEngine] SQL execution failed (attempt %d/%d): %v", attempt+1, maxRetries+1, err)
-			time.Sleep(backoffDuration(attempt))
-		}
-	}
-
-	renderSQLError(query, resp, dbConnection, conversation.ID, explorationResults, lastErr)
-}
-
-// handleAnswer creates an assistant message with a direct markdown response.
-func handleAnswer(query *models.Query, resp LLMResponse, conversationID uint) error {
-	if err := UpdateQueryStatus(query.ID, "answer", nil, nil, nil, nil, nil, nil); err != nil {
-		return fmt.Errorf("failed to update query: %w", err)
-	}
-
-	htmlContent := renderMarkdown(resp.Answer)
-
-	// Fallback: if markdown produced no usable content (common with malformed
-	// code blocks from LLMs), show the raw answer as preformatted text.
-	if strings.TrimSpace(stripHTMLTags(htmlContent)) == "" && resp.Answer != "" {
-		htmlContent = fmt.Sprintf("<pre style=\"white-space:pre-wrap; font-family:inherit;\">%s</pre>", html.EscapeString(resp.Answer))
-	}
-
-	llmContentJSON, _ := json.Marshal(resp)
-	llmContent := string(llmContentJSON)
-
-	metadataJSON, _ := json.Marshal(map[string]interface{}{"content_type": "html"})
-	metadata := string(metadataJSON)
-
-	_, err := CreateConversationMessage(conversationID, "assistant",
-		fmt.Sprintf("<div class=\"markdown-content\">%s</div>", htmlContent),
-		&llmContent, nil, &metadata)
-	if err != nil {
-		return fmt.Errorf("failed to create answer message: %w", err)
-	}
-	return nil
-}
-
 // handleClarification creates an assistant message asking for clarification.
 func handleClarification(query *models.Query, resp LLMResponse, conversationID uint) error {
 	if err := UpdateQueryStatus(query.ID, "clarification", nil, nil, nil, nil, nil, nil); err != nil {
@@ -1147,20 +422,18 @@ func handleClarification(query *models.Query, resp LLMResponse, conversationID u
 
 func stringPtr(s string) *string { return &s }
 
-// unescapeNewlines converts literal \n sequences (from double JSON encoding)
-// back to actual newline characters so renderMarkdown can parse line-oriented
-// constructs like fenced code blocks and multi-paragraph text.
-func unescapeNewlines(s string) string {
-	return strings.ReplaceAll(s, "\\n", "\n")
-}
-
 // stripHTMLTags removes HTML tags from a string.
 func stripHTMLTags(s string) string {
 	re := regexp.MustCompile(`<[^>]*>`)
 	return re.ReplaceAllString(s, "")
 }
 
-// formatSQLResultsForLLM converts JSON-serialized QueryResult into compact text for the LLM.
+// formatSQLResultsForLLM converts JSON-serialized QueryResult into a compact
+// digest for LLM context replay. It sends column stats plus a representative
+// row sample — the full table dump (200 rows) was causing context-window
+// exhaustion on longer conversations. The tool transcript replay already
+// carries the live result (max 50 rows), so this system-message digest only
+// needs enough signal for schema/structure awareness on follow-up turns.
 func formatSQLResultsForLLM(sqlResultsJSON string) string {
 	type qr struct {
 		Columns  []string        `json:"columns"`
@@ -1177,33 +450,155 @@ func formatSQLResultsForLLM(sqlResultsJSON string) string {
 		return ""
 	}
 
-	var sb strings.Builder
-	sb.WriteString("[PREVIOUS QUERY RESULTS]\n")
-	sb.WriteString("Columns: " + strings.Join(result.Columns, ", ") + "\n")
-
-	maxRows := 200
-	if len(result.Rows) > maxRows {
-		sb.WriteString(fmt.Sprintf("Showing %d of %d rows:\n\n", maxRows, len(result.Rows)))
-	} else {
-		sb.WriteString(fmt.Sprintf("(%d rows):\n\n", len(result.Rows)))
+	// Reuse the digest formatter — same approach as summarization.
+	qrResult := &QueryResult{
+		Columns:  result.Columns,
+		Rows:     result.Rows,
+		RowCount: result.RowCount,
 	}
 
+	return "[PREVIOUS QUERY RESULTS]\n" + formatResultsDigestForSummarization(qrResult) + "\n[/PREVIOUS QUERY RESULTS]\n"
+}
+
+// formatResultsDigestForSummarization produces a compact digest of query
+// results for the summarization LLM call. When the result set is small, it
+// includes all rows. When large, it includes representative rows plus
+// column-level statistics so the LLM has enough signal without blowing tokens.
+// A transparency note tells the model this is a subset — the user always sees
+// the complete result table.
+func formatResultsDigestForSummarization(result *QueryResult) string {
+	if result == nil || len(result.Columns) == 0 || len(result.Rows) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	totalRows := len(result.Rows)
+
+	sb.WriteString(fmt.Sprintf("Query returned %d rows across %d columns.\n\n", totalRows, len(result.Columns)))
+
+	// Column-level statistics (computed from full result set).
+	sb.WriteString("Column summary:\n")
+	for colIdx, col := range result.Columns {
+		sb.WriteString(fmt.Sprintf("  %s: ", humanizeColumnName(col)))
+		stats := computeColumnStats(result.Rows, colIdx)
+		if stats.isNumeric {
+			sb.WriteString(fmt.Sprintf("numeric — min: %s, max: %s", stats.min, stats.max))
+			if stats.mean != "" {
+				sb.WriteString(fmt.Sprintf(", mean: %s", stats.mean))
+			}
+		} else {
+			sb.WriteString(fmt.Sprintf("%d distinct values", stats.distinct))
+		}
+		if stats.nullCount > 0 {
+			sb.WriteString(fmt.Sprintf(" (%d null)", stats.nullCount))
+		}
+		sb.WriteString("\n")
+	}
+	sb.WriteString("\n")
+
+	// Representative rows: first 5 and last 5 when > 10 total.
+	const sampleSize = 5
+	if totalRows <= sampleSize*2 {
+		sb.WriteString(fmt.Sprintf("All %d rows:\n\n", totalRows))
+		sb.WriteString(formatRowsTable(result.Columns, result.Rows, 0, totalRows))
+	} else {
+		sb.WriteString(fmt.Sprintf("First %d rows (of %d total):\n\n", sampleSize, totalRows))
+		sb.WriteString(formatRowsTable(result.Columns, result.Rows, 0, sampleSize))
+		sb.WriteString(fmt.Sprintf("\nLast %d rows:\n\n", sampleSize))
+		sb.WriteString(formatRowsTable(result.Columns, result.Rows, totalRows-sampleSize, totalRows))
+	}
+
+	sb.WriteString("\nNote: The user sees the complete result table. The column statistics and row samples above represent the full data — base your analysis on them. Your summary will be displayed above the full results table in the user's interface.\n")
+
+	return sb.String()
+}
+
+// columnStats holds computed statistics for a single result column.
+type columnStats struct {
+	isNumeric bool
+	min       string
+	max       string
+	mean      string
+	distinct  int
+	nullCount int
+}
+
+func computeColumnStats(rows [][]interface{}, colIdx int) columnStats {
+	seen := make(map[string]bool)
+	var nums []float64
+	var cs columnStats
+
+	for _, row := range rows {
+		if colIdx >= len(row) || row[colIdx] == nil {
+			cs.nullCount++
+			continue
+		}
+		val := fmt.Sprintf("%v", row[colIdx])
+		seen[val] = true
+		if f, err := parseFloat(row[colIdx]); err == nil {
+			nums = append(nums, f)
+		}
+	}
+
+	cs.distinct = len(seen)
+	if len(nums) > 0 && float64(len(nums)) >= float64(len(rows))*0.5 {
+		cs.isNumeric = true
+		min, max := nums[0], nums[0]
+		var sum float64
+		for _, n := range nums {
+			sum += n
+			if n < min {
+				min = n
+			}
+			if n > max {
+				max = n
+			}
+		}
+		cs.min = formatFloat(min)
+		cs.max = formatFloat(max)
+		cs.mean = formatFloat(sum / float64(len(nums)))
+	}
+	return cs
+}
+
+func parseFloat(v interface{}) (float64, error) {
+	switch t := v.(type) {
+	case float64:
+		return t, nil
+	case float32:
+		return float64(t), nil
+	case int:
+		return float64(t), nil
+	case int64:
+		return float64(t), nil
+	case []byte:
+		return strconv.ParseFloat(string(t), 64)
+	case string:
+		return strconv.ParseFloat(t, 64)
+	}
+	return 0, fmt.Errorf("not numeric")
+}
+
+func formatFloat(f float64) string {
+	return strconv.FormatFloat(f, 'f', -1, 64)
+}
+
+// formatRowsTable formats a slice of rows as a markdown table.
+func formatRowsTable(columns []string, rows [][]interface{}, start, end int) string {
+	var sb strings.Builder
 	sb.WriteString("| ")
-	for i, col := range result.Columns {
+	for i, col := range columns {
 		if i > 0 {
 			sb.WriteString(" | ")
 		}
 		sb.WriteString(humanizeColumnName(col))
 	}
 	sb.WriteString(" |\n")
-	sb.WriteString("|" + strings.Repeat("---|", len(result.Columns)) + "\n")
+	sb.WriteString("|" + strings.Repeat("---|", len(columns)) + "\n")
 
-	for i, row := range result.Rows {
-		if i >= maxRows {
-			break
-		}
+	for i := start; i < end && i < len(rows); i++ {
 		sb.WriteString("| ")
-		for j, val := range row {
+		for j, val := range rows[i] {
 			if j > 0 {
 				sb.WriteString(" | ")
 			}
@@ -1215,263 +610,22 @@ func formatSQLResultsForLLM(sqlResultsJSON string) string {
 		}
 		sb.WriteString(" |\n")
 	}
-	sb.WriteString("\n[/PREVIOUS QUERY RESULTS]\n")
-
 	return sb.String()
 }
 
-// buildSystemPrompt creates the system prompt with schema and instructions.
-func buildSystemPrompt(schema *DataSchema, hasDB bool, dbConnection *models.DataSource, vizEnabled bool, skillsContent string) string {
-	var sb strings.Builder
-	
-	if dbConnection != nil {
-		config, err := dbConnection.ParseConfig()
-		if err == nil && config.SystemPrompt != "" {
-			sb.WriteString(config.SystemPrompt)
-			sb.WriteString("\n\n")
-		}
-		if err == nil && len(config.BusinessRules) > 0 {
-			sb.WriteString("## Business Rules\n")
-			for _, rule := range config.BusinessRules {
-				sb.WriteString(fmt.Sprintf("- %s\n", rule))
-			}
-			sb.WriteString("\n")
-		}
-	}
-	
-	if sb.Len() == 0 {
-		sb.WriteString("You are a helpful data analyst assistant. Your task is to help users query a database using natural language.\n\n")
-	} else {
-		sb.WriteString("\n")
-	}
-
-	if hasDB && schema != nil && len(schema.Tables) > 0 {
-		sb.WriteString("## Database Schema\n")
-		var config *models.DataSourceConfig
-		var configErr error
-		if dbConnection != nil {
-			config, configErr = dbConnection.ParseConfig()
-		}
-		var tableDescriptions map[string]string
-		var columnDescriptions map[string]string
-		if configErr == nil && config != nil {
-			tableDescriptions = config.TableDescriptions
-			columnDescriptions = config.ColumnDescriptions
-		}
-		for _, table := range schema.Tables {
-			sb.WriteString(fmt.Sprintf("Table: `%s` (%d rows)", table.Name, table.RowCount))
-			if table.Description != "" {
-				sb.WriteString(fmt.Sprintf(" [comment: %s]", table.Description))
-			}
-			if desc, ok := tableDescriptions[table.Name]; ok {
-				sb.WriteString(fmt.Sprintf(" [description: %s]", desc))
-			}
-			sb.WriteString("\n")
-
-			for _, col := range table.Columns {
-				nullable := ""
-				if col.IsNullable {
-					nullable = " NULL"
-				}
-				pk := ""
-				if col.IsPrimaryKey {
-					pk = " PRIMARY KEY"
-				}
-				colDesc := ""
-				if desc, ok := columnDescriptions[table.Name+"."+col.Name]; ok {
-					colDesc = fmt.Sprintf(" [description: %s]", desc)
-				}
-				sb.WriteString(fmt.Sprintf("  - `%s`: %s%s%s%s\n", col.Name, col.DataType, nullable, pk, colDesc))
-			}
-
-			if len(table.Indexes) > 0 {
-				sb.WriteString("  Indexes:\n")
-				for _, idx := range table.Indexes {
-					unique := ""
-					if idx.IsUnique {
-						unique = " UNIQUE"
-					}
-					sb.WriteString(fmt.Sprintf("    - %s%s: (%s)\n", idx.Name, unique, strings.Join(idx.Columns, ", ")))
-				}
-			}
-
-			if len(table.ForeignKeys) > 0 {
-				sb.WriteString("  Foreign Keys:\n")
-				for _, fk := range table.ForeignKeys {
-					sb.WriteString(fmt.Sprintf("    - %s: %s -> `%s`.`%s`", fk.Name, fk.Column, fk.RefTable, fk.RefColumn))
-					if fk.OnDelete != "" {
-						sb.WriteString(fmt.Sprintf(" ON DELETE %s", fk.OnDelete))
-					}
-					if fk.OnUpdate != "" {
-						sb.WriteString(fmt.Sprintf(" ON UPDATE %s", fk.OnUpdate))
-					}
-					sb.WriteString("\n")
-				}
-			}
-			sb.WriteString("\n")
-		}
-		sb.WriteString("\n")
-	}
-
-	sb.WriteString("## Instructions\n")
-	sb.WriteString("1. Analyze the user's question and the database schema (if provided).\n")
-	sb.WriteString("2. Decide whether you can answer directly, generate a SQL query, request clarification, or first explore the data.\n")
-	sb.WriteString("3. Respond with a JSON object containing exactly the following fields:\n")
-	sb.WriteString("   - \"action\": one of \"sql_query\", \"clarification\", \"sql_exploration\", or \"answer\"\n")
-	sb.WriteString("   - \"sql_query\": if action is \"sql_query\" or \"sql_exploration\", provide a valid SELECT query to execute against the database. If action is \"answer\", omit this field or leave it empty — put any example SQL inside the \"answer\" markdown instead.\n")
-	sb.WriteString("   - \"clarification_question\": if action is \"clarification\", ask a concise clarifying question.\n")
-	sb.WriteString("   - \"answer\": if action is \"answer\", provide a direct response to the user. Use \"answer\" when the question does not require querying the database — e.g., follow-ups about previously returned data, general knowledge questions, or formatting/narrative requests. Do NOT use \"answer\" when the database has the definitive answer — prefer \"sql_query\" instead.\n")
-	sb.WriteString("   - \"explanation\": internal reasoning (not shown to user — used to improve your query quality). Keep it brief.\n")
-	dbTypeHint := "SQL"
-	if dbConnection != nil {
-		driver, driverErr := GetDriver(dbConnection.Type)
-		if driverErr == nil {
-			dbTypeHint = driver.DisplayName()
-		} else {
-			dbTypeHint = dbConnection.Type
-		}
-	}
-	sb.WriteString(fmt.Sprintf("4. The SQL query must be safe, read-only, and compatible with %s.\n", dbTypeHint))
-	sb.WriteString("5. If the user asks a general question not related to the database, you may answer directly.\n")
-	sb.WriteString("6. Always include a LIMIT clause in your SQL queries to prevent unbounded result sets.\n\n")
-
-	if dbConnection != nil {
-		config, cfgErr := dbConnection.ParseConfig()
-		if cfgErr == nil && config.ExplorationAllowed {
-			sb.WriteString("## Exploration Mode\n")
-			sb.WriteString("If you know the schema but need to see actual data values to construct the correct final query, use action \"sql_exploration\".\n")
-			sb.WriteString(fmt.Sprintf("Your exploration queries are constrained to: **%s** mode.\n", config.ExplorationSafety))
-			switch config.ExplorationSafety {
-			case "strict":
-				sb.WriteString("- Allowed: SELECT with LIMIT, COUNT, DISTINCT, SHOW COLUMNS, DESCRIBE, INFORMATION_SCHEMA queries\n")
-				sb.WriteString("- Blocked: JOINs, subqueries, GROUP BY, ORDER BY\n")
-			case "moderate":
-				sb.WriteString("- Allowed: everything in strict, plus single-table JOIN, GROUP BY, ORDER BY\n")
-				sb.WriteString("- Blocked: subqueries, UNION, multi-table JOINs\n")
-			case "relaxed":
-				sb.WriteString("- Allowed: everything in moderate, plus subqueries and UNION\n")
-				sb.WriteString("- Blocked: INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE, and other DML/DDL\n")
-			}
-			sb.WriteString("- All modes: read-only only — no DML/DDL under any circumstances\n")
-			sb.WriteString("- After each exploration, you will see the results and should use them to refine your final query.\n")
-			sb.WriteString(fmt.Sprintf("- You have up to %d exploration round(s) before being forced to produce a final query.\n\n", config.MaxExplorationRounds))
-		}
-	}
-
-	if vizEnabled {
-		sb.WriteString("## Data Visualization\n")
-		sb.WriteString("You can generate charts when the user asks for visualizations (bar chart, line graph, pie chart, scatter plot, trend line, etc.).\n")
-		sb.WriteString("To create a chart, include a \"viz_config\" field in your JSON response with a Chart.js configuration object.\n")
-		sb.WriteString("Example \"viz_config\" value (as a JSON string):\n")
-		sb.WriteString(`{"type":"bar","data":{"labels":["$column_name"],"datasets":[{"label":"Data","data":["$column_name"]}]}}` + "\n\n")
-		sb.WriteString("Rules:\n")
-		sb.WriteString(`- "type" must be one of: bar, line, pie, doughnut, scatter, radar, polarArea` + "\n")
-		sb.WriteString(`- "data.labels" is an array of ONE column name from your SQL result (the category/X axis)` + "\n")
-		sb.WriteString(`- "data.datasets[].data" is an array of ONE column name (the value/Y axis)` + "\n")
-		sb.WriteString(`- Use "$column_name" syntax to reference SQL result columns (the system replaces them with real data)` + "\n")
-		sb.WriteString("- You can define MULTIPLE datasets (as separate objects in the datasets array) for grouped/stacked charts\n")
-		sb.WriteString("- For pie/doughnut: labels = category column, data = single value column (limit to 8 or fewer categories)\n")
-		sb.WriteString(`- For scatter: use data: [{"x": "$col1", "y": "$col2"}] format` + "\n")
-		sb.WriteString("- Choose chart type intelligently:\n")
-		sb.WriteString("  * bar = comparisons, rankings, categories\n")
-		sb.WriteString("  * line = time series, trends, sequential data\n")
-		sb.WriteString("  * pie/doughnut = proportions, composition (<=8 categories)\n")
-		sb.WriteString("  * scatter = correlation, relationship between two numeric variables\n")
-		sb.WriteString("- Use visually distinct, non-gray colors for datasets (e.g. blue, red, green, orange, purple, teal) to make charts readable\n")
-		sb.WriteString("- Do NOT include viz_config unless the user explicitly asks for a chart or the data clearly benefits from one\n")
-		sb.WriteString("- The viz_config must be a valid JSON string (double-quote all keys and values, escape internal quotes)\n\n")
-	}
-
-	// User-defined skill context (appended after viz instructions, before the final instruction)
-	if skillsContent != "" {
-		sb.WriteString("\n## Additional Context (from Skills)\n")
-		sb.WriteString(skillsContent)
-		sb.WriteString("\n")
-	}
-
-	sb.WriteString("Your response must be a valid JSON object with only the fields listed above.\n")
-
-	prompt := sb.String()
-	if len(prompt) > 16384 {
-		prompt = prompt[:16000] + "\n\n[Note: schema truncated due to context limits. The user's question follows below.]\n"
-	}
-	return prompt
-}
-
-// renderSQLResults renders a successful SQL query result as an assistant message.
-func renderSQLResults(query *models.Query, resp LLMResponse, dbConnection *models.DataSource, conversation *models.Conversation, explorationResults []ExplorationResult, results *QueryResult, summary *string) {
-	resultSummary := formatResults(results)
-
-	var explanation string
-	if resp.Explanation != "" {
-		explanation = resp.Explanation
-	}
-
-	var explorationHTML string
-	if len(explorationResults) > 0 {
-		explorationHTML = formatExplorationHTML(explorationResults)
-		if len(explorationResults) == 1 {
-			explanation = fmt.Sprintf("I explored the data before formulating this query. %s", explanation)
-		} else if explanation == "" {
-			explanation = fmt.Sprintf("I ran %d intermediate query(ies) to explore the data before formulating this query.", len(explorationResults))
-		}
-	}
-
-	assistantResp := AssistantResponse{
-		Explanation:     explanation,
-		SQL:             resp.SQLQuery,
-		Result:          results,
-		ExplorationHTML: explorationHTML,
-		Summary:         summary,
-	}
-	assistantMessageHTML := assistantResp.ToHTML()
-
-	llmContentJSON, _ := json.Marshal(resp)
-	llmContent := string(llmContentJSON)
-	llmContentPtr := &llmContent
-
-	sqlResultsJSON, err := json.Marshal(results)
-	if err != nil {
-		sqlResultsJSON = nil
-	}
-	sqlResultsPtr := stringPtr(string(sqlResultsJSON))
-
-	metadataJSON, _ := json.Marshal(map[string]interface{}{"content_type": "html"})
-	metadataPtr := new(string)
-	*metadataPtr = string(metadataJSON)
-
-	// Resolve chart visualization config if present and enabled
-	if conversation.VizEnabled && resp.VizConfig != "" && results != nil && len(results.Columns) > 0 {
-		resolved, err := resolveChartConfig(resp.VizConfig, results.Columns, results.Rows)
-		if err == nil && resolved != "" {
-			*metadataPtr = string(mustMarshalJSON(map[string]interface{}{
-				"content_type": "html",
-				"chart_config": json.RawMessage(resolved),
-			}))
-		}
-	}
-
-	execTime := 0
-	tokensUsed := 0
-	if err := UpdateQueryStatus(query.ID, "success", &resp.SQLQuery, &resultSummary, nil, &execTime, &tokensUsed, nil); err != nil {
-		log.Printf("[DiscussionEngine] Failed to update query status: %v", err)
-	}
-
-	_, err = CreateConversationMessage(conversation.ID, "assistant", assistantMessageHTML, llmContentPtr, sqlResultsPtr, metadataPtr)
-	if err != nil {
-		log.Printf("[DiscussionEngine] Failed to create assistant message: %v", err)
-	}
-}
-
-// summarizeResults sends query results back to the LLM for a natural-language summary.
-func summarizeResults(ctx context.Context, client LLMClient, userQuestion, sqlQuery string, results *QueryResult, skillsContent string, conversationID uint) string {
+// summarizeResults sends query results back to the LLM for a natural-language
+// summary. Large result sets are digested to a compact subset with column
+// statistics to keep token usage low and avoid summarization failures.
+func summarizeResults(ctx context.Context, client LLMClient, userQuestion, sqlQuery string, results *QueryResult, skillsContent string, conversationID uint) (string, error) {
 	if results == nil || results.RowCount == 0 {
-		return ""
+		return "", nil
 	}
 
-	formatted := formatSQLResultsForLLMFromQueryResult(results)
+	// Use a compact digest for summarization — the user always sees the
+	// full result table, so the LLM only needs representative rows + stats.
+	formatted := formatResultsDigestForSummarization(results)
 	if formatted == "" {
-		return ""
+		return "", nil
 	}
 
 	prompt := fmt.Sprintf(`You are a helpful data analyst. Summarize the following SQL query results in plain English, directly answering the user's question.
@@ -1481,39 +635,44 @@ func summarizeResults(ctx context.Context, client LLMClient, userQuestion, sqlQu
 **SQL executed**:
 `+"```sql\n%s\n```"+`
 
-**Query results**:
+**Query result digest**:
 %s
-
 **Instructions**:
-- Answer the user's question directly, referencing specific numbers and facts from the data.
-- Keep it concise — 3-5 sentences is ideal.
+- Answer the user's question directly and thoroughly, referencing specific numbers and facts from the digest.
 - If the results are empty, clearly state that no data matched the query.
-- Do NOT include a markdown table — this is a prose summary.
-- Do NOT suggest next steps — just answer the question.%s`, userQuestion, sqlQuery, formatted, formatSkillsContext(skillsContent))
+- Use markdown formatting for structure — headings, lists, and markdown tables are all fine. The user will see this as rich formatted text above their full results table.
+- Feel free to suggest next steps, actionable takeaways, or follow-up questions if they add value — the user appreciates a complete analysis.
+- Frame your summary as an analysis of the overall result. Do not hedge with phrases like "based on the sample" or "the subset shows" — you are summarizing the full result, which the user sees below.%s`, userQuestion, sqlQuery, formatted, formatSkillsContext(skillsContent))
 
 	summaryMessages := []ChatMessage{
 		{Role: "user", Content: prompt},
 	}
 
-	summary, requestJSON, responseJSON, err := client.ChatCompletionWithPayload(ctx, summaryMessages)
+	summary, requestJSON, _, err := client.ChatCompletionWithPayload(ctx, summaryMessages)
 	if err != nil {
-		log.Printf("[DiscussionEngine] Summarization failed: %v", err)
-		return ""
+		return "", fmt.Errorf("LLM call for summarization failed: %w", err)
 	}
 
-	// Store the summarization payload for technical details
-	if requestJSON != "" && responseJSON != "" {
-		payloadMeta := map[string]interface{}{
-			"request_json":   requestJSON,
-			"response_json":  responseJSON,
-			"llm_messages":   summaryMessages,
+	// Store summarization tech detail for the tech-details toggle.
+	if requestJSON != "" {
+		td := TechDetail{
+			Version: 1,
+			Round:   0,
+			Kind:    "summarization",
+			Request: struct {
+				MessageCount int    `json:"message_count"`
+				LastUserMsg  string `json:"last_user_msg,omitempty"`
+				RawMessages  string `json:"raw_messages,omitempty"`
+			}{
+				MessageCount: 1,
+				LastUserMsg:  truncateString(prompt, 200),
+			},
 		}
-		payloadJSON, _ := json.Marshal(payloadMeta)
-		payloadJSONStr := string(payloadJSON)
-		_, _ = CreateConversationMessage(conversationID, "exploration", "[Summarization — Full Payload]", nil, nil, &payloadJSONStr)
+		td.Response.TextContent = truncateString(summary, 500)
+		storeTechDetail(conversationID, td)
 	}
 
-	return strings.TrimSpace(summary)
+	return strings.TrimSpace(summary), nil
 }
 
 // formatSQLResultsForLLMFromQueryResult formats a QueryResult for LLM consumption.
@@ -1693,7 +852,7 @@ func resolveRefs(node interface{}, colIndex map[string]int, rows [][]interface{}
 	}
 }
 
-// mustMarshalJSON marshals a value to JSON or returns an empty array on error.
+// mustMarshalJSON marshals a value to JSON or returns an empty object on error.
 func mustMarshalJSON(v interface{}) []byte {
 	data, err := json.Marshal(v)
 	if err != nil {

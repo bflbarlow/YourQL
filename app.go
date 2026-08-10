@@ -4,8 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"strings"
+	"sync"
 
 	"YourQL/pkg/models"
 	"YourQL/pkg/services"
@@ -14,12 +18,16 @@ import (
 
 // App struct
 type App struct {
-	ctx context.Context
+	ctx               context.Context
+	activeCancels     map[uint]context.CancelFunc
+	activeCancelsMu   sync.Mutex
 }
 
 // NewApp creates a new App application struct
 func NewApp() *App {
-	return &App{}
+	return &App{
+		activeCancels: make(map[uint]context.CancelFunc),
+	}
 }
 
 // startup is called when the app starts.
@@ -28,6 +36,36 @@ func (a *App) startup(ctx context.Context) {
 	if err := models.ConnectDatabase(); err != nil {
 		slog.Error("database error", "error", err)
 	}
+}
+
+// registerCancel stores a cancel function for a conversation.
+func (a *App) registerCancel(conversationID uint, cancel context.CancelFunc) {
+	a.activeCancelsMu.Lock()
+	if _, exists := a.activeCancels[conversationID]; exists {
+		slog.Warn("overwriting active cancel for conversation", "id", conversationID)
+	}
+	a.activeCancels[conversationID] = cancel
+	a.activeCancelsMu.Unlock()
+}
+
+// unregisterCancel removes a cancel function after processing completes.
+func (a *App) unregisterCancel(conversationID uint) {
+	a.activeCancelsMu.Lock()
+	delete(a.activeCancels, conversationID)
+	a.activeCancelsMu.Unlock()
+}
+
+// CancelProcessing cancels an in-progress message for the given conversation.
+func (a *App) CancelProcessing(conversationID uint) error {
+	a.activeCancelsMu.Lock()
+	cancel, ok := a.activeCancels[conversationID]
+	a.activeCancelsMu.Unlock()
+	if !ok {
+		return fmt.Errorf("no active processing for conversation %d", conversationID)
+	}
+	slog.Info("user cancelled processing", "conversation_id", conversationID)
+	cancel()
+	return nil
 }
 
 // shutdown is called when the app is about to quit.
@@ -62,7 +100,7 @@ func (a *App) ListConversations() ([]*models.Conversation, error) {
 }
 
 func (a *App) CreateConversation(title string, llmProviderID, dbConnectionID *uint) (*models.Conversation, error) {
-	return services.CreateConversation(title, llmProviderID, dbConnectionID)
+	return services.CreateConversationWithDefaults(title, llmProviderID, dbConnectionID)
 }
 
 func (a *App) GetConversationMessages(conversationID uint) ([]*models.ConversationMessage, error) {
@@ -70,13 +108,35 @@ func (a *App) GetConversationMessages(conversationID uint) ([]*models.Conversati
 }
 
 func (a *App) ProcessUserMessage(conversationID uint, userMessage string) error {
-	err := services.ProcessUserMessage(conversationID, userMessage, func(phase string) {
+	// Create a cancellable context so the user can interrupt processing.
+	ctx, cancel := context.WithCancel(context.Background())
+	a.registerCancel(conversationID, cancel)
+	defer a.unregisterCancel(conversationID)
+
+	onStream := func(ev services.StreamEvent) {
+		if a.ctx != nil {
+			runtime.EventsEmit(a.ctx, "llm:stream", map[string]interface{}{
+				"conversation_id": conversationID,
+				"event":           ev,
+			})
+		}
+	}
+	err := services.ProcessUserMessageWithContext(ctx, conversationID, userMessage, func(phase string) {
 		if a.ctx != nil {
 			runtime.EventsEmit(a.ctx, "processingPhase", phase)
 		}
-	})
+	}, onStream)
 	if a.ctx != nil {
-		runtime.EventsEmit(a.ctx, "processingComplete")
+		if errors.Is(err, context.Canceled) {
+			runtime.EventsEmit(a.ctx, "processingCancelled", map[string]interface{}{
+				"conversation_id": conversationID,
+			})
+			// Don't propagate cancellation as an error to the frontend.
+			// The processingCancelled event handles all cleanup.
+			return nil
+		} else {
+			runtime.EventsEmit(a.ctx, "processingComplete")
+		}
 	}
 	return err
 }
@@ -120,6 +180,10 @@ func (a *App) UpdateConversationSummarize(id uint, summarize bool) error {
 
 func (a *App) UpdateConversationVizEnabled(id uint, vizEnabled bool) error {
 	return services.UpdateConversationVizEnabled(id, vizEnabled)
+}
+
+func (a *App) UpdateConversationStreamingEnabled(id uint, enabled bool) error {
+	return services.UpdateConversationStreamingEnabled(id, enabled)
 }
 
 func (a *App) DuplicateConversation(id uint) (*models.Conversation, error) {
@@ -693,6 +757,198 @@ func (a *App) ExportConversationPDF() {
 	runtime.WindowPrint(a.ctx)
 }
 
+// ExportConversationHTML generates a standalone HTML file for the conversation
+// and opens a save dialog. Returns an error string if something goes wrong, or
+// empty string on success / user cancel.
+func (a *App) ExportConversationHTML(conversationID uint) string {
+	conv, err := services.GetConversationByID(conversationID)
+	if err != nil {
+		return err.Error()
+	}
+	messages, err := services.GetConversationMessages(conversationID)
+	if err != nil {
+		return err.Error()
+	}
+
+	// Resolve provider and data source display names
+	providerName, dataSourceName := resolveExportNames(conv)
+
+	htmlContent := services.BuildConversationHTML(conv, messages, providerName, dataSourceName)
+
+	// Suggest a filename based on the conversation title
+	title := "Untitled"
+	if conv.Title != nil && *conv.Title != "" {
+		title = *conv.Title
+	}
+	sanitized := sanitizeFilename(title)
+
+	path, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		DefaultFilename: sanitized + ".html",
+		Title:           "Export as HTML",
+		Filters: []runtime.FileFilter{
+			{DisplayName: "HTML Files (*.html)", Pattern: "*.html"},
+		},
+	})
+	if err != nil {
+		return err.Error()
+	}
+	if path == "" {
+		// User cancelled — not an error
+		return ""
+	}
+
+	if err := writeFile(path, htmlContent); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
+// ExportConversationMarkdown generates a Markdown file for the conversation
+// and opens a save dialog. Returns an error string if something goes wrong, or
+// empty string on success / user cancel.
+func (a *App) ExportConversationMarkdown(conversationID uint) string {
+	conv, err := services.GetConversationByID(conversationID)
+	if err != nil {
+		return err.Error()
+	}
+	messages, err := services.GetConversationMessages(conversationID)
+	if err != nil {
+		return err.Error()
+	}
+
+	providerName, dataSourceName := resolveExportNames(conv)
+
+	mdContent := services.BuildConversationMarkdown(conv, messages, providerName, dataSourceName)
+
+	title := "Untitled"
+	if conv.Title != nil && *conv.Title != "" {
+		title = *conv.Title
+	}
+	sanitized := sanitizeFilename(title)
+
+	path, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		DefaultFilename: sanitized + ".md",
+		Title:           "Export as Markdown",
+		Filters: []runtime.FileFilter{
+			{DisplayName: "Markdown Files (*.md)", Pattern: "*.md"},
+		},
+	})
+	if err != nil {
+		return err.Error()
+	}
+	if path == "" {
+		return ""
+	}
+
+	if err := writeFile(path, mdContent); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
+// resolveExportNames looks up the display names for the conversation's LLM
+// provider and data source. Both fields are optional; returns empty strings
+// for nil IDs.
+func resolveExportNames(conv *models.Conversation) (string, string) {
+	var providerName, dataSourceName string
+	if conv.LLMProviderID != nil {
+		if p, err := services.GetLLMProviderByID(*conv.LLMProviderID); err == nil && p != nil {
+			providerName = p.Name
+		}
+	}
+	if conv.DataSourceID != nil {
+		if ds, err := services.GetDataSourceByID(*conv.DataSourceID); err == nil && ds != nil {
+			dataSourceName = ds.Name
+		}
+	}
+	return providerName, dataSourceName
+}
+
+// sanitizeFilename replaces characters unsafe for filenames with a safe
+// alternative, keeping the result readable.
+func sanitizeFilename(name string) string {
+	re := strings.NewReplacer(
+		"/", "-", "\\", "-", ":", "-", "*", "-", "?", "-",
+		"\"", "", "<", "-", ">", "-", "|", "-",
+	)
+	return strings.TrimSpace(re.Replace(name))
+}
+
+// writeFile is a small helper to write string content to a file path.
+func writeFile(path, content string) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString(content)
+	return err
+}
+
+// GetAppSetting returns the value for a single app setting key.
+func (a *App) GetAppSetting(key string) (string, error) {
+	return services.GetAppSetting(key)
+}
+
+// SetAppSetting upserts a single app setting key.
+func (a *App) SetAppSetting(key, value string) error {
+	return services.SetAppSetting(key, value)
+}
+
+// ==================== Agent Loop Config ====================
+
+// AgentLoopConfigField is metadata for one configurable field.
+type AgentLoopConfigField struct {
+	Key         string `json:"key"`
+	Label       string `json:"label"`
+	Description string `json:"description"`
+	Section     string `json:"section"`
+}
+
+// AgentLoopConfigJSON holds the merged config plus field metadata for the frontend.
+type AgentLoopConfigJSON struct {
+	Config *models.AgentLoopConfig `json:"config"`
+	Fields []AgentLoopConfigField  `json:"fields"`
+}
+
+// GetAgentLoopConfig returns the merged config (defaults + user overrides)
+// plus field metadata so the frontend can render labels and tooltips.
+func (a *App) GetAgentLoopConfig() (*AgentLoopConfigJSON, error) {
+	cfg, err := services.GetAgentLoopConfig()
+	if err != nil {
+		return nil, err
+	}
+	svcFields := services.AgentLoopConfigFields()
+	fields := make([]AgentLoopConfigField, len(svcFields))
+	for i, f := range svcFields {
+		fields[i] = AgentLoopConfigField{
+			Key:         f.Key,
+			Label:       f.Label,
+			Description: f.Description,
+			Section:     f.Section,
+		}
+	}
+	return &AgentLoopConfigJSON{
+		Config: cfg,
+		Fields: fields,
+	}, nil
+}
+
+// SetAgentLoopConfigKey upserts a single agent loop config key.
+func (a *App) SetAgentLoopConfigKey(key, value string) error {
+	return services.SetAgentLoopConfigKey(key, value)
+}
+
+// ResetAgentLoopConfigKey resets a single field to its hardcoded default.
+func (a *App) ResetAgentLoopConfigKey(key string) error {
+	return services.SetAgentLoopConfigKey(key, "") // empty value triggers default revert
+}
+
+// ResetAllAgentLoopConfig deletes all user overrides.
+func (a *App) ResetAllAgentLoopConfig() error {
+	return services.ResetAgentLoopConfig()
+}
+
 type GeneralSettings struct {
 	AppName            string `json:"app_name"`
 	AppVersion         string `json:"app_version"`
@@ -703,11 +959,16 @@ type GeneralSettings struct {
 	Language           string `json:"language"`
 }
 
+// GetAppVersion returns the running app version, injected at build time via ldflags.
+func (a *App) GetAppVersion() string {
+	return appVersion
+}
+
 // GetGeneralSettings returns persisted settings from the local database.
 func (a *App) GetGeneralSettings() GeneralSettings {
 	settings := GeneralSettings{
 		AppName:            "YourQL",
-		AppVersion:         "0.3.0",
+		AppVersion:         appVersion,
 		DefaultLLMProvider: "openai",
 		Theme:              "system",
 		Accent:             "#0288d1",
@@ -744,4 +1005,88 @@ func (a *App) UpdateGeneralSettings(settings GeneralSettings) error {
 		}
 	}
 	return nil
+}
+
+// GetDiscussionDefaults returns the user's configured defaults for new discussions.
+func (a *App) GetDiscussionDefaults() (*models.DiscussionDefaults, error) {
+	return services.GetDiscussionDefaults()
+}
+
+// UpdateDiscussionDefaults persists a batch of default discussion settings.
+// Only non-nil fields are updated; pass nil to leave a field unchanged.
+func (a *App) UpdateDiscussionDefaults(defaults models.DiscussionDefaults) error {
+	if defaults.LLMProviderID != nil {
+		if err := services.SetDiscussionDefault("llm_provider_id",
+			fmt.Sprintf("%d", *defaults.LLMProviderID)); err != nil {
+			return err
+		}
+	}
+	if defaults.DataSourceID != nil {
+		if err := services.SetDiscussionDefault("data_source_id",
+			fmt.Sprintf("%d", *defaults.DataSourceID)); err != nil {
+			return err
+		}
+	}
+	if defaults.MaxContextMessages != nil {
+		if err := services.SetDiscussionDefault("max_context_messages",
+			fmt.Sprintf("%d", *defaults.MaxContextMessages)); err != nil {
+			return err
+		}
+	}
+	if defaults.MaxMessages != nil {
+		if err := services.SetDiscussionDefault("max_messages",
+			fmt.Sprintf("%d", *defaults.MaxMessages)); err != nil {
+			return err
+		}
+	}
+	if defaults.Summarize != nil {
+		if err := services.SetDiscussionDefault("summarize",
+			fmt.Sprintf("%t", *defaults.Summarize)); err != nil {
+			return err
+		}
+	}
+	if defaults.VizEnabled != nil {
+		if err := services.SetDiscussionDefault("viz_enabled",
+			fmt.Sprintf("%t", *defaults.VizEnabled)); err != nil {
+			return err
+		}
+	}
+	if defaults.TechDetails != nil {
+		if err := services.SetDiscussionDefault("tech_details",
+			fmt.Sprintf("%t", *defaults.TechDetails)); err != nil {
+			return err
+		}
+	}
+	if defaults.ContextDetails != nil {
+		if err := services.SetDiscussionDefault("context_details",
+			fmt.Sprintf("%t", *defaults.ContextDetails)); err != nil {
+			return err
+		}
+	}
+	if defaults.StreamingEnabled != nil {
+		if err := services.SetDiscussionDefault("streaming_enabled",
+			fmt.Sprintf("%t", *defaults.StreamingEnabled)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Auto-updater
+// ---------------------------------------------------------------------------
+
+// CheckForUpdate queries the GitHub Releases API for a newer version.
+func (a *App) CheckForUpdate() (*services.UpdateInfo, error) {
+	return services.CheckForUpdate(appVersion)
+}
+
+// DownloadUpdate downloads and verifies the new release asset.
+func (a *App) DownloadUpdate(downloadURL, expectedSHA256 string) error {
+	return services.DownloadUpdate(downloadURL, expectedSHA256)
+}
+
+// PerformUpgradeRestart runs the OS-specific upgrade script and exits the app.
+func (a *App) PerformUpgradeRestart() error {
+	return services.PerformUpgradeRestart()
 }

@@ -1,14 +1,15 @@
 <script>
-  import { Settings, Pin, Search, ChevronRight, ChevronDown, MessageSquare, FileDown } from 'lucide-svelte'
+  import { Settings, Pin, Search, ChevronRight, ChevronDown, MessageSquare, FileDown, Printer, FileCode, FileText } from 'lucide-svelte'
   import VizChart from './VizChart.svelte'
-  import { ExportConversationPDF } from '../wailsjs/go/main/App.js'
-  let { 
-    activeConversation, 
-    conversationMessages = [], 
-    llmProviders = [], 
+  import { ExportConversationPDF, ExportConversationHTML, ExportConversationMarkdown, CancelProcessing } from '../wailsjs/go/main/App.js'
+  import { EventsOn } from '../wailsjs/runtime/runtime.js'
+  let {
+    activeConversation,
+    conversationMessages = [],
+    llmProviders = [],
     dataSources = [],
-    processingMessage = '', 
-    messageError = null, 
+    processingMessage = '',
+    messageError = null,
     userMessage = '',
     showTechDetails = false,
     showContextDetails = false,
@@ -18,15 +19,29 @@
     onMessageChange = () => {},
     onGearClick = () => {}
   } = $props()
-  
+
   let localMessage = $state(userMessage)
   let textareaEl = $state(null)
   let customHeights = $state({})
-  
+  let showExportMenu = $state(false)
+
   $effect(() => {
     localMessage = userMessage
   })
-  
+
+  // Close export dropdown on outside click
+  function handleExportClick(e) {
+    if (!e.target.closest('.export-btn-wrapper')) {
+      showExportMenu = false
+    }
+  }
+  $effect(() => {
+    if (showExportMenu) {
+      document.addEventListener('click', handleExportClick)
+      return () => document.removeEventListener('click', handleExportClick)
+    }
+  })
+
   // Restore saved height (or reset) when conversation changes
   $effect(() => {
     const el = textareaEl
@@ -38,7 +53,49 @@
       el.style.height = ''
     }
   })
-  
+
+  // ── Streaming state ──────────────────────────────────────────
+  let streamingActive = $state(false)
+  let streamingText = $state('')
+  let streamingReasoning = $state(false)
+  let streamingToolCards = $state([]) // [{name, args, status}]
+
+  EventsOn('llm:stream', (data) => {
+    if (!activeConversation || data.conversation_id !== activeConversation.id) return
+    const ev = data.event
+    switch (ev.type) {
+      case 'reasoning_start':
+        streamingActive = true
+        streamingReasoning = true
+        break
+      case 'reasoning_end':
+        streamingReasoning = false
+        break
+      case 'content_delta':
+        streamingActive = true
+        streamingText += ev.content
+        break
+      case 'tool_call_start':
+        streamingActive = true
+        streamingToolCards = [...streamingToolCards, { name: ev.tool_name || 'tool', args: '', status: 'forming' }]
+        break
+      case 'tool_call_delta':
+        streamingToolCards = streamingToolCards.map(c =>
+          c.name === ev.tool_name && ev.arguments ? { ...c, args: c.args + ev.arguments } : c)
+        break
+      case 'tool_call_end':
+        streamingToolCards = streamingToolCards.map(c =>
+          c.name === ev.tool_name ? { ...c, status: 'executing' } : c)
+        break
+      case 'done':
+        streamingActive = false
+        streamingText = ''
+        streamingToolCards = []
+        streamingReasoning = false
+        break
+    }
+  })
+
   function handleInput(e) {
     localMessage = e.target.value
     onMessageChange(localMessage)
@@ -50,7 +107,7 @@
     el.style.height = 'auto'
     el.style.height = Math.min(el.scrollHeight, Math.floor(window.innerHeight * 0.5)) + 'px'
   }
-  
+
   let isDragging = $state(false)
   let dragStartY = $state(0)
   let dragStartHeight = $state(0)
@@ -86,16 +143,16 @@
       document.removeEventListener('mouseup', handleUp)
     }
   })
-  
+
   function handleKeyDown(e) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      if (localMessage.trim()) {
+      if (localMessage.trim() && !processingMessage) {
         sendAndReset()
       }
     }
   }
-  
+
   function sendAndReset() {
     // Clear custom height and reset textarea to default after submit
     const cid = activeConversation?.id
@@ -107,7 +164,12 @@
     if (textareaEl) textareaEl.style.height = ''
     onSendMessage()
   }
-  
+
+  function handleCancel() {
+    CancelProcessing(activeConversation?.id).catch(e =>
+      console.error('Failed to cancel processing:', e))
+  }
+
   function parsePayload(metadata) {
     if (!metadata) return null
     try {
@@ -128,9 +190,31 @@
     (() => {
       let msgs = showTechDetails
         ? enrichedMessages
-        : enrichedMessages.filter(m => m.role === 'user' || m.role === 'assistant')
-      
-      // Apply max_messages limit — show last N messages (skip if showing all)
+        : enrichedMessages.filter(m => m.role === 'user' || m.role === 'assistant' || m.role === 'system')
+
+      // Merge consecutive assistant messages into a single bubble.
+      // The tool-calling protocol naturally produces two assistant
+      // messages per turn (one for the results table, one for the
+      // model's prose answer). Combining them here keeps the chat
+      // clean without requiring the backend to produce a single
+      // combined message.
+      let merged = []
+      for (let i = 0; i < msgs.length; i++) {
+        if (msgs[i].role === 'assistant' && i + 1 < msgs.length && msgs[i + 1].role === 'assistant') {
+          merged.push({
+            ...msgs[i],
+            content: msgs[i].content + msgs[i + 1].content,
+            id: msgs[i].id,
+            created_at: msgs[i + 1].created_at
+          })
+          i++ // skip the next one since we merged it
+        } else {
+          merged.push(msgs[i])
+        }
+      }
+      msgs = merged
+
+      // Apply max_messages limit - show last N messages (skip if showing all)
       if (!showHiddenMessages && maxMessages > 0 && msgs.length > maxMessages) {
         return msgs.slice(msgs.length - maxMessages)
       }
@@ -236,13 +320,13 @@
     const diffMs = now - date
     const diffMins = Math.floor(diffMs / 60000)
     const diffHours = Math.floor(diffMs / 3600000)
-    
+
     const timeStr = date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
-    
+
     if (diffMins < 1) return 'Just now'
     if (diffMins < 60) return `${diffMins}m ago`
     if (diffHours < 24) return timeStr
-    
+
     const yesterday = new Date(now)
     yesterday.setDate(yesterday.getDate() - 1)
     if (date.toDateString() === yesterday.toDateString()) {
@@ -268,6 +352,48 @@
   })
 
   let autoScrollTimer
+
+  function handlePrintPDF() {
+    const scale = localStorage.getItem('yourql-ui-scale') || 'medium'
+    const fontSize = { small: '12px', medium: '13px', large: '14px' }[scale]
+    const style = document.createElement('style')
+    style.id = 'print-scale'
+    style.textContent = '@media print { html { font-size: ' + fontSize + ' !important; } }'
+    document.head.appendChild(style)
+    document.title = 'YourQL - ' + (activeConversation?.title || 'Untitled') + ' - ' + new Date().toLocaleDateString()
+    ExportConversationPDF()
+    setTimeout(() => {
+      document.title = 'YourQL'
+      const el = document.getElementById('print-scale')
+      if (el) el.remove()
+    }, 1000)
+  }
+
+  async function handleExportHTML() {
+    if (!activeConversation?.id) return
+    const err = await ExportConversationHTML(activeConversation.id)
+    if (err) console.error('HTML export failed:', err)
+  }
+
+  async function handleExportMarkdown() {
+    if (!activeConversation?.id) return
+    const err = await ExportConversationMarkdown(activeConversation.id)
+    if (err) console.error('Markdown export failed:', err)
+  }
+
+  // Auto-scroll as streaming content arrives — fires on every character
+  // delta so the user always sees the latest output without manual scrolling.
+  $effect(() => {
+    // touch the streaming state so Svelte re-runs on every delta
+    const _t = streamingText
+    const _c = streamingToolCards.length
+    if (streamingActive && messagesEl) {
+      messagesEl.scrollTo({
+        top: messagesEl.scrollHeight,
+        behavior: 'instant'
+      })
+    }
+  })
 </script>
 
 <div class="conversation-view">
@@ -292,25 +418,40 @@
         {/if}
       </div>
     </div>
-    
-    <button class="export-btn-header" onclick={() => {
-      const scale = localStorage.getItem('yourql-ui-scale') || 'medium'
-      const fontSize = { small: '12px', medium: '13px', large: '14px' }[scale]
-      const style = document.createElement('style')
-      style.id = 'print-scale'
-      style.textContent = '@media print { html { font-size: ' + fontSize + ' !important; } }'
-      document.head.appendChild(style)
-      document.title = 'YourQL - ' + (activeConversation?.title || 'Untitled') + ' - ' + new Date().toLocaleDateString()
-      ExportConversationPDF()
-      setTimeout(() => {
-        document.title = 'YourQL'
-        const el = document.getElementById('print-scale')
-        if (el) el.remove()
-      }, 1000)
-    }} title="Export as PDF" type="button"><FileDown size={16} /></button>
+
+    <div class="export-btn-wrapper">
+      <button
+        class="export-btn-header"
+        onclick={() => showExportMenu = !showExportMenu}
+        title="Export conversation"
+        type="button"
+      ><FileDown size={16} /></button>
+      {#if showExportMenu}
+        <div class="export-popover" role="menu">
+          <button
+            class="export-popover-item"
+            onclick={() => { showExportMenu = false; handlePrintPDF() }}
+            type="button"
+            role="menuitem"
+          ><Printer size={14} /><span>Print to PDF</span></button>
+          <button
+            class="export-popover-item"
+            onclick={() => { showExportMenu = false; handleExportHTML() }}
+            type="button"
+            role="menuitem"
+          ><FileCode size={14} /><span>Export as HTML</span></button>
+          <button
+            class="export-popover-item"
+            onclick={() => { showExportMenu = false; handleExportMarkdown() }}
+            type="button"
+            role="menuitem"
+          ><FileText size={14} /><span>Export as Markdown</span></button>
+        </div>
+      {/if}
+    </div>
     <button class="gear-btn-header" onclick={onGearClick} title="Conversation settings" type="button"><Settings size={16} /></button>
   </div>
-  
+
   <div class="messages-container" bind:this={messagesEl}>
     {#if maxMessages > 0 && visibleMessageCount > maxMessages}
       <div class="collapsed-messages-banner">
@@ -336,44 +477,143 @@
             {#if message.role === 'user'}
               <!-- §4.8: preserve line breaks -->
               <div class="user-message" style="white-space: pre-wrap">{message.content}</div>
+            {:else if message.role === 'system'}
+              <div class="system-message">{message.content}</div>
             {:else if message.role === 'exploration'}
               <div class="exploration-result">
                 <div class="exploration-header">
                   <span class="exploration-icon"><Search size={14} /></span>
                   <span class="exploration-title">{message.content}</span>
                 </div>
-                
+
                 {#if message.payload}
-                  <div class="payload-section">
-                    <div class="payload-toggle" onclick={() => togglePayload(message.id, 'request')}>
-                      <span>up Request Payload</span>
-                      <span class="toggle-icon">{#if payloadToggles[message.id + '-request']}<ChevronDown size={12} />{:else}<ChevronRight size={12} />{/if}</span>
-                    </div>
-                    {#if payloadToggles[message.id + '-request']}
-                      <pre class="payload-content">{JSON.stringify(message.payload.request_json, null, 2)}</pre>
-                    {/if}
-                  </div>
-                  
-                  <div class="payload-section">
-                    <div class="payload-toggle" onclick={() => togglePayload(message.id, 'response')}>
-                      <span>down Response Payload</span>
-                      <span class="toggle-icon">{#if payloadToggles[message.id + '-response']}<ChevronDown size={12} />{:else}<ChevronRight size={12} />{/if}</span>
-                    </div>
-                    {#if payloadToggles[message.id + '-response']}
-                      <pre class="payload-content">{JSON.stringify(message.payload.response_json, null, 2)}</pre>
-                    {/if}
-                  </div>
-                  
-                  {#if message.payload.llm_messages}
-                    <div class="payload-section">
-                      <div class="payload-toggle" onclick={() => togglePayload(message.id, 'messages')}>
-                        <span><MessageSquare size={12} /> LLM Messages ({message.payload.llm_messages.length})</span>
-                        <span class="toggle-icon">{#if payloadToggles[message.id + '-messages']}<ChevronDown size={12} />{:else}<ChevronRight size={12} />{/if}</span>
-                      </div>
-                      {#if payloadToggles[message.id + '-messages']}
-                        <pre class="payload-content">{JSON.stringify(message.payload.llm_messages, null, 2)}</pre>
+                  {#if message.payload.version}
+                    <!-- New TechDetail format -->
+                    <div class="tech-detail-summary">
+                      {#if message.payload.kind}
+                        <span class="tech-detail-chip">{message.payload.kind}</span>
+                      {/if}
+                      {#if message.payload.duration_ms}
+                        <span class="tech-detail-stat">{message.payload.duration_ms}ms</span>
+                      {/if}
+                      {#if message.payload.request?.message_count}
+                        <span class="tech-detail-stat">{message.payload.request.message_count} msgs</span>
+                      {/if}
+                      {#if message.payload.response?.tool_calls?.length}
+                        <span class="tech-detail-stat">{message.payload.response.tool_calls.length} tool call(s)</span>
+                      {/if}
+                      {#if message.payload.response?.finish_reason}
+                        <span class="tech-detail-stat">→ {message.payload.response.finish_reason}</span>
+                      {/if}
+                      {#if message.payload.sql?.query}
+                        <span class="tech-detail-stat">SQL: {message.payload.sql.row_count || 0} rows</span>
+                      {/if}
+                      {#if message.payload.stream?.chunk_count}
+                        <span class="tech-detail-stat">{message.payload.stream.chunk_count} chunks</span>
                       {/if}
                     </div>
+
+                    <!-- Expand for SQL query -->
+                    {#if message.payload.sql?.query}
+                      <div class="payload-section">
+                        <div class="payload-toggle" onclick={() => togglePayload(message.id, 'sql')}>
+                          <span>📋 SQL: {message.payload.sql.query.substring(0, 80)}{message.payload.sql.query.length > 80 ? '…' : ''}</span>
+                          <span class="toggle-icon">{#if payloadToggles[message.id + '-sql']}<ChevronDown size={12} />{:else}<ChevronRight size={12} />{/if}</span>
+                        </div>
+                        {#if payloadToggles[message.id + '-sql']}
+                          <pre class="payload-content">{message.payload.sql.query}</pre>
+                          {#if message.payload.sql.error}
+                            <div class="error-detail">{message.payload.sql.error}</div>
+                          {/if}
+                        {/if}
+                      </div>
+                    {/if}
+
+<!-- Expand for raw model output — the full text the model emitted before parsing. -->
+                    {#if message.payload.response?.raw_output}
+                      <div class="payload-section">
+                        <div class="payload-toggle" onclick={() => togglePayload(message.id, 'raw')}>
+                          <span>📄 Raw model output ({message.payload.response.raw_output.length} chars)</span>
+                          <span class="toggle-icon">{#if payloadToggles[message.id + '-raw']}<ChevronDown size={12} />{:else}<ChevronRight size={12} />{/if}</span>
+                        </div>
+                        {#if payloadToggles[message.id + '-raw']}
+                          <pre class="payload-content">{message.payload.response.raw_output}</pre>
+                        {/if}
+                      </div>
+                    {/if}
+
+                    <!-- Expand for request messages -->
+                    {#if message.payload.request?.raw_messages}
+                      <div class="payload-section">
+                        <div class="payload-toggle" onclick={() => togglePayload(message.id, 'req-msgs')}>
+                          <span>📥 Request messages ({message.payload.request.message_count} total)</span>
+                          <span class="toggle-icon">{#if payloadToggles[message.id + '-req-msgs']}<ChevronDown size={12} />{:else}<ChevronRight size={12} />{/if}</span>
+                        </div>
+                        {#if payloadToggles[message.id + '-req-msgs']}
+                          <pre class="payload-content">{message.payload.request.raw_messages}</pre>
+                        {/if}
+                      </div>
+                    {/if}
+
+                    <!-- Expand for tool call arguments -->
+                    {#each message.payload.response?.tool_calls || [] as tc}
+                      <div class="payload-section">
+                        <div class="payload-toggle" onclick={() => togglePayload(message.id, 'tc-' + tc.name)}>
+                          <span>🔧 {tc.name}: {tc.arguments?.substring(0, 60)}{tc.arguments?.length > 60 ? '…' : ''}</span>
+                          <span class="toggle-icon">{#if payloadToggles[message.id + '-tc-' + tc.name]}<ChevronDown size={12} />{:else}<ChevronRight size={12} />{/if}</span>
+                        </div>
+                        {#if payloadToggles[message.id + '-tc-' + tc.name]}
+                          <pre class="payload-content">{tc.arguments}</pre>
+                        {/if}
+                      </div>
+                    {/each}
+
+                    <!-- Expand for raw error (legacy error messages) -->
+                    {#if showTechDetails && message.payload?.raw_error}
+                      <div class="payload-section error-detail">
+                        <div class="payload-toggle" onclick={() => togglePayload(message.id, 'error')}>
+                          <span>⚠ Raw Error Details</span>
+                          <span class="toggle-icon">{#if payloadToggles[message.id + '-error']}<ChevronDown size={12} />{:else}<ChevronRight size={12} />{/if}</span>
+                        </div>
+                        {#if payloadToggles[message.id + '-error']}
+                          <pre class="payload-content">{message.payload.raw_error}</pre>
+                        {/if}
+                      </div>
+                    {/if}
+
+                  {:else if message.payload.request_json}
+                    <!-- Old payload format (legacy) -->
+                    <div class="payload-section">
+                      <div class="payload-toggle" onclick={() => togglePayload(message.id, 'request')}>
+                        <span>up Request Payload</span>
+                        <span class="toggle-icon">{#if payloadToggles[message.id + '-request']}<ChevronDown size={12} />{:else}<ChevronRight size={12} />{/if}</span>
+                      </div>
+                      {#if payloadToggles[message.id + '-request']}
+                        <pre class="payload-content">{JSON.stringify(message.payload.request_json, null, 2)}</pre>
+                      {/if}
+                    </div>
+
+                    <div class="payload-section">
+                      <div class="payload-toggle" onclick={() => togglePayload(message.id, 'response')}>
+                        <span>down Response Payload</span>
+                        <span class="toggle-icon">{#if payloadToggles[message.id + '-response']}<ChevronDown size={12} />{:else}<ChevronRight size={12} />{/if}</span>
+                      </div>
+                      {#if payloadToggles[message.id + '-response']}
+                        <pre class="payload-content">{JSON.stringify(message.payload.response_json, null, 2)}</pre>
+                      {/if}
+                    </div>
+
+                    {#if message.payload.llm_messages}
+                      <div class="payload-section">
+                        <div class="payload-toggle" onclick={() => togglePayload(message.id, 'messages')}>
+                          <span><MessageSquare size={12} /> LLM Messages ({message.payload.llm_messages.length})</span>
+                          <span class="toggle-icon">{#if payloadToggles[message.id + '-messages']}<ChevronDown size={12} />{:else}<ChevronRight size={12} />{/if}</span>
+                        </div>
+                        {#if payloadToggles[message.id + '-messages']}
+                          <pre class="payload-content">{JSON.stringify(message.payload.llm_messages, null, 2)}</pre>
+                        {/if}
+                      </div>
+                    {/if}
                   {/if}
                 {/if}
               </div>
@@ -403,8 +643,41 @@
           </div>
         </div>
       {/each}
-      
-      {#if processingMessage}
+
+      {#if streamingActive}
+        <div class="message assistant">
+          <div class="message-content">
+            <div class="streaming-bubble">
+              {#if streamingReasoning}
+                <details class="streaming-reasoning">
+                  <summary>💭 Thinking…</summary>
+                  <div class="streaming-reasoning-text">{streamingText || '…'}</div>
+                </details>
+              {:else}
+                {#if streamingText}
+                  <div class="streaming-text">{streamingText}</div>
+                {/if}
+              {/if}
+              {#each streamingToolCards as card}
+                <div class="streaming-tool-card">
+                  <span class="tool-status-dot"></span>
+                  <span class="tool-name">{card.name}</span>
+                  <span class="tool-status">{card.status === 'executing' ? '⏳ running…' : '⚙ forming…'}</span>
+                </div>
+              {/each}
+              {#if !streamingText && streamingToolCards.length === 0}
+                <div class="loading-indicator">
+                  <div class="loading-dots">
+                    <span></span><span></span><span></span>
+                  </div>
+                </div>
+              {/if}
+            </div>
+          </div>
+        </div>
+      {/if}
+
+      {#if processingMessage && !streamingActive}
         <div class="message assistant">
           <div class="message-content">
             <div class="loading-indicator">
@@ -420,7 +693,7 @@
       {/if}
     {/if}
   </div>
-  
+
   <div class="message-input-container">
     <div
       class="resize-handle"
@@ -434,7 +707,7 @@
     {#if messageError}
       <div class="error-message">{messageError}</div>
     {/if}
-    
+
     <div class="message-input-wrapper">
       <textarea
         bind:this={textareaEl}
@@ -444,16 +717,28 @@
         onkeydown={handleKeyDown}
         rows="1"
       ></textarea>
-      <button 
-        class="send-btn" 
-        onclick={sendAndReset}
-        disabled={processingMessage || !localMessage.trim()}
-      >
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <line x1="22" y1="2" x2="11" y2="13"></line>
-          <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-        </svg>
-      </button>
+      {#if processingMessage}
+        <button
+          class="cancel-btn"
+          onclick={handleCancel}
+          title="Cancel processing"
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+            <rect x="6" y="6" width="12" height="12" rx="2"></rect>
+          </svg>
+        </button>
+      {:else}
+        <button
+          class="send-btn"
+          onclick={sendAndReset}
+          disabled={!localMessage.trim()}
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="22" y1="2" x2="11" y2="13"></line>
+            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+          </svg>
+        </button>
+      {/if}
     </div>
   </div>
 </div>
@@ -473,7 +758,7 @@
     align-items: center;
     gap: var(--space-2xl);
   }
-  
+
   .gear-btn-header {
     display: flex;
     align-items: center;
@@ -489,7 +774,7 @@
     transition: all 0.2s ease;
     flex-shrink: 0;
   }
-  
+
   .gear-btn-header:hover { background: var(--border-primary); color: var(--text-primary); }
 
   .export-btn-header {
@@ -510,18 +795,53 @@
 
   .export-btn-header:hover { background: var(--border-primary); color: var(--text-primary); }
 
+  .export-btn-wrapper { position: relative; flex-shrink: 0; }
+
+  .export-popover {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-md);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+    z-index: 100;
+    min-width: 180px;
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .export-popover-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    background: none;
+    border: none;
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-size: var(--font-sm);
+    cursor: pointer;
+    text-align: left;
+    width: 100%;
+    transition: background 0.15s ease;
+  }
+
+  .export-popover-item:hover { background: var(--bg-secondary); }
+
   @media print {
-    @page { size: portrait; }
+    @page { size: portrait; margin: 0.5in; }
     * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .conversation-header .back-btn,
-    .conversation-header .export-btn-header,
+    .conversation-header .export-btn-wrapper,
     .conversation-header .gear-btn-header,
     .conversation-header .conversation-meta,
     .message-input-container,
     .collapsed-messages-banner { display: none !important; }
     .conversation-view { height: auto; overflow: visible; }
     .messages-container { overflow: visible; padding: 0; }
-    .message { break-inside: avoid; page-break-inside: avoid; }
     .assistant-message { background: var(--bg-primary); border: 1px solid var(--border-primary); }
     .user-message { background: var(--color-accent-print, #0288d1); color: #fff; }
     .results-details[open] .table-container { max-height: none; overflow: visible; }
@@ -553,7 +873,7 @@
     border-radius: var(--radius-md);
     font-size: var(--font-sm);
   }
-  
+
   .context-tag {
     background: rgba(102, 102, 102, 0.08);
     color: var(--text-secondary);
@@ -623,6 +943,14 @@
     line-height: 1.5;
   }
 
+  .system-message {
+    color: var(--text-tertiary);
+    font-size: var(--font-sm, 0.8rem);
+    text-align: center;
+    padding: var(--space-sm) 0;
+    opacity: 0.7;
+  }
+
   .assistant-message {
     background: var(--bg-tertiary);
     color: var(--text-primary);
@@ -683,11 +1011,72 @@
   .loading-dots span:nth-child(1) { animation-delay: -0.32s; }
   .loading-dots span:nth-child(2) { animation-delay: -0.16s; }
 
+  /* ── Streaming bubble ─────────────────────────────────────── */
+  .streaming-bubble {
+    background: var(--bg-primary);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-lg);
+    padding: var(--space-lg) var(--space-xl);
+    font-size: var(--font-sm);
+    line-height: 1.6;
+  }
+  .streaming-text {
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .streaming-reasoning {
+    margin: 0;
+  }
+  .streaming-reasoning summary {
+    cursor: pointer;
+    color: var(--text-secondary);
+    font-size: var(--font-xs);
+    user-select: none;
+    padding: var(--space-xs) 0;
+  }
+  .streaming-reasoning-text {
+    font-family: var(--font-mono, monospace);
+    font-size: var(--font-2xs);
+    color: var(--text-tertiary);
+    background: var(--bg-secondary);
+    border-radius: var(--radius-md);
+    padding: var(--space-md);
+    margin-top: var(--space-xs);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .streaming-tool-card {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-sm) var(--space-md);
+    margin-top: var(--space-sm);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-md);
+    font-size: var(--font-2xs);
+  }
+  .tool-status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--color-accent);
+    animation: loading 1.4s infinite ease-in-out;
+  }
+  .tool-name {
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+  .tool-status {
+    color: var(--text-secondary);
+    margin-left: auto;
+  }
+
   @keyframes loading {
     0%, 80%, 100% { transform: scale(0.6); opacity: 0.5; }
     40% { transform: scale(1); opacity: 1; }
   }
-  
+
   @keyframes messageSlideIn {
     from {
       opacity: 0;
@@ -775,7 +1164,22 @@
 
   .send-btn:hover:not(:disabled) { background: var(--color-accent); }
   .send-btn:disabled { opacity: 0.6; cursor: not-allowed; }
-  
+
+  .cancel-btn {
+    background: var(--color-error, #ef4444);
+    color: #ffffff;
+    border: none;
+    border-radius: var(--radius-md);
+    width: 2.75rem; height: 2.75rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+
+  .cancel-btn:hover { background: var(--color-error-hover, #dc2626); }
+
   .exploration-result {
     background: var(--bg-tertiary);
     border: 1px solid var(--border-primary);
@@ -797,21 +1201,47 @@
     margin-left: var(--space-xs);
     color: var(--text-tertiary);
   }
-  
+
   .exploration-header {
     display: flex; align-items: center; gap: var(--space-md);
     margin-bottom: var(--space-xl); padding-bottom: var(--space-md);
     border-bottom: 1px solid #e0e0e0;
   }
-  
+
   .exploration-icon { font-size: var(--font-xl); }
   .exploration-title { font-weight: 600; color: var(--color-accent); font-size: var(--font-md); }
-  
+
+  .tech-detail-summary {
+    display: flex; flex-wrap: wrap; gap: var(--space-sm);
+    padding: var(--space-md) 0 var(--space-xs);
+    font-size: var(--font-2xs);
+  }
+  .tech-detail-chip {
+    background: var(--color-accent-light);
+    color: var(--color-accent);
+    padding: 1px 6px;
+    border-radius: var(--radius-sm);
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: var(--font-3xs);
+  }
+  .tech-detail-stat {
+    color: var(--text-secondary);
+    padding: 1px 4px;
+    border-right: 1px solid var(--border-primary);
+  }
+  .tech-detail-stat:last-child { border-right: none; }
+  .error-detail {
+    color: var(--color-danger, #e74c3c);
+    font-size: var(--font-xs);
+    padding: var(--space-sm) var(--space-md);
+  }
+
   .payload-section {
     margin-top: var(--space-xl); border: 1px solid var(--border-primary);
     border-radius: var(--radius-md); overflow: hidden;
   }
-  
+
   .payload-toggle {
     display: flex; justify-content: space-between; align-items: center;
     padding: var(--space-lg) var(--space-2xl); background: var(--bg-secondary);
@@ -820,7 +1250,7 @@
   }
   .payload-toggle:hover { background: var(--border-primary); }
   .toggle-icon { font-size: var(--font-sm); color: var(--text-secondary); }
-  
+
   .payload-content {
     background: #1e1e1e; color: #d4d4d4;
     padding: var(--space-xl) margin: 0;

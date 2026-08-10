@@ -24,7 +24,15 @@
     CancelGoogleSheetsAuthTemp,
     RevokeGoogleSheetsAuth,
     MigrateGoogleAuthConfig,
-    DetectModelMaxTokens
+    DetectModelMaxTokens,
+    GetDiscussionDefaults,
+    UpdateDiscussionDefaults,
+    GetAgentLoopConfig,
+    SetAgentLoopConfigKey,
+    ResetAgentLoopConfigKey,
+    ResetAllAgentLoopConfig,
+    GetAppSetting,
+    SetAppSetting
   } from '../wailsjs/go/main/App.js'
   import { EventsOn, EventsOff, BrowserOpenURL } from '../wailsjs/runtime/runtime.js'
 
@@ -39,6 +47,188 @@
   let currentTheme = $state(typeof localStorage !== 'undefined' ? (localStorage.getItem('yourql-theme') || 'system') : 'system')
   let currentAccent = $state(typeof localStorage !== 'undefined' ? (localStorage.getItem('yourql-accent') || '#0288d1') : '#0288d1')
 
+  // ==================== Discussion Defaults ====================
+  let defaultsForm = $state({
+    llm_provider_id: null,
+    data_source_id: null,
+    max_context_messages: 5,
+    max_messages: 0,
+    summarize: false,
+    viz_enabled: true,
+    tech_details: false,
+    context_details: false,
+    streaming_enabled: false
+  })
+
+  async function loadDefaults() {
+    try {
+      const d = await GetDiscussionDefaults()
+      if (d) {
+        defaultsForm.llm_provider_id = d.llm_provider_id ?? null
+        defaultsForm.data_source_id = d.data_source_id ?? null
+        defaultsForm.max_context_messages = d.max_context_messages ?? 5
+        defaultsForm.max_messages = d.max_messages ?? 0
+        defaultsForm.summarize = d.summarize ?? false
+        defaultsForm.viz_enabled = d.viz_enabled ?? true
+        defaultsForm.tech_details = d.tech_details ?? false
+        defaultsForm.context_details = d.context_details ?? false
+        defaultsForm.streaming_enabled = d.streaming_enabled ?? false
+      }
+    } catch (e) {
+      console.error('Failed to load defaults:', e)
+    }
+  }
+
+  async function saveDefaults() {
+    try {
+      await UpdateDiscussionDefaults(defaultsForm)
+    } catch (e) {
+      console.error('Failed to save defaults:', e)
+    }
+  }
+
+  async function resetDefaults() {
+    defaultsForm.llm_provider_id = null
+    defaultsForm.data_source_id = null
+    defaultsForm.max_context_messages = 5
+    defaultsForm.max_messages = 0
+    defaultsForm.summarize = false
+    defaultsForm.viz_enabled = true
+    defaultsForm.tech_details = false
+    defaultsForm.context_details = false
+    defaultsForm.streaming_enabled = false
+    await saveDefaults()
+  }
+
+  // ==================== Agent Loop Config ====================
+  let agentLoopEnabled = $state(false)
+  let agentLoopConfigValues = $state({})
+  let agentLoopFields = $state([])
+  let agentLoopStatus = $state('')
+
+  const sectionNames = ['tool_descriptions', 'instructions', 'safety', 'charts', 'persona', 'responses']
+  const sectionLabels = {
+    tool_descriptions: 'Tool Descriptions',
+    instructions: 'System Instructions',
+    safety: 'Exploration Safety Rules',
+    charts: 'Chart Guidance',
+    persona: 'Fallback Persona',
+    responses: 'Tool Response Messages'
+  }
+
+  async function loadAgentLoopEnabled() {
+    try {
+      const val = await GetAppSetting('agent_loop_advanced_enabled')
+      agentLoopEnabled = val === 'true'
+    } catch (e) {
+      agentLoopEnabled = false
+    }
+  }
+
+  async function toggleAgentLoop() {
+    agentLoopEnabled = !agentLoopEnabled
+    try {
+      await SetAppSetting('agent_loop_advanced_enabled', agentLoopEnabled ? 'true' : 'false')
+    } catch (e) {
+      console.error('Failed to save agent loop toggle:', e)
+    }
+  }
+
+  async function loadAgentLoopConfig() {
+    try {
+      const result = await GetAgentLoopConfig()
+      agentLoopFields = result.fields || []
+      const cfg = result.config || {}
+      // Map config keys to a flat lookup for the UI
+      const vals = {}
+      for (const f of agentLoopFields) {
+        // Derive camelCase field name from the config struct
+        const fieldName = configKeyToFieldName(f.key)
+        vals[f.key] = cfg[fieldName] || ''
+      }
+      agentLoopConfigValues = vals
+    } catch (e) {
+      console.error('Failed to load agent loop config:', e)
+    }
+  }
+
+  function configKeyToFieldName(key) {
+    // Map dotted keys to AgentLoopConfig struct field names.
+    const map = {
+      'tool.query_database.description': 'tool_query_database_desc',
+      'tool.query_database.params.sql.description': 'tool_query_database_sql_desc',
+      'tool.query_database.params.is_exploration.description': 'tool_query_database_is_exploration_desc',
+      'tool.query_database.params.reasoning.description': 'tool_query_database_reasoning_desc',
+      'tool.respond_to_user.description': 'tool_respond_to_user_desc',
+      'tool.respond_to_user.params.text.description': 'tool_respond_to_user_text_desc',
+      'tool.render_chart.description': 'tool_render_chart_desc',
+      'tool.render_chart.params.chart_config.description': 'tool_render_chart_config_desc',
+      'instructions.1': 'instruction_1',
+      'instructions.2': 'instruction_2',
+      'instructions.2a': 'instruction_2a',
+      'instructions.2b': 'instruction_2b',
+      'instructions.2c': 'instruction_2c',
+      'instructions.3': 'instruction_3',
+      'instructions.4': 'instruction_4',
+      'instructions.5': 'instruction_5',
+      'instructions.6': 'instruction_6',
+      'safety.preamble': 'safety_preamble',
+      'safety.strict.rules': 'safety_strict',
+      'safety.moderate.rules': 'safety_moderate',
+      'safety.relaxed.rules': 'safety_relaxed',
+      'safety.footer': 'safety_footer',
+      'safety.oneshot': 'safety_oneshot',
+      'charts.intro': 'charts_intro',
+      'charts.format': 'charts_format',
+      'charts.timing': 'charts_timing',
+      'persona.fallback': 'persona_fallback',
+      'response.parse_error': 'response_parse_error',
+      'response.exploration_exhausted': 'response_exploration_exhausted',
+      'response.safety_rejected': 'response_safety_rejected',
+      'response.oneshot_violation': 'response_oneshot_violation',
+      'response.unknown_tool': 'response_unknown_tool',
+      'response.render_chart_no_pending': 'response_render_chart_no_pending',
+      'response.render_chart_parse_error': 'response_render_chart_parse_error',
+      'response.respond_parse_error': 'response_respond_parse_error',
+      'response.loop_exhausted': 'response_loop_exhausted',
+      'response.empty_truncated': 'response_empty_truncated'
+    }
+    return map[key] || key
+  }
+
+  async function saveAgentLoopField(key, value) {
+    agentLoopStatus = ''
+    try {
+      await SetAgentLoopConfigKey(key, value)
+      agentLoopStatus = 'Saved'
+      setTimeout(() => { agentLoopStatus = '' }, 1500)
+    } catch (e) {
+      agentLoopStatus = 'Error: ' + e.toString()
+    }
+  }
+
+  async function resetAgentLoopField(key) {
+    try {
+      await ResetAgentLoopConfigKey(key)
+      // Reload to get the default value back
+      await loadAgentLoopConfig()
+    } catch (e) {
+      console.error('Failed to reset field:', e)
+    }
+  }
+
+  async function resetAllAgentLoop() {
+    if (!confirm('This will reset all Agent Loop settings to their defaults. This cannot be undone. Continue?')) return
+    try {
+      await ResetAllAgentLoopConfig()
+      await loadAgentLoopConfig()
+      agentLoopStatus = 'All settings restored to defaults'
+      setTimeout(() => { agentLoopStatus = '' }, 3000)
+    } catch (e) {
+      agentLoopStatus = 'Error: ' + e.toString()
+    }
+  }
+
   const accentPresets = [
     { hex: '#0288d1', name: 'Blue' },
     { hex: '#388e3c', name: 'Green' },
@@ -48,6 +238,20 @@
     { hex: '#00695c', name: 'Teal' }
   ]
 
+  function hexToLuminance(hex) {
+    const r = parseInt(hex.slice(1, 3), 16) / 255
+    const g = parseInt(hex.slice(3, 5), 16) / 255
+    const b = parseInt(hex.slice(5, 7), 16) / 255
+    const linearize = (c) => c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4)
+    return 0.2126 * linearize(r) + 0.7152 * linearize(g) + 0.0722 * linearize(b)
+  }
+
+  let accentLuminanceWarning = $derived(
+    currentAccent && hexToLuminance(currentAccent) > 0.55
+      ? '⚠ This color may have poor contrast on light backgrounds. Consider a darker shade.'
+      : ''
+  )
+
   // Skills state
   let skills = $state([])
   let skillEditor = $state(null)
@@ -55,6 +259,7 @@
 
   onMount(() => {
     loadSkills()
+    loadAgentLoopEnabled()
   })
 
   function applyScale(scale) {
@@ -731,11 +936,25 @@
       Skills
     </button>
     <button
+      class="tab-btn {activeSettingsTab === 'defaults' ? 'active' : ''}"
+      onclick={() => { activeSettingsTab = 'defaults'; loadDefaults() }}
+    >
+      Defaults
+    </button>
+    <button
       class="tab-btn {activeSettingsTab === 'general' ? 'active' : ''}"
       onclick={() => activeSettingsTab = 'general'}
     >
       General
     </button>
+    {#if agentLoopEnabled}
+      <button
+        class="tab-btn {activeSettingsTab === 'agentloop' ? 'active' : ''}"
+        onclick={() => { activeSettingsTab = 'agentloop'; loadAgentLoopConfig() }}
+      >
+        Agent Loop
+      </button>
+    {/if}
 
   </div>
 
@@ -1325,6 +1544,94 @@
           {/each}
         {/if}
       </div>
+    {:else if activeSettingsTab === 'defaults'}
+      <div class="settings-section">
+        <h3>Defaults for New Discussions</h3>
+        <p class="section-desc">Configure the default settings applied when you create a new discussion.</p>
+
+        <div class="form-card">
+          <h4>Provider & Source</h4>
+          <div class="form-group">
+            <label>Default LLM Provider</label>
+            <select bind:value={defaultsForm.llm_provider_id} onchange={saveDefaults}>
+              <option value={null}>None (ask each time)</option>
+              {#each llmProviders as p}
+                <option value={p.id}>{p.name}</option>
+              {/each}
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Default Data Source</label>
+            <select bind:value={defaultsForm.data_source_id} onchange={saveDefaults}>
+              <option value={null}>None (ask each time)</option>
+              {#each dataSources as ds}
+                <option value={ds.id}>{ds.name}</option>
+              {/each}
+            </select>
+          </div>
+        </div>
+
+        <div class="form-card">
+          <h4>Conversation Behavior</h4>
+          <div class="form-group">
+            <label>Messages in Context</label>
+            <input type="number" min="1" max="15" bind:value={defaultsForm.max_context_messages} onchange={saveDefaults} />
+            <p class="hint">How many recent messages to send to the LLM (max 15). Default: 5. Higher values risk context-window exhaustion and empty responses.</p>
+          </div>
+          <div class="form-group">
+            <label>Total Messages (0 = unlimited)</label>
+            <input type="number" min="0" max="1000" bind:value={defaultsForm.max_messages} onchange={saveDefaults} />
+            <p class="hint">Maximum messages stored in the conversation history.</p>
+          </div>
+        </div>
+
+        <div class="form-card">
+          <h4>Toggles</h4>
+          <div class="checkbox-group">
+            <label>
+              <input type="checkbox" bind:checked={defaultsForm.tech_details} onchange={saveDefaults} />
+              SHOW TECHNICAL DETAILS
+            </label>
+          </div>
+          <div class="checkbox-group">
+            <label>
+              <input type="checkbox" bind:checked={defaultsForm.context_details} onchange={saveDefaults} />
+              Show context &amp; token details
+            </label>
+          </div>
+          <div class="checkbox-group">
+            <label>
+              <input type="checkbox" bind:checked={defaultsForm.summarize} onchange={saveDefaults} />
+              Summarize results
+            </label>
+            <div style="color: var(--text-tertiary); font-size: var(--font-xs); margin-top: var(--space-2xs);">
+              LLM summarizes query results as a plain-English answer
+            </div>
+          </div>
+          <div class="checkbox-group">
+            <label>
+              <input type="checkbox" bind:checked={defaultsForm.viz_enabled} onchange={saveDefaults} />
+              Data visualization
+            </label>
+            <div style="color: var(--text-tertiary); font-size: var(--font-xs); margin-top: var(--space-2xs);">
+              LLM generates charts (bar, line, pie, scatter) when appropriate
+            </div>
+          </div>
+          <div class="checkbox-group">
+            <label>
+              <input type="checkbox" bind:checked={defaultsForm.streaming_enabled} onchange={saveDefaults} />
+              Stream LLM output
+            </label>
+            <div style="color: var(--text-tertiary); font-size: var(--font-xs); margin-top: var(--space-2xs);">
+              Show model output character-by-character in real time
+            </div>
+          </div>
+        </div>
+
+        <button class="btn btn-secondary" onclick={resetDefaults}>
+          Reset to System Defaults
+        </button>
+      </div>
     {:else if activeSettingsTab === 'general'}
       <div class="settings-section">
         <h3>General Settings</h3>
@@ -1394,6 +1701,9 @@
               />
             </div>
             <p class="hint">Enter any hex color (e.g. #ff6b9d). Dark mode variant auto-computed.</p>
+            {#if accentLuminanceWarning}
+              <p class="accent-warning">{accentLuminanceWarning}</p>
+            {/if}
           </div>
         </div>
 
@@ -1425,6 +1735,70 @@
             </button>
           </div>
         </div>
+
+        <!-- Agent Loop Advanced Settings Toggle -->
+        <div class="form-card">
+          <h4>Advanced</h4>
+          <div class="checkbox-group">
+            <label>
+              <input type="checkbox" checked={agentLoopEnabled} onchange={toggleAgentLoop} />
+              Enable advanced agent loop settings
+            </label>
+            <div style="color: var(--text-tertiary); font-size: var(--font-xs); margin-top: var(--space-2xs);">
+              Customize the prompts, tool descriptions, and instructions your AI model receives. For advanced users who want fine-grained control over model behavior.
+            </div>
+          </div>
+        </div>
+      </div>
+    {:else if activeSettingsTab === 'agentloop'}
+      <div class="settings-section">
+        <h3>Agent Loop</h3>
+        <p class="section-desc">
+          Customize what your AI model receives. These are advanced settings — changes here directly affect how the model behaves.
+        </p>
+
+        <div class="agent-loop-warning">
+          <strong>⚠ Use with caution.</strong> Changing prompts or tool descriptions in ways that contradict YourQL's designed functionality — such as removing instructions about read-only queries, altering the one-shot finality rule, or rewriting parameter descriptions to claim capabilities the tools don't have — will cause models to use tools incorrectly and may break core application behavior. If things go wrong, use <strong>Restore All Defaults</strong> below.
+        </div>
+
+        {#if agentLoopStatus}
+          <div class="status-message {agentLoopStatus.startsWith('Error') ? 'error' : 'success'}">
+            {agentLoopStatus}
+          </div>
+        {/if}
+
+        <button class="btn btn-secondary" onclick={resetAllAgentLoop} style="margin-bottom: var(--space-4xl);">
+          Restore All Defaults
+        </button>
+
+        {#each sectionNames as section}
+          {@const sectionFields = agentLoopFields.filter(f => f.section === section)}
+          {#if sectionFields.length > 0}
+            <div class="form-card agent-loop-section">
+              <h4>{sectionLabels[section] || section}</h4>
+              {#each sectionFields as field (field.key)}
+                <div class="form-group" style="margin-bottom: var(--space-3xl);">
+                  <label>{field.label}</label>
+                  <div class="field-tooltip">{field.description}</div>
+                  <textarea
+                    class="agent-loop-textarea"
+                    value={agentLoopConfigValues[field.key] || ''}
+                    placeholder={field.description}
+                    rows={field.key.startsWith('safety.') || field.key.startsWith('charts.') ? 3 : 2}
+                    onblur={(e) => saveAgentLoopField(field.key, e.target.value)}
+                  ></textarea>
+                  <button
+                    class="btn btn-small"
+                    onclick={() => resetAgentLoopField(field.key)}
+                    style="margin-top: var(--space-sm);"
+                  >
+                    Reset
+                  </button>
+                </div>
+              {/each}
+            </div>
+          {/if}
+        {/each}
       </div>
     {/if}
   </div>
@@ -2767,5 +3141,52 @@
     color: var(--text-tertiary);
     font-size: var(--font-sm);
     margin-top: var(--space-md);
+  }
+
+  .accent-warning {
+    color: var(--color-warning, #f57c00);
+    font-size: var(--font-sm);
+    margin-top: var(--space-md);
+    padding: var(--space-sm) var(--space-lg);
+    background: rgba(245, 124, 0, 0.1);
+    border: 1px solid rgba(245, 124, 0, 0.25);
+    border-radius: var(--radius-md);
+  }
+
+  /* Agent Loop Config */
+  .agent-loop-textarea {
+    width: 100%;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: var(--font-sm);
+    line-height: 1.5;
+    resize: vertical;
+    padding: var(--space-md) var(--space-lg);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-md);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+  }
+
+  .agent-loop-textarea:focus {
+    outline: none;
+    border-color: var(--color-accent);
+  }
+
+  .field-tooltip {
+    color: var(--text-tertiary);
+    font-size: var(--font-xs);
+    margin-bottom: var(--space-sm);
+    line-height: 1.4;
+  }
+
+  .agent-loop-warning {
+    background: rgba(245, 124, 0, 0.08);
+    border: 1px solid rgba(245, 124, 0, 0.25);
+    border-radius: var(--radius-md);
+    padding: var(--space-xl) var(--space-2xl);
+    margin-bottom: var(--space-4xl);
+    color: var(--text-primary);
+    font-size: var(--font-base);
+    line-height: 1.6;
   }
 </style>
