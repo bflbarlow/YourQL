@@ -1,5 +1,55 @@
 export namespace main {
 	
+	export class AgentLoopConfigField {
+	    key: string;
+	    label: string;
+	    description: string;
+	    section: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new AgentLoopConfigField(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.key = source["key"];
+	        this.label = source["label"];
+	        this.description = source["description"];
+	        this.section = source["section"];
+	    }
+	}
+	export class AgentLoopConfigJSON {
+	    config?: models.AgentLoopConfig;
+	    fields: AgentLoopConfigField[];
+	
+	    static createFrom(source: any = {}) {
+	        return new AgentLoopConfigJSON(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.config = this.convertValues(source["config"], models.AgentLoopConfig);
+	        this.fields = this.convertValues(source["fields"], AgentLoopConfigField);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class DataSourceSetting {
 	    id: number;
 	    name: string;
@@ -209,6 +259,90 @@ export namespace main {
 
 export namespace models {
 	
+	export class AgentLoopConfig {
+	    tool_query_database_desc: string;
+	    tool_query_database_sql_desc: string;
+	    tool_query_database_is_exploration_desc: string;
+	    tool_query_database_reasoning_desc: string;
+	    tool_respond_to_user_desc: string;
+	    tool_respond_to_user_text_desc: string;
+	    tool_render_chart_desc: string;
+	    tool_render_chart_config_desc: string;
+	    instruction_1: string;
+	    instruction_2: string;
+	    instruction_2a: string;
+	    instruction_2b: string;
+	    instruction_2c: string;
+	    instruction_3: string;
+	    instruction_4: string;
+	    instruction_5: string;
+	    instruction_6: string;
+	    safety_preamble: string;
+	    safety_strict: string;
+	    safety_moderate: string;
+	    safety_relaxed: string;
+	    safety_footer: string;
+	    safety_oneshot: string;
+	    charts_intro: string;
+	    charts_format: string;
+	    charts_timing: string;
+	    persona_fallback: string;
+	    response_parse_error: string;
+	    response_exploration_exhausted: string;
+	    response_safety_rejected: string;
+	    response_oneshot_violation: string;
+	    response_unknown_tool: string;
+	    response_render_chart_no_pending: string;
+	    response_render_chart_parse_error: string;
+	    response_respond_parse_error: string;
+	    response_loop_exhausted: string;
+	    response_empty_truncated: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new AgentLoopConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.tool_query_database_desc = source["tool_query_database_desc"];
+	        this.tool_query_database_sql_desc = source["tool_query_database_sql_desc"];
+	        this.tool_query_database_is_exploration_desc = source["tool_query_database_is_exploration_desc"];
+	        this.tool_query_database_reasoning_desc = source["tool_query_database_reasoning_desc"];
+	        this.tool_respond_to_user_desc = source["tool_respond_to_user_desc"];
+	        this.tool_respond_to_user_text_desc = source["tool_respond_to_user_text_desc"];
+	        this.tool_render_chart_desc = source["tool_render_chart_desc"];
+	        this.tool_render_chart_config_desc = source["tool_render_chart_config_desc"];
+	        this.instruction_1 = source["instruction_1"];
+	        this.instruction_2 = source["instruction_2"];
+	        this.instruction_2a = source["instruction_2a"];
+	        this.instruction_2b = source["instruction_2b"];
+	        this.instruction_2c = source["instruction_2c"];
+	        this.instruction_3 = source["instruction_3"];
+	        this.instruction_4 = source["instruction_4"];
+	        this.instruction_5 = source["instruction_5"];
+	        this.instruction_6 = source["instruction_6"];
+	        this.safety_preamble = source["safety_preamble"];
+	        this.safety_strict = source["safety_strict"];
+	        this.safety_moderate = source["safety_moderate"];
+	        this.safety_relaxed = source["safety_relaxed"];
+	        this.safety_footer = source["safety_footer"];
+	        this.safety_oneshot = source["safety_oneshot"];
+	        this.charts_intro = source["charts_intro"];
+	        this.charts_format = source["charts_format"];
+	        this.charts_timing = source["charts_timing"];
+	        this.persona_fallback = source["persona_fallback"];
+	        this.response_parse_error = source["response_parse_error"];
+	        this.response_exploration_exhausted = source["response_exploration_exhausted"];
+	        this.response_safety_rejected = source["response_safety_rejected"];
+	        this.response_oneshot_violation = source["response_oneshot_violation"];
+	        this.response_unknown_tool = source["response_unknown_tool"];
+	        this.response_render_chart_no_pending = source["response_render_chart_no_pending"];
+	        this.response_render_chart_parse_error = source["response_render_chart_parse_error"];
+	        this.response_respond_parse_error = source["response_respond_parse_error"];
+	        this.response_loop_exhausted = source["response_loop_exhausted"];
+	        this.response_empty_truncated = source["response_empty_truncated"];
+	    }
+	}
 	export class Conversation {
 	    id: number;
 	    title?: string;
@@ -228,6 +362,7 @@ export namespace models {
 	    context_details: boolean;
 	    summarize: boolean;
 	    viz_enabled: boolean;
+	    streaming_enabled: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Conversation(source);
@@ -250,6 +385,7 @@ export namespace models {
 	        this.context_details = source["context_details"];
 	        this.summarize = source["summarize"];
 	        this.viz_enabled = source["viz_enabled"];
+	        this.streaming_enabled = source["streaming_enabled"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -278,6 +414,7 @@ export namespace models {
 	    llm_content?: string;
 	    sql_results?: string;
 	    metadata?: string;
+	    tool_transcript?: string;
 	    // Go type: time
 	    created_at: any;
 	
@@ -294,6 +431,7 @@ export namespace models {
 	        this.llm_content = source["llm_content"];
 	        this.sql_results = source["sql_results"];
 	        this.metadata = source["metadata"];
+	        this.tool_transcript = source["tool_transcript"];
 	        this.created_at = this.convertValues(source["created_at"], null);
 	    }
 	
@@ -314,6 +452,34 @@ export namespace models {
 		    }
 		    return a;
 		}
+	}
+	export class DiscussionDefaults {
+	    llm_provider_id?: number;
+	    data_source_id?: number;
+	    max_context_messages?: number;
+	    max_messages?: number;
+	    summarize?: boolean;
+	    viz_enabled?: boolean;
+	    tech_details?: boolean;
+	    context_details?: boolean;
+	    streaming_enabled?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new DiscussionDefaults(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.llm_provider_id = source["llm_provider_id"];
+	        this.data_source_id = source["data_source_id"];
+	        this.max_context_messages = source["max_context_messages"];
+	        this.max_messages = source["max_messages"];
+	        this.summarize = source["summarize"];
+	        this.viz_enabled = source["viz_enabled"];
+	        this.tech_details = source["tech_details"];
+	        this.context_details = source["context_details"];
+	        this.streaming_enabled = source["streaming_enabled"];
+	    }
 	}
 	export class Skill {
 	    id: number;
@@ -376,6 +542,30 @@ export namespace services {
 	        this.type = source["type"];
 	        this.display_name = source["display_name"];
 	        this.default_port = source["default_port"];
+	    }
+	}
+	export class UpdateInfo {
+	    current_version: string;
+	    latest_version: string;
+	    update_available: boolean;
+	    release_notes: string;
+	    download_url: string;
+	    asset_checksum: string;
+	    published_at: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new UpdateInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.current_version = source["current_version"];
+	        this.latest_version = source["latest_version"];
+	        this.update_available = source["update_available"];
+	        this.release_notes = source["release_notes"];
+	        this.download_url = source["download_url"];
+	        this.asset_checksum = source["asset_checksum"];
+	        this.published_at = source["published_at"];
 	    }
 	}
 

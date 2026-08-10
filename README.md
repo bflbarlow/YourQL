@@ -12,12 +12,15 @@ Everything runs locally on your machine. Your database credentials, conversation
 
 - **Ask questions in plain English** — "How many orders shipped last month?" or "Show me the top 10 customers by revenue" — and get answers backed by real queries against your database.
 - **Work across multiple databases** — Connect to MySQL, PostgreSQL, SQLite, SQL Server, Snowflake, BigQuery, Redshift, MariaDB, CSV files, Excel files, and Google Sheets.
-- **Use your own AI model** — Bring your own OpenAI, Anthropic Claude, Ollama, or any OpenAI-compatible HTTP endpoint (LM Studio, llama.cpp, cloud-hosted models).
-- **Explore data safely** — Before writing a final query, YourQL can run read-only exploration queries to understand your schema's actual data, all within configurable safety constraints.
+- **Use your own AI model** — Bring your own OpenAI, Anthropic Claude, Ollama, or any OpenAI-compatible HTTP endpoint (LM Studio, llama.cpp, cloud-hosted models). Configure max tokens per provider.
+- **Streaming responses** — See the LLM's answer stream in real-time, with token usage stats displayed per response.
+- **Explore data safely** — Before writing a final query, YourQL can run read-only exploration queries to understand your schema, all within configurable safety constraints (strict/moderate/relaxed modes).
 - **Visualize results** — Bar charts, line graphs, pie charts, scatter plots, and more, generated automatically when you ask for a visualization or when the data calls for one.
 - **Summaries you can read** — Long tables of numbers are automatically summarized into plain-English answers so you don't have to decipher raw results.
-- **Keep everything organized** — Pin, archive, duplicate, rename, or clear discussions. Limit how much history is sent to the LLM. Set a custom system prompt or business rules per database.
+- **Keep everything organized** — Pin, archive, duplicate, rename, or clear discussions. Limit how much history is sent to the LLM. Set a custom system prompt or business rules per database. Archived discussions show a visual accent-colored indicator.
 - **Define reusable Skills** — Write Markdown snippets with domain knowledge, business rules, or preferred query patterns and activate them per-conversation.
+- **Persistent UI settings** — Theme (light/dark/system), accent color, and UI scale choices survive app refreshes and restarts. Export discussions as PDF.
+- **Fine-tune AI behavior (advanced)** — For power users, YourQL lets you customize the exact prompts, instructions, and tool descriptions your AI model receives — giving you full control over how it thinks about your data.
 
 ---
 
@@ -96,7 +99,11 @@ Run the `.exe` installer and follow the prompts.
 
 2. **Connect a database** — Open Settings → Data Sources and click **+ Add Connection**. Fill in the connection details for your database, then click **Test Connection** to verify it works. Click **Save**, then **Set as Default**.
 
-3. **Start a discussion** — Click **New Discussion** in the sidebar, give it a title, and start asking questions about your data.
+3. **Start a discussion** — Click **New Discussion** in the sidebar, give it a title, select an LLM provider and data source, and start asking questions about your data.
+
+### Upgrading
+
+Replace your current binary with the new one. All your conversations, settings, credentials, and UI preferences are stored in `~/.yourql/yourql.db` and survive upgrades automatically. See [`documentation/VERSION_UPGRADE.md`](documentation/VERSION_UPGRADE.md) for details.
 
 ---
 
@@ -106,10 +113,10 @@ When you ask a question, YourQL does the following behind the scenes:
 
 1. **Reads your schema** — Tables, columns, types, primary keys, foreign keys, and row counts are gathered from your database.
 2. **Builds a prompt** — The schema, your question, any custom system prompt, business rules, and active skills are assembled into a structured prompt for the LLM.
-3. **Calls the LLM** — The prompt is sent to your configured AI provider. The LLM responds with a JSON action: `sql_query` (execute this SQL), `clarification` (ask the user for more detail), or `sql_exploration` (run a read-only query to understand the data better before writing the final query).
+3. **Calls the LLM** — The prompt is sent to your configured AI provider. The LLM responds with a JSON action: `sql_query` (execute this SQL), `clarification` (ask the user for more detail), or `sql_exploration` (run a read-only query to understand the data better before writing the final query). Responses stream in real-time with token usage counters.
 4. **Explores if needed** — If the LLM chooses exploration, it runs safe, read-only queries (constrained by configurable safety modes) and uses the results to refine its understanding.
 5. **Executes the final query** — The generated SQL is run against your database. If it fails, YourQL sends the error back to the LLM for automatic correction and retry.
-6. **Renders the results** — Results appear as an interactive, sortable table. If you've enabled summaries or visualizations, those are generated and displayed above the table.
+6. **Renders the results** — Results appear as an interactive, sortable table. If you've enabled summaries or visualizations, those are generated and displayed above the table. A tech details toggle reveals the exact SQL, raw LLM payload, and token breakdown.
 
 ---
 
@@ -120,10 +127,13 @@ Every discussion has its own settings panel (click the gear icon):
 - **LLM Provider** — Which AI model powers this discussion
 - **Data Source** — Which database this discussion queries
 - **Messages in Context** — How many recent messages are sent to the LLM (prevents context-window overflow with long conversations)
+- **Max Messages** — Total messages stored in the conversation history
 - **Summarize Results** — Let the LLM write a plain-English summary above each result table
 - **Data Visualization** — Let the LLM generate charts (bar, line, pie, scatter, etc.) when appropriate
-- **Pin** — Keep this discussion at the top of your list
-- **Duplicate, Clear, Archive, Delete** — Standard conversation management
+- **Show Tech Details** — Reveal raw SQL, LLM request/response payloads, and token usage
+- **Show Context Details** — View the full prompt messages sent to the LLM
+- **Skills** — Enable/disable per-conversation skills from your skill library
+- **Pin, Duplicate, Clear, Archive, Delete** — Standard conversation management. Archived conversations show a colored left-border indicator.
 
 ---
 
@@ -146,13 +156,43 @@ Each database connection supports deep customization:
 
 Skills are reusable Markdown prompt fragments you define in Settings. Write a skill for your organization's naming conventions, common query patterns, or any domain knowledge you want the LLM to reference. Then enable one or more skills per conversation — the content is injected into the system prompt for discussions where they're active.
 
+## Advanced Agent Loop Settings
+
+For users who want fine-grained control over how their AI model behaves, YourQL includes an **Agent Loop** settings tab — hidden by default behind a toggle on the General settings page. This gives you direct control over the exact text your model receives.
+
+You can customize:
+
+- **Tool descriptions** — What the model is told about each tool (querying the database, responding to the user, generating charts). Adjusting these changes when and how the model decides to use each capability.
+- **System instructions** — The step-by-step guidance the model follows. For example, you can tune how strongly it's encouraged to add commentary and analysis alongside query results.
+- **Safety rule descriptions** — What the model is told about exploration guardrails. (Note: the actual safety enforcement is handled by YourQL's code — these descriptions only affect what the model *thinks* is allowed.)
+- **Chart guidance** — How and when the model should generate visualizations.
+- **Error recovery messages** — The responses YourQL sends back to the model when something goes wrong, shaping how it recovers from mistakes.
+
+Every field starts with a sensible default that matches YourQL's standard behavior. A **Reset** button per field and a **Restore All Defaults** button at the top make it safe to experiment — you can always get back to the original settings with one click.
+
+This feature is designed for advanced users who understand prompt engineering. Most users will never need to open this tab — YourQL's defaults are tuned for accuracy and safety out of the box.
+
+---
+
+## App Settings
+
+YourQL remembers your preferences across sessions. All settings are persisted in the local database:
+
+| Setting | Options | Description |
+|---|---|---|
+| **Theme** | Light, Dark, System | Follows OS preference in System mode |
+| **Accent Color** | Blue, Green, Orange, Purple, Red, Teal, or custom hex | Applied to buttons, links, borders, and interactive elements |
+| **UI Scale** | Small, Medium, Large | Adjusts text size and spacing across the entire interface |
+
+Settings survive app refreshes, restarts, and upgrades. On first launch after upgrading from a version that stored settings in browser storage, your existing preferences are automatically migrated.
+
 ---
 
 ## Security & Privacy
 
 - **Your data stays local** — All conversations, settings, and connection details are stored in a local SQLite database at `~/.yourql/yourql.db`. Nothing is sent to the cloud unless you configure a cloud LLM provider.
-- **API keys are stored locally** — Provider API keys are saved in the same local database. They are never sent to any server other than the LLM provider you configure.
-- **Queries are read-only by default** — Exploration queries are validated against configurable safety modes to prevent data modification. Only SELECT queries (and CTEs) are allowed.
+- **API keys and passwords are stored locally** — Provider API keys and database credentials are saved in the same local database. They are never serialized to the frontend and never sent to any server other than the LLM provider you configure. Editing other provider or data source settings will not clear your existing API key or password.
+- **Read-only by design** — YourQL is built on an absolute read-only invariant. `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, and any other write operations are unconditionally forbidden against configured data sources. Only `SELECT` statements (and read-only CTEs) are allowed.
 - **No telemetry, no analytics, no phoning home** — YourQL does not collect usage data or communicate with any server other than the LLM API endpoint you configure and the databases you connect to.
 
 ---
@@ -164,7 +204,7 @@ YourQL is built with [Wails v2](https://wails.io/), combining a Go backend with 
 | Layer | Technology |
 |---|---|
 | Desktop framework | Wails v2 |
-| Backend | Go 1.25 |
+| Backend | Go |
 | Frontend | Svelte 5 + Vite |
 | Charts | Chart.js 4 |
 | App database | SQLite (via `modernc.org/sqlite`, pure Go) |
@@ -173,15 +213,47 @@ YourQL is built with [Wails v2](https://wails.io/), combining a Go backend with 
 
 ### Data Storage
 
-All application data — conversations, messages, provider configs, connection configs, and skills — is stored in `~/.yourql/yourql.db`. The database is created automatically on first run. Schema migrations are handled non-destructively with automated column addition and tracking.
+All application data — conversations, messages, provider configs, connection configs, skills, and UI preferences — is stored in `~/.yourql/yourql.db`. The database is created automatically on first run. Schema migrations are handled non-destructively with automated column addition and migration tracking.
 
 ### LLM Integration
 
-The LLM interface is provider-agnostic. Each provider implements a common `LLMClient` interface supporting chat completion with full request/response payload capture for debugging. The system prompt is dynamically built per-conversation from schema metadata, custom configuration, and active skills.
+The LLM interface is provider-agnostic. Each provider implements a common `LLMClient` interface supporting chat completion (streaming and non-streaming) with full request/response payload capture for debugging. The system prompt is dynamically built per-conversation from schema metadata, custom configuration, and active skills.
 
 ### Multi-Database Support
 
 Database drivers implement a common `DBDriver` interface with methods for DSN construction, schema introspection, and dialect-aware prompt generation. Drivers for native-API databases (BigQuery, Google Sheets) also implement an optional `NativeQuerier` interface for query execution without `database/sql`.
+
+### Safety Architecture
+
+Query execution is guarded by multiple layers of safety checks in `sql_execution.go`. All data source queries are restricted to `SELECT` only. Exploration safety modes control query complexity (joins, subqueries, unions) without ever opening a path to write statements. The app's own validation is the primary safety control — it does not rely on the user's database role permissions as the sole safeguard.
+
+---
+
+## Documentation
+
+Comprehensive documentation is available in the [`documentation/`](documentation/) directory:
+
+| Document | Description |
+|---|---|
+| [`AGENT_READ_FIRST.md`](documentation/AGENT_READ_FIRST.md) | Project charter — fundamental goal, risk framework, and coding standards for all contributors |
+| [`RELEASE_DEPLOYMENT.md`](documentation/RELEASE_DEPLOYMENT.md) | Release process for macOS, Windows, and Linux — build commands, signing, packaging, CI |
+| [`VERSION_UPGRADE.md`](documentation/VERSION_UPGRADE.md) | How users upgrade — manual (works today) and automatic (planned) |
+| [`TESTING_SUITE.md`](documentation/TESTING_SUITE.md) | Testing strategy and test coverage |
+| [`TECH_REVIEW.md`](documentation/TECH_REVIEW.md) | Comprehensive technical review and architecture audit |
+| [`RISK_ANALYSIS_LOG.md`](documentation/RISK_ANALYSIS_LOG.md) | Log of risk/reward analyses for significant changes |
+| [`STREAMING_ENHANCEMENT.md`](documentation/STREAMING_ENHANCEMENT.md) | Streaming LLM response implementation |
+| [`TOOL_CALL_ENHANCEMENT.md`](documentation/TOOL_CALL_ENHANCEMENT.md) | Tool-calling and function-calling support |
+| [`DARK_MODE_ENHANCEMENT.md`](documentation/DARK_MODE_ENHANCEMENT.md) | Dark mode implementation details |
+| [`DATA_VIZ_ENHANCEMENT.md`](documentation/DATA_VIZ_ENHANCEMENT.md) | Chart and visualization system |
+| [`SKILLS_ENHANCEMENT.md`](documentation/SKILLS_ENHANCEMENT.md) | Skills system design |
+| [`FILES_ENHANCEMENT.md`](documentation/FILES_ENHANCEMENT.md) | CSV and Excel file data source support |
+| [`GOOGLE_SHEETS_ENHANCEMENT.md`](documentation/GOOGLE_SHEETS_ENHANCEMENT.md) | Google Sheets integration (OAuth) |
+| [`ANSWER_ENHANCEMENT.md`](documentation/ANSWER_ENHANCEMENT.md) | Answer rendering and quality improvements |
+| [`ANSWER_CLARIFICATION_ISSUE.md`](documentation/ANSWER_CLARIFICATION_ISSUE.md) | Clarification flow analysis |
+| [`MODEL_ERRORS_ENHANCEMENT.md`](documentation/MODEL_ERRORS_ENHANCEMENT.md) | Model error handling and recovery |
+| [`MAX_TOKEN_ENHANCEMENT.md`](documentation/MAX_TOKEN_ENHANCEMENT.md) | Per-provider max token configuration |
+| [`HELP_CHAT_ENHANCEMENT.md`](documentation/HELP_CHAT_ENHANCEMENT.md) | In-app help and onboarding |
+| [`AGENT_LOOP_CONFIG.md`](documentation/AGENT_LOOP_CONFIG.md) | User-configurable prompts, tool descriptions, and model instructions (advanced) |
 
 ---
 
@@ -197,7 +269,7 @@ Database drivers implement a common `DBDriver` interface with methods for DSN co
 
 ```bash
 # Generate Wails bindings
-~/go/bin/wails generate module
+wails generate module
 
 # Build the full application
 wails build
@@ -218,10 +290,15 @@ YourQL/
 │                                #   SQL execution, schema introspection, drivers
 ├── frontend/                    # Svelte 5 UI
 │   └── src/
+│       ├── main.js              # App bootstrap, theme/accent/scale init & persistence
+│       ├── variables.css         # CSS custom properties (theming, scaling)
 │       ├── App.svelte           # Sidebar, navigation, discussion list
-│       ├── ConversationView.svelte  # Chat interface, message display
-│       ├── SettingsView.svelte  # LLM providers, data sources, skills
+│       ├── ConversationView.svelte  # Chat interface, message display, streaming
+│       ├── SettingsView.svelte  # LLM providers, data sources, skills, appearance
 │       └── VizChart.svelte      # Chart.js visualization component
+├── build/                       # Platform-specific build assets (icons, installers)
+├── scripts/                     # Linux AppImage build scripts
+├── documentation/               # Comprehensive project documentation
 └── screenshots/                 # UI screenshots
 ```
 

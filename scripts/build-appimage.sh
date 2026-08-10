@@ -17,7 +17,8 @@ npm run build
 echo ""
 echo "=== Step 3: Build Docker image ==="
 cd "$PROJECT_DIR"
-docker build --platform linux/amd64 -t yourql-appimage -f Dockerfile.appimage . 2>&1 | tail -20
+VERSION_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "dev")
+docker build --platform linux/amd64 --build-arg VERSION="$VERSION_TAG" -t yourql-appimage -f Dockerfile.appimage . 2>&1 | tail -20
 
 echo ""
 echo "=== Step 4: Extract AppImage ==="

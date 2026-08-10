@@ -14,6 +14,10 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
+// appVersion is set at build time via -ldflags "-X main.appVersion=$(git describe --tags --abbrev=0)".
+// Falls back to "dev" for local development (wails dev) and signals the updater to skip itself.
+var appVersion = "0.4.0"
+
 func main() {
 	// Load .env file if present (ignored if not found)
 	if err := godotenv.Load(); err != nil {

@@ -180,7 +180,7 @@ func migrate() error {
 			FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
 			FOREIGN KEY (skill_id) REFERENCES skills(id) ON DELETE CASCADE,
 			UNIQUE(conversation_id, skill_id)
-		)`, 
+		)`,
 	}
 
 	for _, ddl := range tables {
@@ -206,6 +206,8 @@ func migrate() error {
 	ensureColumn("llm_providers", "model_max_tokens", "INTEGER")
 	ensureColumn("llm_providers", "context_window", "INTEGER")
 	ensureColumn("conversation_messages", "metadata", "TEXT")
+	ensureColumn("conversation_messages", "tool_transcript", "TEXT")
+	ensureColumn("conversations", "streaming_enabled", "INTEGER DEFAULT 0")
 	ensureColumn("queries", "error_category", "TEXT DEFAULT ''")
 
 	// Migration: data sources rebrand (v0.3.1)
@@ -223,6 +225,24 @@ func migrate() error {
 	// App settings table (v0.3.1) — persists theme, accent, scale across refreshes
 	_ = runMigration("create_app_settings", func() error {
 		_, err := DB.Exec(`CREATE TABLE IF NOT EXISTS app_settings (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL
+		)`)
+		return err
+	})
+
+	// Agent loop config table (v0.5.0) — user-configurable prompts and tool descriptions
+	_ = runMigration("create_agent_loop_config", func() error {
+		_, err := DB.Exec(`CREATE TABLE IF NOT EXISTS agent_loop_config (
+			key   TEXT PRIMARY KEY,
+			value TEXT NOT NULL
+		)`)
+		return err
+	})
+
+	// Discussion defaults table (v0.4.0) — per-user defaults for new discussions
+	_ = runMigration("create_discussion_defaults", func() error {
+		_, err := DB.Exec(`CREATE TABLE IF NOT EXISTS discussion_defaults (
 			key TEXT PRIMARY KEY,
 			value TEXT NOT NULL
 		)`)

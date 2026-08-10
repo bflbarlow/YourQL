@@ -1,5 +1,7 @@
 FROM ubuntu:24.04
 
+ARG VERSION=dev
+
 ENV DEBIAN_FRONTEND=noninteractive
 ENV GO_VERSION=1.23.0
 
@@ -21,7 +23,7 @@ COPY frontend/wailsjs/ ./frontend/wailsjs/
 
 RUN go mod download
 
-RUN CGO_ENABLED=1 go build -o yourql .
+RUN CGO_ENABLED=1 go build -ldflags "-X main.appVersion=${VERSION}" -o yourql .
 
 RUN wget -q -O /usr/local/bin/linuxdeploy \
     https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage && \

@@ -14,6 +14,14 @@ export function CancelGoogleSheetsAuthTemp(arg1) {
   return window['go']['main']['App']['CancelGoogleSheetsAuthTemp'](arg1);
 }
 
+export function CancelProcessing(arg1) {
+  return window['go']['main']['App']['CancelProcessing'](arg1);
+}
+
+export function CheckForUpdate() {
+  return window['go']['main']['App']['CheckForUpdate']();
+}
+
 export function ClearConversationMessages(arg1) {
   return window['go']['main']['App']['ClearConversationMessages'](arg1);
 }
@@ -54,6 +62,10 @@ export function DetectModelMaxTokens(arg1) {
   return window['go']['main']['App']['DetectModelMaxTokens'](arg1);
 }
 
+export function DownloadUpdate(arg1, arg2) {
+  return window['go']['main']['App']['DownloadUpdate'](arg1, arg2);
+}
+
 export function DuplicateConversation(arg1) {
   return window['go']['main']['App']['DuplicateConversation'](arg1);
 }
@@ -62,8 +74,28 @@ export function ExecuteQuery(arg1, arg2) {
   return window['go']['main']['App']['ExecuteQuery'](arg1, arg2);
 }
 
+export function ExportConversationHTML(arg1) {
+  return window['go']['main']['App']['ExportConversationHTML'](arg1);
+}
+
+export function ExportConversationMarkdown(arg1) {
+  return window['go']['main']['App']['ExportConversationMarkdown'](arg1);
+}
+
 export function ExportConversationPDF() {
   return window['go']['main']['App']['ExportConversationPDF']();
+}
+
+export function GetAgentLoopConfig() {
+  return window['go']['main']['App']['GetAgentLoopConfig']();
+}
+
+export function GetAppSetting(arg1) {
+  return window['go']['main']['App']['GetAppSetting'](arg1);
+}
+
+export function GetAppVersion() {
+  return window['go']['main']['App']['GetAppVersion']();
 }
 
 export function GetConversationMessages(arg1) {
@@ -72,6 +104,10 @@ export function GetConversationMessages(arg1) {
 
 export function GetConversationSkillIDs(arg1) {
   return window['go']['main']['App']['GetConversationSkillIDs'](arg1);
+}
+
+export function GetDiscussionDefaults() {
+  return window['go']['main']['App']['GetDiscussionDefaults']();
 }
 
 export function GetGeneralSettings() {
@@ -110,8 +146,20 @@ export function MigrateGoogleAuthConfig(arg1, arg2) {
   return window['go']['main']['App']['MigrateGoogleAuthConfig'](arg1, arg2);
 }
 
+export function PerformUpgradeRestart() {
+  return window['go']['main']['App']['PerformUpgradeRestart']();
+}
+
 export function ProcessUserMessage(arg1, arg2) {
   return window['go']['main']['App']['ProcessUserMessage'](arg1, arg2);
+}
+
+export function ResetAgentLoopConfigKey(arg1) {
+  return window['go']['main']['App']['ResetAgentLoopConfigKey'](arg1);
+}
+
+export function ResetAllAgentLoopConfig() {
+  return window['go']['main']['App']['ResetAllAgentLoopConfig']();
 }
 
 export function RestoreConversation(arg1) {
@@ -120,6 +168,14 @@ export function RestoreConversation(arg1) {
 
 export function RevokeGoogleSheetsAuth(arg1) {
   return window['go']['main']['App']['RevokeGoogleSheetsAuth'](arg1);
+}
+
+export function SetAgentLoopConfigKey(arg1, arg2) {
+  return window['go']['main']['App']['SetAgentLoopConfigKey'](arg1, arg2);
+}
+
+export function SetAppSetting(arg1, arg2) {
+  return window['go']['main']['App']['SetAppSetting'](arg1, arg2);
 }
 
 export function SetConversationSkill(arg1, arg2, arg3) {
@@ -178,6 +234,10 @@ export function UpdateConversationSettings(arg1, arg2, arg3) {
   return window['go']['main']['App']['UpdateConversationSettings'](arg1, arg2, arg3);
 }
 
+export function UpdateConversationStreamingEnabled(arg1, arg2) {
+  return window['go']['main']['App']['UpdateConversationStreamingEnabled'](arg1, arg2);
+}
+
 export function UpdateConversationSummarize(arg1, arg2) {
   return window['go']['main']['App']['UpdateConversationSummarize'](arg1, arg2);
 }
@@ -196,6 +256,10 @@ export function UpdateConversationVizEnabled(arg1, arg2) {
 
 export function UpdateDataSource(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12) {
   return window['go']['main']['App']['UpdateDataSource'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12);
+}
+
+export function UpdateDiscussionDefaults(arg1) {
+  return window['go']['main']['App']['UpdateDiscussionDefaults'](arg1);
 }
 
 export function UpdateGeneralSettings(arg1) {

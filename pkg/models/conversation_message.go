@@ -13,5 +13,6 @@ type ConversationMessage struct {
 	LLMContent     *string   `json:"llm_content,omitempty"`
 	SQLResults     *string   `json:"sql_results,omitempty"`
 	Metadata       *string   `json:"metadata,omitempty"`
+	ToolTranscript *string   `json:"tool_transcript,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
 }

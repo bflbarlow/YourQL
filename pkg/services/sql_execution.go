@@ -103,6 +103,11 @@ func applyDefaultLimit(sqlQuery string, conn *models.DataSource, isExploration b
 
 	cleaned := strippedTrailingComments(trimmed)
 
+	// Strip trailing semicolons — they're statement terminators, not part
+	// of the query body. If left in place, the appended LIMIT would produce
+	// "...LIMIT 1; LIMIT 1000" which is invalid SQL.
+	cleaned = strings.TrimRight(cleaned, "; \t\n\r")
+
 	// CTE (WITH ...): append after the final closing paren
 	if strings.HasPrefix(strings.ToUpper(cleaned), "WITH") {
 		depth := 0
@@ -193,6 +198,14 @@ func executeSQLWithMode(conn *models.DataSource, sqlQuery string, isExploration 
 	if strings.HasPrefix(upper, "WITH") && len(upper) > 4 {
 		next := upper[4]
 		isCTE = next == ' ' || next == '\t' || next == '\n' || next == '\r' || next == '(' || next == 'R'
+	}
+	// Allow parenthesized SELECTs (e.g. "(SELECT ...) UNION ALL (SELECT ...)")
+	// — the LLM wraps subqueries when MySQL requires it. Strip leading parens
+	// and re-check the unwrapped prefix.
+	if !isSelect && !isCTE && strings.HasPrefix(upper, "(") {
+		unwrapped := strings.TrimLeft(upper[1:], " \t\n\r")
+		isSelect = strings.HasPrefix(unwrapped, "SELECT")
+		isCTE = strings.HasPrefix(unwrapped, "WITH")
 	}
 	if !isSelect && !isCTE {
 		return nil, fmt.Errorf("only SELECT queries are allowed")
@@ -655,6 +668,25 @@ func backoffDuration(attempt int) time.Duration {
 	return backoff + jitter
 }
 
+// sanitizeSQLError strips embedded DSN credentials from database driver
+// error messages. Go SQL drivers frequently embed the full connection
+// string (including password) in error text. This ensures no credential
+// reaches tech-details-visible surfaces (buildErrorMetadata, storeTechDetail).
+// Per AGENT_READ_FIRST.md §3.5/§4.0, credential logging is never acceptable.
+// Accepts a string so it can be used with raw error text from any source.
+func sanitizeSQLError(msg string) string {
+	if msg == "" {
+		return ""
+	}
+	// Strip URI-style credentials: user:password@ or ://user:pass@host
+	re := regexp.MustCompile(`(://[^:@]+):[^@]+@`)
+	msg = re.ReplaceAllString(msg, "$1:***@")
+	// Also catch bare user:password@ (no scheme prefix)
+	re2 := regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9]*):[^@\s]+@`)
+	msg = re2.ReplaceAllString(msg, "$1:***@")
+	return msg
+}
+
 // ParseExplorationSafety parses a string into an ExplorationSafetyMode.
 func ParseExplorationSafety(s string) ExplorationSafetyMode {
 	switch strings.ToLower(strings.TrimSpace(s)) {
@@ -677,6 +709,12 @@ func validateExplorationQuery(sqlQuery string, mode ExplorationSafetyMode) error
 	if strings.HasPrefix(upper, "WITH") && len(upper) > 4 {
 		next := upper[4]
 		isCTE = next == ' ' || next == '\t' || next == '\n' || next == '\r' || next == '('
+	}
+	// Allow parenthesized SELECTs (§"only SELECT" false-positive fix)
+	if !isSelect && !isCTE && strings.HasPrefix(upper, "(") {
+		unwrapped := strings.TrimLeft(upper[1:], " \t\n\r")
+		isSelect = strings.HasPrefix(unwrapped, "SELECT")
+		isCTE = strings.HasPrefix(unwrapped, "WITH")
 	}
 	if !isSelect && !isCTE {
 		return fmt.Errorf("exploration queries must be SELECT statements")

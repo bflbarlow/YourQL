@@ -49,13 +49,14 @@ cd YourQL
 git pull
 
 # Build the binary
+VERSION_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "dev")
 go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
 if [ -n "$WEBKIT_TAG" ]; then
     WEBKIT_FLAGS="-tags $WEBKIT_TAG"
 else
     WEBKIT_FLAGS=""
 fi
-wails build -platform linux/amd64 $WEBKIT_FLAGS
+wails build -platform linux/amd64 $WEBKIT_FLAGS -ldflags "-X main.appVersion=$VERSION_TAG"
 
 # ---- 5. Package as AppImage ----
 echo "[5/5] Packaging AppImage..."
