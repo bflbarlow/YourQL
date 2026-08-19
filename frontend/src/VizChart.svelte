@@ -14,7 +14,7 @@
     Chart.defaults.borderColor = isDark ? '#2e2e50' : '#e9ecef';
   }
 
-  let { config } = $props();
+  let { config, standalone = true } = $props();
   let canvas = $state(null);
   let chart = null;
   let error = $state(null);
@@ -25,6 +25,11 @@
     const _tick = themeTick;
     if (config && canvas) {
       if (chart) {
+        // Disconnect old resize observer before destroying
+        if (canvas?._resizeObserver) {
+          canvas._resizeObserver.disconnect();
+          canvas._resizeObserver = null;
+        }
         chart.destroy();
         chart = null;
       }
@@ -35,11 +40,25 @@
           return;
         }
         if (!cfg.options) cfg.options = {};
-        cfg.options.responsive = true;
+        // Responsive mode disabled — CSS handles sizing via width: 100%.
+        // Chart.js's ResizeObserver fights CSS overrides, causing overflow.
+        cfg.options.responsive = false;
         cfg.options.maintainAspectRatio = false;
 
         chart = new Chart(canvas, cfg);
         error = null;
+
+        // Manual resize: since responsive is off, watch the container and
+        // resize the chart when it changes.
+        const container = canvas.parentElement;
+        const ro = new ResizeObserver(() => {
+          if (chart) {
+            chart.resize(container.clientWidth, container.clientHeight);
+          }
+        });
+        ro.observe(container);
+        // Store for cleanup
+        canvas._resizeObserver = ro;
       } catch (e) {
         error = String(e);
       }
@@ -60,21 +79,25 @@
       chart.destroy();
       chart = null;
     }
+    // Disconnect resize observer if present
+    if (canvas?._resizeObserver) {
+      canvas._resizeObserver.disconnect();
+    }
   });
 </script>
 
 {#if config && !error}
-  <div class="viz-chart-container">
+  <div class="viz-chart-container" class:standalone class:embedded={!standalone}>
     <canvas bind:this={canvas}></canvas>
   </div>
 {:else if error}
-  <div class="viz-chart-container">
+  <div class="viz-chart-container" class:standalone class:embedded={!standalone}>
     <div class="viz-error">Chart: {error}</div>
   </div>
 {/if}
 
 <style>
-  .viz-chart-container {
+  .viz-chart-container.standalone {
     position: relative;
     width: 100%;
     min-height: 380px;
@@ -84,9 +107,14 @@
     border-radius: 8px;
     border: 1px solid var(--border-primary);
   }
+  .viz-chart-container.embedded {
+    position: relative;
+    width: 100%;
+    height: 380px;
+    overflow: hidden;
+  }
   canvas {
     width: 100% !important;
-    min-height: 340px !important;
   }
   .viz-error {
     display: flex;

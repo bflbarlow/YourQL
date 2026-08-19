@@ -2,11 +2,13 @@ package models
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"os/user"
 	"path/filepath"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -26,8 +28,76 @@ func getDBPath() string {
 	return filepath.Join(dir, "yourql.db")
 }
 
+// activeDBPointerPath returns the fixed location of the pointer file that
+// records which SQLite file is currently active. This path itself is never
+// user-configurable — only its *contents* (the path it points to) are.
+// It lives next to (but outside of) the app database so it can be read
+// before any database is opened, avoiding a chicken-and-egg dependency on
+// app_settings (which lives inside the database being switched).
+func activeDBPointerPath() string {
+	usr, err := user.Current()
+	if err != nil {
+		return "" // caller falls back to getDBPath()
+	}
+	return filepath.Join(usr.HomeDir, ".yourql", "active_db_path.json")
+}
+
+// ActiveDBPointerPath is the exported wrapper around activeDBPointerPath for
+// use from the services layer (pkg/services/db_switcher.go).
+func ActiveDBPointerPath() string {
+	return activeDBPointerPath()
+}
+
+// DefaultDBPath returns the default SQLite database path (~/.yourql/yourql.db),
+// the same value getDBPath() produces. Exported for the services layer to
+// compute the "is this the default?" answer in GetActiveDatabaseInfo().
+func DefaultDBPath() string {
+	return getDBPath()
+}
+
+// ActiveDBPointer records which SQLite file YourQL should open on launch.
+type ActiveDBPointer struct {
+	Path      string    `json:"path"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// resolveDBPath returns the SQLite file YourQL should open: the pointer
+// file's path if one is recorded, otherwise the original hardcoded default
+// from getDBPath(). Any failure to read/parse the pointer file degrades
+// silently to today's default behavior, so existing installs without a
+// pointer file are completely unaffected.
+func resolveDBPath() string {
+	pointerPath := activeDBPointerPath()
+	if pointerPath == "" {
+		return getDBPath()
+	}
+	data, err := os.ReadFile(pointerPath)
+	if err != nil {
+		return getDBPath() // no pointer file yet — default behavior
+	}
+	var ptr ActiveDBPointer
+	if err := json.Unmarshal(data, &ptr); err != nil || ptr.Path == "" {
+		return getDBPath() // corrupt/empty pointer — default behavior
+	}
+	return ptr.Path
+}
+
 func ConnectDatabase() error {
-	dbPath := getDBPath()
+	return connectDatabaseAt(resolveDBPath())
+}
+
+// ConnectDatabaseAt opens the given SQLite file, assigns it to the global
+// models.DB, and runs migrations — without consulting resolveDBPath() or the
+// pointer file. Used by headless mode's -db-path flag (see
+// documentation/HEADLESS_YOURQL.md).
+func ConnectDatabaseAt(path string) error {
+	if path == "" {
+		return fmt.Errorf("database path is empty")
+	}
+	return connectDatabaseAt(path)
+}
+
+func connectDatabaseAt(dbPath string) error {
 	var err error
 	DB, err = sql.Open("sqlite", dbPath+"?_busy_timeout=5000&_journal_mode=WAL")
 	if err != nil {
@@ -44,6 +114,57 @@ func ConnectDatabase() error {
 
 	if err := migrate(); err != nil {
 		return fmt.Errorf("failed to run migrations: %w", err)
+	}
+	return nil
+}
+
+// CreateBlankDatabaseAt creates a fresh, empty SQLite file at path and runs
+// the existing migration system against it, producing a database identical
+// in shape to a first-ever YourQL launch (no conversations, providers, data
+// sources, or skills).
+//
+// It does NOT touch the global models.DB or the currently active pointer —
+// callers decide separately whether/when to switch to the new file (the
+// switch always restarts the app rather than hot-swapping models.DB).
+//
+// SAFETY: refuses to write into any existing file with size > 0. This guards
+// against a picker mistake (selecting a real yourql.db when intending to
+// create a new file) silently destroying real data — see SQLITE_DB_SWITCHER.md
+// §7.2.
+func CreateBlankDatabaseAt(path string) error {
+	if path == "" {
+		return fmt.Errorf("path is empty")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fmt.Errorf("failed to create directory for new database: %w", err)
+	}
+	if info, err := os.Stat(path); err == nil {
+		if info.Size() > 0 {
+			return fmt.Errorf("refusing to overwrite existing non-empty file: %s", path)
+		}
+		// Zero-byte placeholder file is safe — sql.Open will populate it.
+	}
+
+	db, err := sql.Open("sqlite", path+"?_busy_timeout=5000&_journal_mode=WAL")
+	if err != nil {
+		return fmt.Errorf("failed to create new database: %w", err)
+	}
+	defer db.Close()
+
+	if err := db.Ping(); err != nil {
+		return fmt.Errorf("failed to initialize new database: %w", err)
+	}
+
+	// migrate() operates on the package-level DB var. This function is
+	// synchronous and short-lived, so briefly swap DB to the new handle,
+	// run migrate(), and restore — the lower-risk alternative to refactoring
+	// migrate() and all its helpers to accept a *sql.DB parameter.
+	prevDB := DB
+	DB = db
+	err = migrate()
+	DB = prevDB
+	if err != nil {
+		return fmt.Errorf("failed to initialize new database schema: %w", err)
 	}
 	return nil
 }
@@ -245,6 +366,27 @@ func migrate() error {
 		_, err := DB.Exec(`CREATE TABLE IF NOT EXISTS discussion_defaults (
 			key TEXT PRIMARY KEY,
 			value TEXT NOT NULL
+		)`)
+		return err
+	})
+
+	// Tags and conversation_tags tables — discussion search and organization
+	_ = runMigration("create_tags", func() error {
+		_, err := DB.Exec(`CREATE TABLE IF NOT EXISTS tags (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`)
+		if err != nil {
+			return err
+		}
+		_, err = DB.Exec(`CREATE TABLE IF NOT EXISTS conversation_tags (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			conversation_id INTEGER NOT NULL,
+			tag_id INTEGER NOT NULL,
+			FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+			FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE,
+			UNIQUE(conversation_id, tag_id)
 		)`)
 		return err
 	})

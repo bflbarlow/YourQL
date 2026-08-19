@@ -106,6 +106,7 @@ func (c *OllamaClient) ChatCompletionWithPayload(ctx context.Context, messages [
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		log.Printf("[Ollama] ERROR — HTTP %d from %s (model=%s): %s", resp.StatusCode, c.baseURL, c.model, string(body))
 		return "", "", "", fmt.Errorf("Ollama API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -142,6 +143,7 @@ func (c *OllamaClient) ChatCompletionWithTools(ctx context.Context, messages []C
 
 	log.Printf("[Ollama] Fallback response (%d chars): %s", len(content), truncateString(content, 200))
 	msg := parseFallbackResponse(content)
+	msg.FinishReason = "stop"
 	return msg, reqJSON, respJSON, nil
 }
 
@@ -218,11 +220,13 @@ func (c *OllamaClient) ChatCompletionWithToolsStreaming(ctx context.Context, mes
 	}
 
 	if scanErr := scanner.Err(); scanErr != nil {
+		log.Printf("[Ollama] ERROR — NDJSON stream error from %s (model=%s): %v", c.baseURL, c.model, scanErr)
 		return nil, "", "", fmt.Errorf("NDJSON stream error: %w", scanErr)
 	}
 
 	// Parse the assembled text with the fallback protocol parser.
 	msg := parseFallbackResponse(fullText.String())
+	msg.FinishReason = "stop"
 	// Fallback: surface raw output when the parser got nothing usable.
 	if msg.Content == "" && len(msg.ToolCalls) == 0 && fullText.Len() > 0 {
 		msg.Content = fmt.Sprintf("[%d chunks, %d bytes] %s", ollamaChunks, ollamaBytes, truncateString(fullText.String(), 2000))
@@ -269,6 +273,7 @@ func TestOllamaConnection(baseURL, model string) (string, error) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		log.Printf("[Ollama] ERROR — HTTP %d from %s (model=%s): %s", resp.StatusCode, baseURL, model, string(body))
 		return "", fmt.Errorf("Ollama API error: status %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -286,15 +291,24 @@ const fallbackInstructions = `
 You MUST use the following compact routing format for every response. This
 is NOT full tool calling — it's a simple routing prefix.
 
+You may emit multiple JSON objects on consecutive lines to batch operations —
+for example, a query followed by a chart in one round.
+
 For database queries:
 {"action":"sql","sql":"SELECT ... LIMIT 10"}
+
+To attach a chart to your just-issued query result (must be batched with sql):
+{"action":"chart","type":"bar","labels":["$column_name"],"values":["$column_name"]}
+Chart types: bar, line, pie, doughnut, scatter, radar, polarArea.
+Use $column_name references — they will be filled with actual data.
 
 For responses, explanations, or clarifying questions:
 {"action":"respond"}
 [your full response using markdown]
 
 CRITICAL RULES:
-1. Put the JSON object on its OWN LINE, as the FIRST thing in your response.
+1. Put each JSON object on its OWN LINE as the first content in your response.
+   You may emit multiple JSON objects on consecutive lines (e.g., sql then chart).
 2. For "respond" actions, put your answer OUTSIDE the JSON — after the }.
    Do NOT put prose inside JSON string values.
 3. The JSON must be valid (double-quote all keys and string values).
@@ -338,8 +352,36 @@ func flattenFallbackHistory(messages []ChatMessage) []ChatMessage {
 			// so its history shows exactly what it said last time.
 			var sb strings.Builder
 			for _, tc := range msg.ToolCalls {
+				if tc.Function.Name == "render_chart" {
+					// Re-encode render_chart as a fallback chart action.
+					var cc struct {
+						Type string `json:"type"`
+						Data struct {
+							Labels   []string `json:"labels"`
+							Datasets []struct {
+								Data []string `json:"data"`
+							} `json:"datasets"`
+						} `json:"data"`
+					}
+					if err := json.Unmarshal([]byte(tc.Function.Arguments), &cc); err == nil && cc.Type != "" {
+						chart := map[string]interface{}{
+							"action": "chart",
+							"type":   cc.Type,
+							"labels": cc.Data.Labels,
+						}
+						if len(cc.Data.Datasets) > 0 {
+							chart["values"] = cc.Data.Datasets[0].Data
+						}
+						chartJSON, _ := json.Marshal(chart)
+						sb.Write(chartJSON)
+						continue
+					}
+					// Fallback: represent generically
+					sb.WriteString(fmt.Sprintf(`{"action":%q,"tool":%q}`, "chart", tc.Function.Name))
+					continue
+				}
 				if tc.Function.Name != "query_database" {
-					// render_chart or unknown tool — represent generically
+					// Unknown tool — represent generically
 					sb.WriteString(fmt.Sprintf(`{"action":%q,"tool":%q}`, "sql", tc.Function.Name))
 					continue
 				}
@@ -378,9 +420,11 @@ func injectFallbackInstructions(messages []ChatMessage, tools []Tool) []ChatMess
 	chartNote := ""
 	if hasRenderChart {
 		chartNote = `
-After a successful SQL query, you may optionally request a chart by responding
-with just {"action":"sql","sql":"..."} — charts are automatically generated from
-your query results when visualization is enabled.`
+To attach a chart to your last query result:
+{"action":"chart","type":"bar","labels":["$column_name"],"values":["$column_name"]}
+Available types: bar, line, pie, doughnut, scatter, radar, polarArea.
+Use $column_name references for labels and values — they will be filled with
+actual data from your query result.`
 	}
 
 	for i := range modified {
@@ -400,92 +444,170 @@ your query results when visualization is enabled.`
 	return append([]ChatMessage{sysMsg}, modified...)
 }
 
-// parseFallbackResponse parses the two-field fallback JSON protocol.
-// It reads a leading JSON object with an "action" field, then treats
-// everything after the closing brace as unescaped prose (for "respond"
-// actions). No double-encoding, no escape-sequence recovery, no
-// code-fence extraction — prose was never inside a JSON string to begin
-// with.
+// parseFallbackResponse parses the fallback JSON protocol response.
+// It consumes ALL consecutive JSON-action prefixes on separate lines so that
+// fallback models can batch operations (e.g., sql + chart) in a single
+// response, matching the tool-calling multi-tool pattern. Non-JSON lines and
+// malformed JSON at any position are treated as prose from that point on.
 func parseFallbackResponse(text string) *ChatMessage {
 	text = strings.TrimSpace(text)
 
-	// Find and balance the first JSON object
-	start := strings.Index(text, "{")
-	if start == -1 {
-		// No JSON — treat entire response as prose
-		return &ChatMessage{Role: "assistant", Content: text}
-	}
+	var toolCalls []ToolCall
+	var proseParts []string
+	remaining := text
+	callIdx := 0
 
-	depth := 0
-	end := -1
-	for i := start; i < len(text); i++ {
-		switch text[i] {
-		case '{':
-			depth++
-		case '}':
-			depth--
-			if depth == 0 {
-				end = i
-				goto found
+	for remaining != "" {
+		// Find the next JSON object
+		start := strings.Index(remaining, "{")
+		if start == -1 {
+			proseParts = append(proseParts, strings.TrimSpace(remaining))
+			break
+		}
+
+		// Capture any prose before this JSON
+		if start > 0 {
+			proseParts = append(proseParts, strings.TrimSpace(remaining[:start]))
+		}
+
+		// Balance braces to find the end of the JSON object
+		depth := 0
+		end := -1
+		for i := start; i < len(remaining); i++ {
+			switch remaining[i] {
+			case '{':
+				depth++
+			case '}':
+				depth--
+				if depth == 0 {
+					end = i
+					goto found
+				}
 			}
 		}
-	}
-found:
+	found:
+		if end == -1 {
+			proseParts = append(proseParts, strings.TrimSpace(remaining))
+			break
+		}
 
-	if end == -1 {
-		// Unbalanced braces — treat as prose
+		jsonPart := remaining[start : end+1]
+		remaining = strings.TrimSpace(remaining[end+1:])
+
+		var fallback struct {
+			Action string   `json:"action"`
+			SQL    string   `json:"sql,omitempty"`
+			Type   string   `json:"type,omitempty"`
+			Labels []string `json:"labels,omitempty"`
+			Values []string `json:"values,omitempty"`
+		}
+		if err := json.Unmarshal([]byte(jsonPart), &fallback); err != nil {
+			// Invalid JSON — treat from here on as prose
+			log.Printf("[Fallback] JSON parse error in prefix '%s': %v", jsonPart, err)
+			proseParts = append(proseParts, strings.TrimSpace(remaining[start:]))
+			break
+		}
+
+		switch fallback.Action {
+		case "sql":
+			if fallback.SQL == "" {
+				// sql action with no SQL — treat as prose
+				proseParts = append(proseParts, remaining)
+				remaining = ""
+				continue
+			}
+			argsJSON, err := json.Marshal(map[string]interface{}{
+				"sql":            fallback.SQL,
+				"is_exploration": false,
+			})
+			if err != nil {
+				argsJSON = []byte(fmt.Sprintf(`{"sql":%q,"is_exploration":false}`, fallback.SQL))
+			}
+			toolCalls = append(toolCalls, ToolCall{
+				ID: fmt.Sprintf("fallback_%d", callIdx),
+				Function: ToolCallFunction{
+					Name:      "query_database",
+					Arguments: string(argsJSON),
+				},
+			})
+			callIdx++
+
+		case "chart":
+			chartConfig := buildFallbackChartConfig(fallback)
+			if chartConfig == "" {
+				proseParts = append(proseParts, remaining)
+				remaining = ""
+				continue
+			}
+			toolCalls = append(toolCalls, ToolCall{
+				ID: fmt.Sprintf("fallback_%d", callIdx),
+				Function: ToolCallFunction{
+					Name:      "render_chart",
+					Arguments: chartConfig,
+				},
+			})
+			callIdx++
+
+		case "respond":
+			// respond: everything after its JSON is prose. Terminal.
+			proseParts = append(proseParts, remaining)
+			remaining = ""
+
+		default:
+			// Unknown action — treat everything after as prose
+			proseParts = append(proseParts, remaining)
+			remaining = ""
+		}
+	}
+
+	prose := strings.TrimSpace(strings.Join(proseParts, "\n\n"))
+
+	if len(toolCalls) == 0 {
+		if prose != "" {
+			return &ChatMessage{Role: "assistant", Content: prose}
+		}
 		return &ChatMessage{Role: "assistant", Content: text}
 	}
 
-	jsonPart := text[start : end+1]
-	restPart := strings.TrimSpace(text[end+1:])
-
-	var fallback struct {
-		Action string `json:"action"`
-		SQL    string `json:"sql,omitempty"`
+	return &ChatMessage{
+		Role:      "assistant",
+		Content:   prose,
+		ToolCalls: toolCalls,
 	}
-	if err := json.Unmarshal([]byte(jsonPart), &fallback); err != nil {
-		// Invalid JSON in the prefix — treat whole thing as prose
-		log.Printf("[Fallback] JSON parse error in prefix '%s': %v", jsonPart, err)
-		return &ChatMessage{Role: "assistant", Content: text}
-	}
+}
 
-	switch fallback.Action {
-	case "sql":
-		if fallback.SQL == "" {
-			return &ChatMessage{Role: "assistant", Content: restPart}
-		}
-		argsJSON, err := json.Marshal(map[string]interface{}{
-			"sql":            fallback.SQL,
-			"is_exploration": false,
-		})
-		if err != nil {
-			argsJSON = []byte(fmt.Sprintf(`{"sql":%q,"is_exploration":false}`, fallback.SQL))
-		}
-		return &ChatMessage{
-			Role: "assistant",
-			ToolCalls: []ToolCall{
+// buildFallbackChartConfig converts the fallback model's simplified chart
+// action (type, labels, values) into the full chart_config JSON string that
+// render_chart expects. The $column_name references in labels/values are
+// preserved — resolveChartConfig substitutes them with actual data later.
+func buildFallbackChartConfig(fallback struct {
+	Action string   `json:"action"`
+	SQL    string   `json:"sql,omitempty"`
+	Type   string   `json:"type,omitempty"`
+	Labels []string `json:"labels,omitempty"`
+	Values []string `json:"values,omitempty"`
+}) string {
+	if fallback.Type == "" {
+		fallback.Type = "bar"
+	}
+	if len(fallback.Labels) == 0 || len(fallback.Values) == 0 {
+		return ""
+	}
+	chartConfig := map[string]interface{}{
+		"type": fallback.Type,
+		"data": map[string]interface{}{
+			"labels": fallback.Labels,
+			"datasets": []map[string]interface{}{
 				{
-					ID: "fallback_0",
-					Function: ToolCallFunction{
-						Name:      "query_database",
-						Arguments: string(argsJSON),
-					},
+					"label": "",
+					"data":  fallback.Values,
 				},
 			},
-		}
-
-	case "respond":
-		return &ChatMessage{
-			Role:    "assistant",
-			Content: restPart,
-		}
-
-	default:
-		// Unknown action — treat everything after JSON as prose
-		if restPart != "" {
-			return &ChatMessage{Role: "assistant", Content: restPart}
-		}
-		return &ChatMessage{Role: "assistant", Content: text}
+		},
 	}
+	b, err := json.Marshal(chartConfig)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }

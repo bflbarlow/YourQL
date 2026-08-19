@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"YourQL/pkg/engine"
 	"YourQL/pkg/models"
 )
 
@@ -25,6 +26,8 @@ type LLMResponse struct {
 	SQLQuery              string `json:"sql_query,omitempty"`
 	ClarificationQuestion string `json:"clarification_question,omitempty"`
 	Explanation           string `json:"explanation,omitempty"`
+	FailureCategory       string `json:"failure_category,omitempty"` // empty_response, context_overflow, loop_exhausted
+	FailureDetail         string `json:"failure_detail,omitempty"`   // human-readable diagnostic
 }
 
 // truncateString truncates a string to maxLen with ellipsis.
@@ -132,6 +135,7 @@ func ProcessUserMessageWithContext(ctx context.Context, conversationID uint, use
 	var maxRounds int = 2
 	var safetyMode ExplorationSafetyMode = ExplorationRelaxed
 	var maxFinalRetries int = 2
+	var maxToolsPerRound int
 	if dbConnection != nil {
 		config, cfgErr := dbConnection.ParseConfig()
 		if cfgErr == nil {
@@ -142,6 +146,7 @@ func ProcessUserMessageWithContext(ctx context.Context, conversationID uint, use
 			if config.MaxFinalQueryRetries > 0 {
 				maxFinalRetries = config.MaxFinalQueryRetries
 			}
+			maxToolsPerRound = config.MaxToolsPerRound
 		}
 	}
 
@@ -158,12 +163,17 @@ func ProcessUserMessageWithContext(ctx context.Context, conversationID uint, use
 		history = history[len(history)-limit:]
 	}
 
-	// Step 10: Build tool-calling LLM messages
+	// Step 10: Build tool-calling LLM messages and tool definitions.
 	skillsContent, _ := GetEnabledSkillsContent(conversation.ID)
+	agentCfg, cfgErr := GetAgentLoopConfig()
+	if cfgErr != nil {
+		agentCfg = &models.AgentLoopConfig{}
+	}
 	toolMessages := buildToolLlmMessages(userMessage, history, schema, dbConnection, conversation.VizEnabled, skillsContent)
+	tools := buildTools(agentCfg, conversation.VizEnabled, schema, dbConnection)
 	log.Printf("[DiscussionEngine] Message count for LLM: %d", len(toolMessages))
 
-	// Step 11: Call LLM via the agentic loop
+	// Step 11: Create the LLM client.
 	client, err := NewLLMClient(llmProvider)
 	if err != nil {
 		_ = UpdateQueryStatus(query.ID, "error", nil, nil, stringPtr(formatUserError(err)), nil, nil, nil)
@@ -171,7 +181,7 @@ func ProcessUserMessageWithContext(ctx context.Context, conversationID uint, use
 		return fmt.Errorf("failed to create LLM client: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, 180*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(GetTimeoutSetting("pipeline_timeout_seconds", 180))*time.Second)
 	defer cancel()
 
 	if onPhase != nil {
@@ -184,14 +194,58 @@ func ProcessUserMessageWithContext(ctx context.Context, conversationID uint, use
 	if conversation.StreamingEnabled {
 		streamCallback = onStream
 	}
-	if err := runAgenticLoop(ctx, query, client, toolMessages, dbConnection, conversation, maxRounds, maxFinalRetries, safetyMode, userMessage, skillsContent, streamCallback); err != nil {
-		if errors.Is(err, context.Canceled) {
+
+	// Step 12: Run the isolated agentic loop via the engine package.
+	loop := &engine.AgenticLoop{
+		LLMClient:     client,
+		QueryExecutor: &QueryExecutorAdapter{DataSource: dbConnection, SafetyMode: safetyMode},
+		OutputHandler: &SqliteOutputHandler{},
+	}
+	loopInput := engine.LoopInput{
+		UserMessage:    userMessage,
+		ConversationID: conversationID,
+		QueryID:        query.ID,
+		Conversation: engine.ConversationMeta{
+			ID:               conversation.ID,
+			LLMProviderID:    conversation.LLMProviderID,
+			DataSourceID:     conversation.DataSourceID,
+			MaxContextMessages: conversation.MaxContextMessages,
+			VizEnabled:       conversation.VizEnabled,
+			StreamingEnabled: conversation.StreamingEnabled,
+			Summarize:        conversation.Summarize,
+		},
+		Schema:        schema,
+		SkillsContent: skillsContent,
+		OnStream:      streamCallback,
+		Messages:      toolMessages,
+		Tools:         tools,
+	}
+	loopConfig := engine.LoopConfig{
+		MaxExplorationRounds:       maxRounds,
+		MaxToolsPerRound:           maxToolsPerRound,
+		MaxErrorRetries:            maxFinalRetries,
+		TotalRoundCap:              maxRounds + maxFinalRetries + 4,
+		SafetyMode:                 safetyMode,
+		ContextWindow:              llmProvider.ContextWindow,
+		ModelName:                  llmProvider.Name,
+		VizEnabled:                 conversation.VizEnabled,
+		Summarize:                  conversation.Summarize,
+		StreamingEnabled:           conversation.StreamingEnabled,
+		SummarizationTimeoutSeconds: GetTimeoutSetting("summarization_timeout_seconds", 300),
+		AgentConfig:                agentCfg,
+	}
+
+	output, loopErr := loop.Run(ctx, loopInput, loopConfig)
+	if loopErr == nil && output != nil && output.FatalError != nil {
+		loopErr = output.FatalError
+	}
+	if loopErr != nil {
+		if errors.Is(loopErr, context.Canceled) {
 			_ = UpdateQueryStatus(query.ID, "cancelled", nil, nil, stringPtr("cancelled by user"), nil, nil, nil)
 			_ = UpdateQueryErrorCategory(query.ID, "user_cancelled")
-			// Save a system message so the chat shows the cancelled indicator.
 			_, _ = CreateConversationMessage(conversationID, "system", "⏹ Cancelled", nil, nil, nil)
 		}
-		return err
+		return loopErr
 	}
 	assistantMessageSaved = true
 	return nil
@@ -399,8 +453,11 @@ func formatSkillsContext(skillsContent string) string {
 
 // handleClarification creates an assistant message asking for clarification.
 func handleClarification(query *models.Query, resp LLMResponse, conversationID uint) error {
-	if err := UpdateQueryStatus(query.ID, "clarification", nil, nil, nil, nil, nil, nil); err != nil {
+	if err := UpdateQueryStatus(query.ID, "clarification", nil, nil, stringPtr(resp.FailureDetail), nil, nil, nil); err != nil {
 		return fmt.Errorf("failed to update query: %w", err)
+	}
+	if resp.FailureCategory != "" {
+		_ = UpdateQueryErrorCategory(query.ID, resp.FailureCategory)
 	}
 
 	message := resp.ClarificationQuestion
@@ -749,10 +806,13 @@ func resolveChartConfig(vizConfig string, columns []string, rows [][]interface{}
 		return "", fmt.Errorf("invalid viz_config JSON: %w", err)
 	}
 
-	// Build column index (case-insensitive)
+	// Build column index — normalize so "Product Line", "productLine", and
+	// "product_line" all match. Strips spaces, underscores, and hyphens, then
+	// lowercases. This bridges the gap between humanized column names shown to
+	// the LLM and the raw column names from the database driver.
 	colIndex := make(map[string]int)
 	for i, col := range columns {
-		colIndex[strings.ToLower(col)] = i
+		colIndex[normalizeColRef(col)] = i
 	}
 
 	resolved := resolveRefs(config, colIndex, rows)
@@ -815,7 +875,7 @@ func resolveRefs(node interface{}, colIndex map[string]int, rows [][]interface{}
 	switch v := node.(type) {
 	case string:
 		if strings.HasPrefix(v, "$") {
-			colName := strings.ToLower(v[1:])
+			colName := normalizeColRef(v[1:])
 			if idx, ok := colIndex[colName]; ok {
 				data := make([]interface{}, len(rows))
 				for i, row := range rows {
@@ -859,4 +919,18 @@ func mustMarshalJSON(v interface{}) []byte {
 		return []byte("{}")
 	}
 	return data
+}
+
+// normalizeColRef lowercases and strips non-alphanumeric characters (spaces,
+// underscores, hyphens) so that "Product Line", "productLine", and
+// "product_line" all map to the same key. Used by both the column-index
+// builder and the $column reference resolver in chart configs.
+func normalizeColRef(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }

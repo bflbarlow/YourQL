@@ -18,8 +18,8 @@
     }
   })
 
-  import { ListConversations, CreateConversation, GetConversationMessages, ProcessUserMessage, CancelProcessing, DeleteConversation, UpdateConversationTechDetails, ArchiveConversation, RestoreConversation, UpdateConversationSettings, ListLLMProviders, ListDataSources, UpdateConversationTitle, UpdateConversationMaxMessages, UpdateConversationMaxContextMessages, UpdateConversationPinned, DuplicateConversation, ClearConversationMessages, UpdateConversationContextDetails, UpdateConversationSummarize, UpdateConversationVizEnabled, UpdateConversationStreamingEnabled, ListSkills, GetConversationSkillIDs, SetConversationSkill, GetDiscussionDefaults, GetAppVersion, CheckForUpdate, DownloadUpdate, PerformUpgradeRestart } from '../wailsjs/go/main/App.js'
-  import { MessageSquare, Settings, X, Copy, Trash2, Pin, ChevronRight, ChevronLeft, Plus } from 'lucide-svelte'
+  import { ListConversations, CreateConversation, GetConversationMessages, ProcessUserMessage, CancelProcessing, DeleteConversation, UpdateConversationTechDetails, ArchiveConversation, RestoreConversation, UpdateConversationSettings, ListLLMProviders, ListDataSources, UpdateConversationTitle, UpdateConversationMaxMessages, UpdateConversationMaxContextMessages, UpdateConversationPinned, DuplicateConversation, ClearConversationMessages, UpdateConversationContextDetails, UpdateConversationSummarize, UpdateConversationVizEnabled, UpdateConversationStreamingEnabled, ListSkills, GetConversationSkillIDs, SetConversationSkill, GetDiscussionDefaults, GetAppVersion, CheckForUpdate, DownloadUpdate, PerformUpgradeRestart, AddTagToConversation, RemoveTagFromConversation, GetTagsForConversation, ListAllTags } from '../wailsjs/go/main/App.js'
+  import { MessageSquare, Settings, X, Copy, Trash2, Pin, PinOff, Tag, Search, ChevronRight, ChevronLeft, Plus } from 'lucide-svelte'
   import SettingsView from './SettingsView.svelte'
   import ConversationView from './ConversationView.svelte'
 
@@ -49,14 +49,23 @@
   }
   loadAppVersion()
 
+  let updateCheckedTimer = null
+
   // --- Auto-update helpers ---
   async function handleCheckForUpdate() {
     updateChecking = true
     updateError = null
     updateReady = false
     updateInfo = null
+    if (updateCheckedTimer) clearTimeout(updateCheckedTimer)
     try {
       updateInfo = await CheckForUpdate()
+      // If we're already on latest, auto-reset to the check button after 5s
+      if (updateInfo && !updateInfo.update_available) {
+        updateCheckedTimer = setTimeout(() => {
+          updateInfo = null
+        }, 5000)
+      }
     } catch (e) {
       updateError = e || 'Unable to reach update server'
     } finally {
@@ -128,6 +137,7 @@
   let processingMessage = $state('')
   let processingConversationId = $state(null)
   let messageError = $state(null)
+  let errorConversationId = $state(null)
   let showTechDetails = $state(false)
   let showContextDetails = $state(false)
   let selectedConversation = $state(null)
@@ -150,6 +160,43 @@
   let deleting = $state(false)
 
   let showArchived = $state(false)
+
+  // Search and filter
+  let searchQuery = $state('')
+  let filterDataSource = $state('')
+  let filterLLM = $state('')
+
+  // Tag management in gear popover
+  let convTags = $state([])
+  let tagInput = $state('')
+  let allTags = $state([])
+
+  // Inline row-level tag popover (add/remove tags without opening full settings)
+  let rowTagPopoverForId = $state(null)
+  let rowTagInput = $state('')
+
+  let filteredConversations = $derived(
+    conversations.filter(conv => {
+      const query = searchQuery.toLowerCase().trim()
+      if (query) {
+        const title = (conv.title || '').toLowerCase()
+        const tags = (conv.tags || []).join(' ').toLowerCase()
+        const dbName = (dataSourceNameByID[conv.data_source_id] || '').toLowerCase()
+        const llmName = (llmNameByID[conv.llm_provider_id] || '').toLowerCase()
+        if (!title.includes(query) && !tags.includes(query) && !dbName.includes(query) && !llmName.includes(query)) {
+          return false
+        }
+      }
+      if (filterDataSource && conv.data_source_id !== +filterDataSource) {
+        // Pinned conversations always appear regardless of filter
+        if (!conv.pinned) return false
+      }
+      if (filterLLM && conv.llm_provider_id !== +filterLLM) {
+        if (!conv.pinned) return false
+      }
+      return true
+    })
+  )
 
   async function loadData() {
     status = "Loading..."
@@ -219,6 +266,7 @@
       conversationMessages = await GetConversationMessages(conversation.id)
     } catch (e) {
       messageError = e.toString()
+      errorConversationId = conversation.id
     }
   }
 
@@ -258,6 +306,7 @@
     processingConversationId = activeConversation.id
     processingMessage = 'Thinking...'
     messageError = null
+    errorConversationId = null
 
     // Optimistically add user message to the thread for smooth animation
     const tempId = -(Date.now())
@@ -277,8 +326,16 @@
       conversationMessages = await GetConversationMessages(activeConversation.id)
     } catch (e) {
       messageError = e.toString()
-      // Remove optimistic message on error
+      errorConversationId = activeConversation.id
+      // Remove optimistic message on error, then re-fetch from DB
+      // (Go may have already persisted the user message + an error assistant
+      // message before the error propagated — we need to pick those up)
       conversationMessages = conversationMessages.filter(m => m.id !== tempId)
+      try {
+        conversationMessages = await GetConversationMessages(activeConversation.id)
+      } catch (_) {
+        // DB fetch failed too — keep the empty filtered array
+      }
     } finally {
       processingMessage = ''
       processingConversationId = null
@@ -364,6 +421,144 @@
       await UpdateConversationPinned(selectedConversation.id, pinned)
     } catch (e) {
       console.error('Failed to set pinned:', e)
+    }
+  }
+
+  // Tag management
+  async function loadConversationTags(id) {
+    try {
+      convTags = await GetTagsForConversation(id) || []
+      allTags = await ListAllTags() || []
+    } catch (e) {
+      console.error('Failed to load tags:', e)
+    }
+  }
+
+  let tagSuggestions = $derived(
+    (allTags || []).filter(t =>
+      t.toLowerCase().includes((tagInput || '').toLowerCase()) &&
+      !(convTags || []).includes(t)
+    ).slice(0, 8)
+  )
+
+  async function handleAddTag(name) {
+    if (!selectedConversation || !name) return
+    try {
+      await AddTagToConversation(selectedConversation.id, name)
+      convTags = await GetTagsForConversation(selectedConversation.id) || []
+      allTags = await ListAllTags() || []
+      tagInput = ''
+      selectedConversation.tags = convTags
+      loadData()
+    } catch (e) {
+      console.error('Failed to add tag:', e)
+    }
+  }
+
+  async function handleRemoveTag(name) {
+    if (!selectedConversation) return
+    try {
+      await RemoveTagFromConversation(selectedConversation.id, name)
+      convTags = await GetTagsForConversation(selectedConversation.id) || []
+      allTags = await ListAllTags() || []
+      selectedConversation.tags = convTags
+      loadData()
+    } catch (e) {
+      console.error('Failed to remove tag:', e)
+    }
+  }
+
+  async function handleTagKeydown(e) {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      const val = tagInput.trim()
+      if (!val) return
+      // If exact match in suggestions, use it; otherwise create new tag
+      const match = tagSuggestions.find(t => t.toLowerCase() === val.toLowerCase())
+      if (match) {
+        await handleAddTag(match)
+      } else {
+        await handleAddTag(val)
+      }
+    }
+  }
+
+  // --- Inline row-level pin & tag controls (no need to open Settings) ---
+
+  async function handleQuickTogglePin(conv, e) {
+    e.stopPropagation()
+    try {
+      const newPinned = !conv.pinned
+      await UpdateConversationPinned(conv.id, newPinned)
+      conv.pinned = newPinned
+      conversations = [...conversations]
+    } catch (err) {
+      console.error('Failed to toggle pinned:', err)
+    }
+  }
+
+  async function openRowTagPopover(conv, e) {
+    e.stopPropagation()
+    if (rowTagPopoverForId === conv.id) {
+      rowTagPopoverForId = null
+      return
+    }
+    rowTagPopoverForId = conv.id
+    rowTagInput = ''
+    try {
+      allTags = await ListAllTags() || []
+    } catch (err) {
+      console.error('Failed to load tags:', err)
+    }
+  }
+
+  function closeRowTagPopover() {
+    rowTagPopoverForId = null
+    rowTagInput = ''
+  }
+
+  let rowTagSuggestions = $derived(
+    (allTags || []).filter(t => {
+      const conv = conversations.find(c => c.id === rowTagPopoverForId)
+      const existing = (conv?.tags) || []
+      return t.toLowerCase().includes((rowTagInput || '').toLowerCase()) && !existing.includes(t)
+    }).slice(0, 8)
+  )
+
+  async function handleRowAddTag(conv, name) {
+    const val = (name || '').trim()
+    if (!val) return
+    try {
+      await AddTagToConversation(conv.id, val)
+      conv.tags = await GetTagsForConversation(conv.id) || []
+      conversations = [...conversations]
+      allTags = await ListAllTags() || []
+      rowTagInput = ''
+    } catch (err) {
+      console.error('Failed to add tag:', err)
+    }
+  }
+
+  async function handleRowRemoveTag(conv, name, e) {
+    e?.stopPropagation()
+    try {
+      await RemoveTagFromConversation(conv.id, name)
+      conv.tags = await GetTagsForConversation(conv.id) || []
+      conversations = [...conversations]
+    } catch (err) {
+      console.error('Failed to remove tag:', err)
+    }
+  }
+
+  function handleRowTagKeydown(conv, e) {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      const val = rowTagInput.trim()
+      if (!val) return
+      const match = rowTagSuggestions.find(t => t.toLowerCase() === val.toLowerCase())
+      handleRowAddTag(conv, match || val)
+    } else if (e.key === 'Escape') {
+      closeRowTagPopover()
     }
   }
 
@@ -574,20 +769,86 @@
             <button class="btn btn-primary" onclick={openNewDiscussionModal}>+ New Discussion</button>
           </div>
         </div>
+        <div class="discussion-filters">
+          <div class="search-row">
+            <div class="search-input-wrapper">
+              <Search size={15} class="search-icon" />
+              <input
+                type="text"
+                class="search-input"
+                placeholder="Search by title, tag, data source, or model…"
+                bind:value={searchQuery}
+              />
+              {#if searchQuery}
+                <button class="search-clear-btn" onclick={() => searchQuery = ''} title="Clear search" type="button">
+                  <X size={13} />
+                </button>
+              {/if}
+            </div>
+            <select class="filter-select" bind:value={filterDataSource}>
+              <option value="">All data sources</option>
+              {#each dataSources as ds}
+                <option value={ds.id}>{ds.name}</option>
+              {/each}
+            </select>
+            <select class="filter-select" bind:value={filterLLM}>
+              <option value="">All models</option>
+              {#each llmProviders as p}
+                <option value={p.id}>{p.name}</option>
+              {/each}
+            </select>
+          </div>
+          {#if searchQuery || filterDataSource || filterLLM}
+            <div class="active-filters-row">
+              <span class="active-filters-label">{filteredConversations.length} of {conversations.length} discussions</span>
+              {#if filterDataSource}
+                <span class="filter-pill">{dataSourceNameByID[+filterDataSource]} <button onclick={() => filterDataSource = ''} title="Remove filter"><X size={11} /></button></span>
+              {/if}
+              {#if filterLLM}
+                <span class="filter-pill">{llmNameByID[+filterLLM]} <button onclick={() => filterLLM = ''} title="Remove filter"><X size={11} /></button></span>
+              {/if}
+              <button class="btn-clear-filters" onclick={() => { searchQuery = ''; filterDataSource = ''; filterLLM = '' }}>Clear all</button>
+            </div>
+          {/if}
+        </div>
         <div class="view-content">
-          {#if conversations.length === 0}
+          {#if filteredConversations.length === 0}
             <div class="empty-state">
-              <p>No discussions found</p>
-              <p class="hint">Create a new discussion to start querying your data</p>
+              {#if searchQuery || filterDataSource || filterLLM}
+                <p>No discussions match your filters.</p>
+                <p class="hint"><a href="#" onclick={(e) => { e.preventDefault(); searchQuery = ''; filterDataSource = ''; filterLLM = '' }}>Clear filters</a></p>
+              {:else}
+                <p>No discussions found</p>
+                <p class="hint">Create a new discussion to start querying your data</p>
+              {/if}
             </div>
           {:else}
             <div class="conversations-list">
-              {#each conversations as conv}
-                <div class="conversation-row" class:archived={conv.status === 'archived'}>
-                  <button class="conversation-item" onclick={() => openConversation(conv)} type="button">
-                    <div class="conversation-title">{conv.title || 'Untitled'}</div>
+              {#each filteredConversations as conv}
+                <div class="conversation-row" class:archived={conv.status === 'archived'} class:pinned={conv.pinned}>
+                  <div
+                    class="conversation-item"
+                    role="button"
+                    tabindex="0"
+                    onclick={() => openConversation(conv)}
+                    onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openConversation(conv) } }}
+                  >
+                    <div class="conversation-title">
+                      {#if conv.pinned}<span class="pin-indicator" title="Pinned">📌</span>{/if}
+                      {conv.title || 'Untitled'}
+                    </div>
                     <div class="conversation-meta">
                       <span class="conversation-date">{new Date(conv.updated_at).toLocaleDateString()}</span>
+                      {#if conv.tags && conv.tags.length > 0}
+                        {#each conv.tags as tag}
+                          <span class="tag-chip tag-chip-row">
+                            {tag}
+                            <button class="tag-chip-remove" onclick={(e) => handleRowRemoveTag(conv, tag, e)} title="Remove tag">
+                              <X size={9} />
+                            </button>
+                          </span>
+                        {/each}
+                      {/if}
                       {#if conv.llm_provider_id}
                         <span class="conversation-model">{llmNameByID[conv.llm_provider_id] || 'LLM'}</span>
                       {/if}
@@ -595,15 +856,72 @@
                         <span class="conversation-db">{dataSourceNameByID[conv.data_source_id] || 'DB'}</span>
                       {/if}
                     </div>
-                  </button>
-                  <button
-                    class="gear-btn"
-                    onclick={() => { selectedConversation = conv; showGearPopover = !showGearPopover }}
-                    title="Conversation settings"
-                    type="button"
-                  >
-                    <Settings size={14} />
-                  </button>
+                  </div>
+                  <div class="conversation-row-actions">
+                    <button
+                      class="row-action-btn pin-toggle-btn"
+                      class:active={conv.pinned}
+                      onclick={(e) => handleQuickTogglePin(conv, e)}
+                      title={conv.pinned ? 'Unpin' : 'Pin to top'}
+                      type="button"
+                    >
+                      {#if conv.pinned}<PinOff size={14} />{:else}<Pin size={14} />{/if}
+                    </button>
+                    <div class="row-tag-popover-wrapper">
+                      <button
+                        class="row-action-btn"
+                        onclick={(e) => openRowTagPopover(conv, e)}
+                        title="Add or remove tags"
+                        type="button"
+                      >
+                        <Tag size={14} />
+                      </button>
+                      {#if rowTagPopoverForId === conv.id}
+                        <div class="row-tag-popover-overlay" onclick={closeRowTagPopover}></div>
+                        <div class="row-tag-popover" onclick={(e) => e.stopPropagation()}>
+                          <div class="row-tag-popover-title">Tags</div>
+                          <div class="tag-chips">
+                            {#each (conv.tags || []) as tag}
+                              <span class="tag-chip">
+                                {tag}
+                                <button class="tag-remove" onclick={(e) => handleRowRemoveTag(conv, tag, e)} title="Remove tag">&times;</button>
+                              </span>
+                            {/each}
+                            {#if !(conv.tags && conv.tags.length)}
+                              <span class="no-tags-hint">No tags yet</span>
+                            {/if}
+                          </div>
+                          <div class="tag-input-wrapper">
+                            <input
+                              type="text"
+                              class="tag-input"
+                              placeholder="Add a tag…"
+                              bind:value={rowTagInput}
+                              onkeydown={(e) => handleRowTagKeydown(conv, e)}
+                              autofocus
+                            />
+                            {#if rowTagSuggestions.length > 0}
+                              <div class="tag-suggestions">
+                                {#each rowTagSuggestions as suggestion}
+                                  <button class="tag-suggestion" onclick={() => handleRowAddTag(conv, suggestion)}>
+                                    {suggestion}
+                                  </button>
+                                {/each}
+                              </div>
+                            {/if}
+                          </div>
+                        </div>
+                      {/if}
+                    </div>
+                    <button
+                      class="row-action-btn"
+                      onclick={() => { selectedConversation = conv; showGearPopover = true; loadConversationTags(conv.id) }}
+                      title="Conversation settings"
+                      type="button"
+                    >
+                      <Settings size={14} />
+                    </button>
+                  </div>
                 </div>
               {/each}
             </div>
@@ -617,7 +935,7 @@
         {llmProviders}
         {dataSources}
         processingMessage={processingConversationId === activeConversation?.id ? processingMessage : ''}
-        {messageError}
+        messageError={errorConversationId === activeConversation?.id ? messageError : null}
         userMessage={userMessage}
         showTechDetails={showTechDetails}
         showContextDetails={showContextDetails}
@@ -652,12 +970,12 @@
                 <span class="update-dev-note">Checking version…</span>
               {/if}
             {:else if !updateInfo && !updateChecking && !updateError}
-              <button class="update-btn" onclick={handleCheckForUpdate}>Check for Updates</button>
+              <button class="btn btn-primary" onclick={handleCheckForUpdate}>Check for Updates</button>
             {:else if updateChecking}
               <span class="update-status">Checking for updates…</span>
             {:else if updateError}
               <span class="update-error">{updateError}</span>
-              <button class="update-btn update-btn-retry" onclick={handleCheckForUpdate}>Retry</button>
+              <button class="btn btn-primary" onclick={handleCheckForUpdate}>Retry</button>
             {:else if updateInfo && !updateInfo.update_available}
               <span class="update-status update-uptodate">You're on the latest version</span>
               <span class="update-checked">(checked just now)</span>
@@ -673,13 +991,13 @@
                 {#if updateDownloading}
                   <span class="update-status">Downloading…</span>
                 {:else}
-                  <button class="update-btn" onclick={handleDownloadUpdate}>Download &amp; Install</button>
+                  <button class="btn btn-primary" onclick={handleDownloadUpdate}>Download &amp; Install</button>
                 {/if}
               </div>
             {:else if updateReady}
               <div class="update-ready">
                 <span class="update-status update-uptodate">Update downloaded and verified</span>
-                <button class="update-btn" onclick={handlePerformUpgradeRestart}>Restart Now</button>
+                <button class="btn btn-primary" onclick={handlePerformUpgradeRestart}>Restart Now</button>
               </div>
             {/if}
           </div>
@@ -703,9 +1021,12 @@
               <li>Use OpenAI, Anthropic Claude, Ollama, or any OpenAI-compatible endpoint — bring your own model</li>
               <li>Safe data exploration with configurable safety modes (strict, moderate, relaxed) — read-only by default</li>
               <li>Automatic chart generation — bar, line, pie, scatter, radar, and more</li>
-              <li>Plain-English result summaries so you don't have to decipher tables of numbers</li>
+              <li>Plain-English result summaries with live-streamed reasoning so you see the model thinking through your data</li>
+              <li><strong>Tags &amp; search</strong> — label discussions with tags, search across titles, tags, data sources, and models all at once, filter by source or model with quick dropdowns</li>
+              <li><strong>Inline controls</strong> — pin, add tags, or remove tags directly from the discussion list without opening settings</li>
               <li>Custom system prompts, business rules, and table/column descriptions per database connection</li>
               <li>Reusable Skills — Markdown prompt fragments you can activate per conversation for domain knowledge</li>
+              <li>Configurable pipeline and summarization timeouts — tune for your model's speed</li>
               <li>Advanced agent loop settings — customize the exact prompts, tool descriptions, and instructions your AI model receives</li>
               <li>Pin, archive, duplicate, rename, and clear discussions — full conversation management</li>
               <li>No telemetry, no analytics, no data collection — your credentials and history stay on your machine</li>
@@ -920,6 +1241,39 @@
         {#if allSkills.length === 0}
           <div style="color: var(--text-tertiary); font-size: var(--font-xs);">No skills configured. Add skills in Settings.</div>
         {/if}
+      </div>
+
+      <div class="gear-popover-divider"></div>
+
+      <!-- Tags -->
+      <div class="gear-popover-section">
+        <div class="gear-popover-section-title">Tags</div>
+        <div class="tag-chips">
+          {#each convTags as tag}
+            <span class="tag-chip">
+              {tag}
+              <button class="tag-remove" onclick={() => handleRemoveTag(tag)} title="Remove tag">&times;</button>
+            </span>
+          {/each}
+        </div>
+        <div class="tag-input-wrapper">
+          <input
+            type="text"
+            class="tag-input"
+            placeholder="Add a tag…"
+            bind:value={tagInput}
+            onkeydown={handleTagKeydown}
+          />
+          {#if tagSuggestions.length > 0}
+            <div class="tag-suggestions">
+              {#each tagSuggestions as suggestion}
+                <button class="tag-suggestion" onclick={() => handleAddTag(suggestion)}>
+                  {suggestion}
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
       </div>
 
       <div class="gear-popover-divider"></div>
@@ -1309,6 +1663,11 @@
     transform: translateX(0.3125rem);
   }
 
+  .conversation-item:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
   .conversation-title {
     font-size: var(--font-xl);
     font-weight: 500;
@@ -1333,6 +1692,299 @@
     padding: var(--space-2xs) var(--space-md);
     border-radius: var(--radius-md);
     font-size: var(--font-xs);
+  }
+
+  /* Filter bar */
+  .discussion-filters {
+    padding: var(--space-lg) var(--space-7xl) var(--space-md);
+    border-bottom: 1px solid var(--border-primary);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+  }
+  .search-row {
+    display: flex;
+    gap: var(--space-sm);
+    align-items: center;
+  }
+  .search-input-wrapper {
+    position: relative;
+    flex: 1;
+    display: flex;
+    align-items: center;
+  }
+  .search-input-wrapper :global(.search-icon) {
+    position: absolute;
+    left: var(--space-md);
+    color: var(--text-tertiary);
+    pointer-events: none;
+  }
+  .search-input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: var(--space-sm) var(--space-2xl) var(--space-sm) calc(var(--space-md) * 2 + 15px);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-lg);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: var(--font-sm);
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+  .search-input:focus {
+    outline: none;
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 3px var(--color-accent-light);
+  }
+  .search-clear-btn {
+    position: absolute;
+    right: var(--space-sm);
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--text-tertiary);
+    display: flex;
+    align-items: center;
+    padding: var(--space-2xs);
+    border-radius: 50%;
+  }
+  .search-clear-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-surface);
+  }
+  .filter-select {
+    padding: var(--space-sm) var(--space-md);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-lg);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: var(--font-xs);
+    max-width: 11rem;
+    cursor: pointer;
+  }
+  .filter-select:focus {
+    outline: none;
+    border-color: var(--color-accent);
+  }
+
+  .active-filters-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    flex-wrap: wrap;
+  }
+  .active-filters-label {
+    font-size: var(--font-xs);
+    color: var(--text-tertiary);
+  }
+  .filter-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    background: var(--color-accent-light);
+    color: var(--color-accent);
+    padding: var(--space-2xs) var(--space-sm);
+    border-radius: var(--radius-md);
+    font-size: var(--font-xs);
+    font-weight: 500;
+  }
+  .filter-pill button {
+    background: none;
+    border: none;
+    color: var(--color-accent);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    padding: 0;
+    opacity: 0.7;
+  }
+  .filter-pill button:hover {
+    opacity: 1;
+  }
+  .btn-clear-filters {
+    font-size: var(--font-xs);
+    padding: var(--space-2xs) var(--space-sm);
+    background: none;
+    border: none;
+    color: var(--text-tertiary);
+    text-decoration: underline;
+    cursor: pointer;
+    margin-left: auto;
+  }
+  .btn-clear-filters:hover {
+    color: var(--text-primary);
+  }
+
+  /* Pin indicator */
+  .pin-indicator {
+    font-size: var(--font-sm);
+    margin-right: var(--space-2xs);
+  }
+  .conversation-row.pinned .conversation-item {
+    border-left: 3px solid var(--color-accent);
+    background: var(--color-accent-light);
+  }
+
+  /* Row action buttons (pin / tag / settings) */
+  .conversation-row-actions {
+    display: flex;
+    align-items: stretch;
+    gap: var(--space-xs);
+    flex-shrink: 0;
+  }
+  .row-action-btn {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-md);
+    color: var(--text-tertiary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.25rem;
+    height: 2.25rem;
+    transition: all 0.15s ease;
+  }
+  .row-action-btn:hover {
+    background: var(--color-accent-light);
+    color: var(--color-accent);
+    border-color: var(--color-accent);
+  }
+  .pin-toggle-btn.active {
+    background: var(--color-accent-light);
+    color: var(--color-accent);
+    border-color: var(--color-accent);
+  }
+  .row-tag-popover-wrapper {
+    position: relative;
+  }
+  .row-tag-popover-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    z-index: 999;
+  }
+  .row-tag-popover {
+    position: absolute;
+    top: calc(100% + var(--space-sm));
+    right: 0;
+    width: 15rem;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-lg, 0 4px 16px rgba(0,0,0,0.15));
+    padding: var(--space-md);
+    z-index: 1000;
+  }
+  .row-tag-popover-title {
+    font-size: var(--font-xs);
+    font-weight: 600;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    margin-bottom: var(--space-sm);
+  }
+  .no-tags-hint {
+    color: var(--text-tertiary);
+    font-size: var(--font-xs);
+    font-style: italic;
+  }
+
+  /* Tag chips */
+  .tag-chip-row {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    background: var(--color-accent-light);
+    color: var(--color-accent);
+    padding: var(--space-2xs) var(--space-sm);
+    border-radius: var(--radius-sm);
+    font-size: var(--font-xs);
+  }
+  .tag-chip-remove {
+    background: none;
+    border: none;
+    color: var(--color-accent);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    padding: 0;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+  }
+  .tag-chip-row:hover .tag-chip-remove {
+    opacity: 0.7;
+  }
+  .tag-chip-remove:hover {
+    opacity: 1 !important;
+  }
+  .tag-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    background: var(--color-accent-light);
+    color: var(--color-accent);
+    padding: var(--space-2xs) var(--space-sm);
+    border-radius: var(--radius-sm);
+    font-size: var(--font-xs);
+    margin-right: var(--space-xs);
+    margin-bottom: var(--space-xs);
+  }
+  .tag-remove {
+    background: none;
+    border: none;
+    color: var(--color-accent);
+    cursor: pointer;
+    padding: 0;
+    font-size: var(--font-md);
+    line-height: 1;
+    opacity: 0.6;
+  }
+  .tag-remove:hover {
+    opacity: 1;
+  }
+  .tag-input-wrapper {
+    position: relative;
+    margin-top: var(--space-sm);
+  }
+  .tag-input {
+    width: 100%;
+    padding: var(--space-sm) var(--space-md);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-md);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: var(--font-sm);
+    box-sizing: border-box;
+  }
+  .tag-input:focus {
+    outline: none;
+    border-color: var(--color-accent);
+  }
+  .tag-suggestions {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-primary);
+    border-top: none;
+    border-radius: 0 0 var(--radius-md) var(--radius-md);
+    z-index: 10;
+    max-height: 200px;
+    overflow-y: auto;
+  }
+  .tag-suggestion {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: var(--space-sm) var(--space-md);
+    background: none;
+    border: none;
+    color: var(--text-primary);
+    font-size: var(--font-sm);
+    cursor: pointer;
+  }
+  .tag-suggestion:hover {
+    background: var(--bg-surface);
   }
 
   .modal-overlay {
@@ -1538,26 +2190,6 @@
     border-radius: var(--radius-md);
     font-size: var(--font-md);
     margin-top: var(--space-3xl);
-  }
-
-  .gear-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 2rem;
-    height: 2rem;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-primary);
-    border-radius: var(--radius-md);
-    cursor: pointer;
-    font-size: var(--font-xl);
-    color: var(--text-secondary);
-    transition: all 0.2s ease;
-  }
-
-  .gear-btn:hover {
-    background: var(--border-primary);
-    color: var(--text-primary);
   }
 
   .gear-popover-overlay {
@@ -1844,28 +2476,6 @@
     background: var(--bg-secondary);
     border: 1px solid var(--border-color);
     border-radius: var(--radius-md);
-  }
-
-  .update-btn {
-    padding: 0.5rem 1rem;
-    font-size: 0.875rem;
-    font-weight: 600;
-    color: #ffffff;
-    background: var(--color-primary);
-    border: none;
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    transition: background 0.15s;
-  }
-
-  .update-btn:hover {
-    background: var(--color-primary-hover);
-  }
-
-  .update-btn-retry {
-    margin-left: 0.75rem;
-    padding: 0.35rem 0.75rem;
-    font-size: 0.8rem;
   }
 
   .update-status {

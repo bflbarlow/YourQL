@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"YourQL/pkg/engine"
 	"YourQL/pkg/models"
 
 	"github.com/gomarkdown/markdown"
@@ -160,11 +161,8 @@ func strippedTrailingComments(s string) string {
 }
 
 // QueryResult holds the results of a SQL query.
-type QueryResult struct {
-	Columns  []string        `json:"columns"`
-	Rows     [][]interface{} `json:"rows"`
-	RowCount int             `json:"row_count"`
-}
+// Canonical definition now in pkg/engine.
+type QueryResult = engine.QueryResult
 
 // executeSQL connects to the external database and runs the given SQL query.
 func executeSQL(conn *models.DataSource, sqlQuery string) (*QueryResult, error) {
@@ -186,29 +184,22 @@ func executeNativeQuery(nq NativeQuerier, conn *models.DataSource, sqlQuery stri
 	}, nil
 }
 
+// ExecuteSQLWithMode is the exported wrapper for executeSQLWithMode,
+// used by the QueryExecutorAdapter in services/adapters.
+func ExecuteSQLWithMode(conn *models.DataSource, sqlQuery string, isExploration bool) (*QueryResult, error) {
+	return executeSQLWithMode(conn, sqlQuery, isExploration)
+}
+
 // executeSQLWithMode is like executeSQL but allows specifying exploration mode.
 func executeSQLWithMode(conn *models.DataSource, sqlQuery string, isExploration bool) (*QueryResult, error) {
 	sqlQuery = applyDefaultLimit(sqlQuery, conn, isExploration)
 
-	trimmed := strings.TrimSpace(sqlQuery)
-	upper := strings.ToUpper(trimmed)
-
-	isSelect := strings.HasPrefix(upper, "SELECT")
-	isCTE := false
-	if strings.HasPrefix(upper, "WITH") && len(upper) > 4 {
-		next := upper[4]
-		isCTE = next == ' ' || next == '\t' || next == '\n' || next == '\r' || next == '(' || next == 'R'
-	}
-	// Allow parenthesized SELECTs (e.g. "(SELECT ...) UNION ALL (SELECT ...)")
-	// — the LLM wraps subqueries when MySQL requires it. Strip leading parens
-	// and re-check the unwrapped prefix.
-	if !isSelect && !isCTE && strings.HasPrefix(upper, "(") {
-		unwrapped := strings.TrimLeft(upper[1:], " \t\n\r")
-		isSelect = strings.HasPrefix(unwrapped, "SELECT")
-		isCTE = strings.HasPrefix(unwrapped, "WITH")
-	}
-	if !isSelect && !isCTE {
-		return nil, fmt.Errorf("only SELECT queries are allowed")
+	// Enforce the Data Source Read-Only Invariant for every query —
+	// exploration and final alike — before anything reaches a driver.
+	// This is the single choke point for read-only enforcement
+	// (AGENT_READ_FIRST.md §0).
+	if err := engine.ValidateReadOnlySQL(sqlQuery); err != nil {
+		return nil, err
 	}
 
 	dsn, err := BuildDSN(conn)
@@ -334,6 +325,7 @@ type AssistantResponse struct {
 	Result          *QueryResult
 	ExplorationHTML string
 	Summary         *string
+	HasChart        bool // when true, table is collapsed behind a "View Raw Data" expander
 }
 
 // mdRenderer is a shared stateless markdown renderer (safe to reuse across calls).
@@ -366,16 +358,40 @@ func renderMarkdown(text string) string {
 // ToHTML renders the assistant response as HTML.
 func (r *AssistantResponse) ToHTML() string {
 	var sb strings.Builder
+	// Render summary at top level only when there is no chart. When a chart
+	// is present, the summary moves inside the collapsed results block so it
+	// sits alongside the raw data it describes (§SUMMARIZE_DATA_VIZ_CONFLICT).
+	summaryHTML := ""
 	if r.Summary != nil && *r.Summary != "" {
-		sb.WriteString(fmt.Sprintf("<div class=\"markdown-content\">%s</div>\n", renderMarkdown(*r.Summary)))
+		summaryHTML = fmt.Sprintf("<div class=\"markdown-content\">%s</div>\n", renderMarkdown(*r.Summary))
+		if !r.HasChart {
+			sb.WriteString(summaryHTML)
+		}
 	}
 	if r.SQL != "" {
 		// SQL is now shown in the results toolbar toggle, not as a separate block
 	}
 	if r.Result != nil {
-		if r.Summary != nil && *r.Summary != "" {
+		hasSummary := r.Summary != nil && *r.Summary != ""
+		if hasSummary || r.HasChart {
+			label := "View Raw Data"
+			detailsStyle := "margin-top:0;"
+			summaryStyle := "cursor:pointer; color:var(--text-secondary); font-size:0.85rem; padding:6px 1rem 8px; display:block;"
+			divStyle := "margin-top:0;"
+			if hasSummary {
+				label = "View raw results"
+				detailsStyle = "margin-top:0.5rem;"
+				summaryStyle = "cursor:pointer; color:var(--text-secondary); font-size:0.85rem; padding:4px 8px; background:var(--bg-secondary); border-radius:4px; display:inline-block;"
+				divStyle = "margin-top:0.5rem;"
+			}
 			// Collapse the table behind a details element
-			sb.WriteString(fmt.Sprintf("<details class=\"results-details\" style=\"margin-top:0.5rem;\"><summary style=\"cursor:pointer; color:var(--text-secondary); font-size:0.85rem; padding:4px 8px; background:var(--bg-secondary); border-radius:4px; display:inline-block;\">View raw results (%d rows)</summary><div style=\"margin-top:0.5rem;\">", r.Result.RowCount))
+			sb.WriteString(fmt.Sprintf("<details class=\"results-details\" style=\"%s\"><summary style=\"%s\">%s (%d rows)</summary><div style=\"%s\">", detailsStyle, summaryStyle, label, r.Result.RowCount, divStyle))
+			// When a chart is present, move the summary inside the
+			// collapsed block alongside the raw table instead of
+			// rendering it above the chart.
+			if r.HasChart && r.Summary != nil && *r.Summary != "" {
+				sb.WriteString(summaryHTML)
+			}
 			sb.WriteString(formatResultsHTML(r.Result, r.SQL))
 			sb.WriteString("</div></details>")
 		} else {
@@ -569,13 +585,26 @@ func padRight(s string, length int, pad ...rune) string {
 }
 
 // ExplorationSafetyMode controls what types of exploration queries are permitted.
-type ExplorationSafetyMode int
+// Canonical definition now in pkg/engine.
+type ExplorationSafetyMode = engine.ExplorationSafetyMode
 
 const (
-	ExplorationStrict    ExplorationSafetyMode = iota
-	ExplorationModerate
-	ExplorationRelaxed
+	ExplorationStrict   = engine.ExplorationStrict
+	ExplorationModerate = engine.ExplorationModerate
+	ExplorationRelaxed  = engine.ExplorationRelaxed
 )
+
+// augmentSQLError detects common SQL error patterns and appends schema
+// guidance to help the LLM self-correct. Currently handles MySQL Error 1054
+// (Unknown column). For all other errors, the original message is returned
+// unchanged.
+func augmentSQLError(errStr string) string {
+	// MySQL Error 1054: Unknown column 'X' in 'field list'
+	if idx := strings.Index(errStr, "Error 1054"); idx != -1 {
+		return errStr + "\n\n[Hint: This is a schema error — a column in your query doesn't exist on the table you referenced. Check:\n1. Did you reference the correct table/alias for this column?\n2. Is the column on a different table that needs a JOIN? Use `products p ON od.productCode = p.productCode` then reference `p.columnName`.\n3. Check table names and column names against the schema above.\n4. Fix the column reference and retry.]"
+	}
+	return errStr
+}
 
 // isRetryableError determines whether a SQL execution error is retryable.
 func isRetryableError(err error) bool {
@@ -688,88 +717,9 @@ func sanitizeSQLError(msg string) string {
 }
 
 // ParseExplorationSafety parses a string into an ExplorationSafetyMode.
-func ParseExplorationSafety(s string) ExplorationSafetyMode {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "moderate":
-		return ExplorationModerate
-	case "relaxed":
-		return ExplorationRelaxed
-	default:
-		return ExplorationStrict
-	}
-}
+// Delegates to the canonical implementation in pkg/engine.
+var ParseExplorationSafety = engine.ParseExplorationSafety
 
-// validateExplorationQuery checks whether an exploration query is allowed.
-func validateExplorationQuery(sqlQuery string, mode ExplorationSafetyMode) error {
-	trimmed := strings.TrimSpace(sqlQuery)
-	upper := strings.ToUpper(trimmed)
-
-	isSelect := strings.HasPrefix(upper, "SELECT")
-	isCTE := false
-	if strings.HasPrefix(upper, "WITH") && len(upper) > 4 {
-		next := upper[4]
-		isCTE = next == ' ' || next == '\t' || next == '\n' || next == '\r' || next == '('
-	}
-	// Allow parenthesized SELECTs (§"only SELECT" false-positive fix)
-	if !isSelect && !isCTE && strings.HasPrefix(upper, "(") {
-		unwrapped := strings.TrimLeft(upper[1:], " \t\n\r")
-		isSelect = strings.HasPrefix(unwrapped, "SELECT")
-		isCTE = strings.HasPrefix(unwrapped, "WITH")
-	}
-	if !isSelect && !isCTE {
-		return fmt.Errorf("exploration queries must be SELECT statements")
-	}
-
-	// Block DML/DDL — strip comments first (§5.6)
-	stripped := stripSQLComments(upper)
-	dangerousPatterns := []string{
-		"INSERT ", "UPDATE ", "DELETE ", "DROP ", "ALTER ", "TRUNCATE ",
-		"CREATE ", "REPLACE ", "GRANT ", "REVOKE ", "LOAD_FILE",
-		"INTO OUTFILE", "INTO DUMPFILE", "BENCHMARK(", "SLEEP(",
-		"EXEC ", "EXECUTE ", "xp_", "sp_",
-	}
-	for _, pat := range dangerousPatterns {
-		if strings.Contains(stripped, pat) {
-			return fmt.Errorf("exploration query blocked: contains '%s'", pat)
-		}
-	}
-
-	hasJoin := strings.Contains(upper, "JOIN")
-	hasSubquery := strings.Contains(upper, "(") && strings.Contains(strings.TrimPrefix(upper, "SELECT"), "SELECT")
-	hasUnion := strings.Contains(upper, "UNION")
-	hasGroupBy := strings.Contains(upper, "GROUP BY")
-	hasOrderBy := strings.Contains(upper, "ORDER BY")
-
-	switch mode {
-	case ExplorationStrict:
-		if hasJoin || hasSubquery || hasUnion || hasGroupBy || hasOrderBy {
-			return fmt.Errorf("strict mode: only simple SELECT queries allowed")
-		}
-	case ExplorationModerate:
-		if hasSubquery {
-			return fmt.Errorf("moderate mode: subqueries are not allowed")
-		}
-		if hasUnion {
-			return fmt.Errorf("moderate mode: UNION is not allowed")
-		}
-		fromJoinCount := len(regexp.MustCompile(`\b(FROM|JOIN)\b`).FindAllString(upper, -1))
-		if fromJoinCount > 2 {
-			return fmt.Errorf("moderate mode: multi-table JOINs are not allowed")
-		}
-	case ExplorationRelaxed:
-		// Only DML/DDL blocked (above)
-	}
-
-	return nil
-}
-
-// stripSQLComments removes SQL line and block comments from the query text.
-func stripSQLComments(s string) string {
-	// Remove block comments
-	blockRe := regexp.MustCompile(`/\*.*?\*/`)
-	s = blockRe.ReplaceAllString(s, "")
-	// Remove line comments
-	lineRe := regexp.MustCompile(`--.*$`)
-	s = lineRe.ReplaceAllString(s, "")
-	return s
-}
+// All safety validation functions (ValidateReadOnlySQL, ValidateExplorationQuery,
+// StripSQLComments, and their helpers) now live in pkg/engine/safety.go.
+// The call sites in this package have been updated to use engine.Validate* directly.

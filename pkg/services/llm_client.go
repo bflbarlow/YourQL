@@ -2,7 +2,6 @@ package services
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"io"
 	"log"
@@ -11,90 +10,31 @@ import (
 	"strings"
 	"time"
 
+	"YourQL/pkg/engine"
 	"YourQL/pkg/models"
 )
 
-type LLMClient interface {
-	ChatCompletion(ctx context.Context, messages []ChatMessage) (string, error)
-	ChatCompletionWithPayload(ctx context.Context, messages []ChatMessage) (content, requestJSON, responseJSON string, err error)
-	ChatCompletionWithTools(ctx context.Context, messages []ChatMessage, tools []Tool) (msg *ChatMessage, requestJSON, responseJSON string, err error)
-
-	// ChatCompletionWithToolsStreaming sends tools and streams the response
-	// via onEvent. The final assembled *ChatMessage is returned when the
-	// stream completes (identical shape to the blocking path). The onEvent
-	// callback is called synchronously from the SSE reader goroutine —
-	// callers must not block it for long.
-	ChatCompletionWithToolsStreaming(ctx context.Context, messages []ChatMessage, tools []Tool, onEvent func(StreamEvent)) (msg *ChatMessage, requestJSON, responseJSON string, err error)
-}
-
-// -------------------------------------------------------------------------
-// Streaming types
-// -------------------------------------------------------------------------
-
-// StreamEvent is emitted for each chunk of a streaming LLM response.
-type StreamEvent struct {
-	Type StreamEventType `json:"type"`
-
-	// ContentDelta: incremental text from the model.
-	Content string `json:"content,omitempty"`
-
-	// ToolCallDelta: name and arguments for a tool call being built.
-	ToolCallID string `json:"tool_call_id,omitempty"`
-	ToolName   string `json:"tool_name,omitempty"`
-	Arguments  string `json:"arguments,omitempty"`
-
-	// ReasoningStart / ReasoningEnd: brackets around model reasoning.
-	ReasoningStart bool `json:"reasoning_start,omitempty"`
-	ReasoningEnd   bool `json:"reasoning_end,omitempty"`
-
-	// ToolCallStart / ToolCallEnd: lifecycle markers for tool calls.
-	ToolCallStart bool `json:"tool_call_start,omitempty"`
-	ToolCallEnd   bool `json:"tool_call_end,omitempty"`
-
-	// Done: the stream is complete.
-	FinishReason string `json:"finish_reason,omitempty"`
-}
-
-type StreamEventType string
+// The LLM protocol types are now defined canonically in pkg/engine and
+// re-exported here as type aliases so the provider implementations and all
+// existing call sites continue to compile unchanged.
+type LLMClient = engine.LLMClient
+type StreamEvent = engine.StreamEvent
+type StreamEventType = engine.StreamEventType
+type ChatMessage = engine.ChatMessage
+type ToolCall = engine.ToolCall
+type ToolCallFunction = engine.ToolCallFunction
+type Tool = engine.Tool
+type FunctionDef = engine.FunctionDef
 
 const (
-	StreamContentDelta   StreamEventType = "content_delta"
-	StreamToolCallDelta  StreamEventType = "tool_call_delta"
-	StreamReasoningStart StreamEventType = "reasoning_start"
-	StreamReasoningEnd   StreamEventType = "reasoning_end"
-	StreamToolCallStart  StreamEventType = "tool_call_start"
-	StreamToolCallEnd    StreamEventType = "tool_call_end"
-	StreamDone           StreamEventType = "done"
+	StreamContentDelta   = engine.StreamContentDelta
+	StreamToolCallDelta  = engine.StreamToolCallDelta
+	StreamReasoningStart = engine.StreamReasoningStart
+	StreamReasoningEnd   = engine.StreamReasoningEnd
+	StreamToolCallStart  = engine.StreamToolCallStart
+	StreamToolCallEnd    = engine.StreamToolCallEnd
+	StreamDone           = engine.StreamDone
 )
-
-type ChatMessage struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
-	Name       string     `json:"name,omitempty"`
-}
-
-type ToolCall struct {
-	ID       string           `json:"id"`
-	Function ToolCallFunction `json:"function"`
-}
-
-type ToolCallFunction struct {
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
-}
-
-type Tool struct {
-	Type     string      `json:"type"` // "function"
-	Function FunctionDef `json:"function"`
-}
-
-type FunctionDef struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	Parameters  map[string]any `json:"parameters"`
-}
 
 // NewLLMClient creates an LLM client based on the provider configuration.
 func NewLLMClient(provider *models.LLMProvider) (LLMClient, error) {

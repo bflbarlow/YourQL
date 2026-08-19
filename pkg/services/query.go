@@ -46,6 +46,49 @@ func GetQueryByID(id uint) (*models.Query, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get query: %w", err)
 	}
+	return populateQuery(&q, convID, llmID, dbConnID, genSQL, resultSummary, errMsg, execTime, tokensUsed, costEstimate), nil
+}
+
+// GetQueriesByConversation returns all query records for a conversation,
+// oldest first. Added for headless mode (see documentation/HEADLESS_YOURQL.md
+// §5.3) — no prior code read the queries table back by conversation ID.
+func GetQueriesByConversation(conversationID uint) ([]*models.Query, error) {
+	rows, err := models.DB.Query(
+		`SELECT id, conversation_id, question, generated_sql, data_source_id, llm_provider_id, status, result_summary, error_message, execution_time_ms, tokens_used, cost_estimate, created_at, updated_at FROM queries WHERE conversation_id = ? ORDER BY created_at ASC, id ASC`,
+		conversationID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get queries: %w", err)
+	}
+	defer rows.Close()
+
+	queries := make([]*models.Query, 0)
+	for rows.Next() {
+		var q models.Query
+		var convID, llmID, dbConnID sql.NullInt64
+		var genSQL, resultSummary, errMsg, costEstimate sql.NullString
+		var execTime, tokensUsed sql.NullInt64
+		if err := rows.Scan(
+			&q.ID, &convID, &q.Question, &genSQL, &dbConnID, &llmID,
+			&q.Status, &resultSummary, &errMsg, &execTime, &tokensUsed,
+			&costEstimate, &q.CreatedAt, &q.UpdatedAt,
+		); err != nil {
+			continue
+		}
+		queries = append(queries, populateQuery(&q, convID, llmID, dbConnID, genSQL, resultSummary, errMsg, execTime, tokensUsed, costEstimate))
+	}
+	return queries, nil
+}
+
+// populateQuery copies nullable SQL scan values into a models.Query, sharing
+// the mapping between GetQueryByID and GetQueriesByConversation.
+func populateQuery(
+	q *models.Query,
+	convID, llmID, dbConnID sql.NullInt64,
+	genSQL, resultSummary, errMsg sql.NullString,
+	execTime, tokensUsed sql.NullInt64,
+	costEstimate sql.NullString,
+) *models.Query {
 	if convID.Valid {
 		cid := uint(convID.Int64)
 		q.ConversationID = &cid
@@ -82,7 +125,7 @@ func GetQueryByID(id uint) (*models.Query, error) {
 		s := costEstimate.String
 		q.CostEstimate = &s
 	}
-	return &q, nil
+	return q
 }
 
 func UpdateQueryStatus(id uint, status string, generatedSQL *string, resultSummary *string, errorMessage *string, executionTimeMS *int, tokensUsed *int, costEstimate *string) error {

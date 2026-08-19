@@ -619,10 +619,14 @@
               </div>
             {:else}
               <!-- §4.8: assistant messages with HTML -->
-              <div class="assistant-message">{@html message.content}</div>
-              <!-- Chart visualization -->
+              <!-- Chart visualization — rendered first so the chart is the primary content -->
               {#if getChartConfig(message)}
-                <VizChart config={getChartConfig(message)} />
+                <div class="viz-result-card">
+                  <VizChart config={getChartConfig(message)} standalone={false} />
+                  <div class="assistant-message">{@html message.content}</div>
+                </div>
+              {:else}
+                <div class="assistant-message">{@html message.content}</div>
               {/if}
               <!-- Raw error detail (visible when tech details is enabled) -->
               {#if showTechDetails && message.payload?.raw_error}
@@ -1258,5 +1262,49 @@
     line-height: 1.5; overflow-x: auto;
     white-space: pre-wrap; word-break: break-all;
     max-height: 25rem;
+  }
+
+  .viz-result-card {
+    background: var(--bg-surface);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .viz-result-card .assistant-message {
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    padding: 0 1rem 1rem 1rem;
+  }
+  .viz-result-card .viz-chart-container {
+    width: 100% !important;
+    max-width: 100%;
+    overflow: hidden;
+  }
+  .viz-result-card canvas {
+    max-width: 100% !important;
+    width: 100% !important;
+  }
+  .viz-result-card .results-card {
+    background: transparent !important;
+    border: none !important;
+    margin: 0 !important;
+  }
+  .viz-result-card .results-toolbar {
+    background: transparent !important;
+    border: none !important;
+    padding: 0 !important;
+    margin-bottom: 0 !important;
+  }
+  .viz-result-card .results-details {
+    margin-top: 0 !important;
+  }
+  .viz-result-card .results-details summary {
+    background: none !important;
+    border-radius: 0 !important;
+    padding-left: 1rem !important;
+  }
+  .viz-result-card .explore-block {
+    margin: 0 !important;
+    padding: 0 1rem;
   }
 </style>

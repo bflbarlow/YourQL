@@ -2,9 +2,26 @@ package services
 
 import (
 	"fmt"
+	"strconv"
 
 	"YourQL/pkg/models"
 )
+
+// GetTimeoutSetting returns a timeout value in seconds for the given app-settings
+// key, falling back to defaultSeconds when the key is missing, empty, or invalid.
+// Used by the pipeline and summarization timeouts — both are surfaced in the
+// Settings UI so users can tune them per deployment.
+func GetTimeoutSetting(key string, defaultSeconds int) int {
+	val, err := GetAppSetting(key)
+	if err != nil || val == "" {
+		return defaultSeconds
+	}
+	secs, err := strconv.Atoi(val)
+	if err != nil || secs <= 0 {
+		return defaultSeconds
+	}
+	return secs
+}
 
 // GetAppSetting returns the value for a settings key, or empty string if not set.
 func GetAppSetting(key string) (string, error) {
