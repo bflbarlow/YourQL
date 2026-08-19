@@ -172,34 +172,80 @@ User Question → Discussion Engine → LLM Prompt → LLM API → LLM Response
 | Component | File(s) | Responsibility |
 |---|---|---|
 | **Wails Bindings** | `app.go` | Go ↔ Svelte bridge. All public methods on `App` are Wails-bound. |
-| **Entry Point** | `main.go` | Wails app initialization, asset embedding, lifecycle. |
-| **Discussion Engine** | `pkg/services/discussion_engine.go` | Core query pipeline: prompt building, LLM interaction, SQL generation, execution, result processing. |
-| **SQL Execution** | `pkg/services/sql_execution.go` | Query execution, safety checks, error handling, retry logic. |
+| **Entry Point** | `main.go` | Wails app initialization, asset embedding, lifecycle, `appVersion`. |
+| **Engine Package** | `pkg/engine/*.go` | **Isolated black box.** `AgenticLoop.Run` (tool-calling loop), all pure functions (safety validation, rendering, chart resolution, error formatting), shared type definitions, and 8 interface contracts. See §1.6. |
+| **Orchestrator** | `pkg/services/discussion_engine.go` | `ProcessUserMessageWithContext`: loads state, builds prompts/tools, wires the engine loop to adapters, handles cancellation. |
+| **Engine Adapters** | `pkg/services/engine_adapters.go`, `output_handler.go` | Implement `pkg/engine` interfaces by delegating to the existing SQLite-backed CRUD functions and `executeSQLWithMode`. |
+| **Prompt & Tool Builders** | `pkg/services/agentic_loop.go` | `buildTools`, `buildToolSystemPrompt`, `buildToolLlmMessages` — kept in services because they need the driver registry and full `DataSourceConfig` parsing. |
+| **SQL Execution** | `pkg/services/sql_execution.go` | `executeSQLWithMode`: DSN building, driver dispatch, read-only enforcement via `engine.ValidateReadOnlySQL`. Safety functions themselves moved to `pkg/engine/safety.go`. |
 | **Driver Interface** | `pkg/services/db_driver.go` | `DBDriver` and `NativeQuerier` interfaces. |
 | **Driver Registry** | `pkg/services/db_registry.go` | Driver registration and lookup. |
-| **LLM Interface** | `pkg/services/llm_client.go` | `LLMClient` interface. |
+| **LLM Interface** | `pkg/engine/ports.go` (canonical), `pkg/services/llm_client.go` (alias) | `LLMClient` interface — 4 methods. |
 | **LLM Providers** | `llm_openai.go`, `llm_anthropic.go`, `llm_ollama.go`, `llm_local.go` | Provider-specific implementations. |
 | **Models** | `pkg/models/*.go` | Data structures, DB schema, migrations. |
 | **Frontend** | `frontend/src/` | Svelte 5 components. |
 
-### 1.3 The LLM Response Protocol
+### 1.3 The Agentic Tool-Calling Loop
 
-The LLM must return a JSON action. The extraction logic in
-`discussion_engine.go` handles multiple output formats (markdown code blocks,
-unwrapped JSON, thinking/response markers). **Be conservative when modifying
-the extraction logic.** It has been tuned for many LLM output formats. A change
-that breaks extraction for one provider will silently fail for all users of
-that provider.
+YourQL uses a multi-round, tool-calling agentic loop as the core query
+pipeline. The loop itself is implemented in the **`pkg/engine/`** package
+(`loop.go`, `AgenticLoop.Run`) as an isolated black box that depends only on
+three injected interfaces (`LLMClient`, `QueryExecutor`, `OutputHandler`) —
+it has zero knowledge of `models.DB`, Wails, Svelte, HTTP handlers, or the
+filesystem. The orchestrator in `pkg/services/discussion_engine.go`
+(`ProcessUserMessageWithContext`) builds the system prompt and tool
+definitions, wires the loop to the SQLite-backed adapters, creates the LLM
+client, and calls `AgenticLoop.Run()`.
 
-**When the LLM's intent is ambiguous** (malformed JSON, contradictory action
-fields, missing required fields), prefer surfacing a `clarification` request
-over guessing. A confidently wrong silent guess is a worse outcome for the
-fundamental goal than asking the user one more question.
+A detailed, code-level reference of every path, tool, limit, prompt, and
+termination state is in [`documentation/AGENT_LOOP_DETAILS.md`](AGENT_LOOP_DETAILS.md).
+
+The loop gives the LLM three (optionally five) tools:
+
+| Tool | Purpose |
+|---|---|
+| `query_database` | Execute a query. `is_exploration: true` runs behind the scenes (never shown to the user, subject to complexity limits per §1.4); `is_exploration: false` is the single surfaced final query. |
+| `respond_to_user` | Deliver the final text answer to the user. |
+| `render_chart` | Optionally attach a chart to the just-delivered final result. Only registered when `VizEnabled` is on. |
+| `list_tables` | (On-demand only — registered for schemas ≥ 10 tables or when `ForceSchemaTools` is on.) List all table names with row counts. |
+| `describe_table` | (On-demand only — same conditions.) Return the column schema for a single table. |
+
+**One-shot finality:** once a query is surfaced via a successful
+`is_exploration: false` call, the loop closes the database session for that
+request — further `query_database` calls are rejected, and only
+`respond_to_user` / `render_chart` remain available. This guarantees one
+answer bubble per user question (see `FINAL_MESSAGE.md` for the full design).
+
+**Be conservative when modifying the loop's tool-response parsing and
+fallback text-response handling** (`pkg/engine/loop.go`, the plain-text-as-
+`respond_to_user` fallback path). It has been tuned across providers with
+different tool-calling formats (OpenAI, Anthropic, Ollama, local/custom).
+A change that breaks parsing for one provider will silently fail for all
+users of that provider.
+
+**When the LLM's intent is ambiguous** (malformed tool-call JSON, a bare
+`respond_to_user` with no data after explorations were run, missing required
+fields), prefer forcing another round or surfacing a clarification over
+guessing. A confidently wrong silent guess — or a promised-but-undelivered
+answer — is a worse outcome for the fundamental goal than asking the user one
+more question or giving the model one more round to do the right thing.
 
 ### 1.4 SQL Execution Safety
 
-`sql_execution.go` enforces:
+Safety validation is defined in `pkg/engine/safety.go` (pure functions) and
+enforced in two locations:
 
+1. **`executeSQLWithMode`** (in `pkg/services/sql_execution.go`) calls
+   `engine.ValidateReadOnlySQL` for **every** query, exploration or final —
+   this is the single choke point for the read-only invariant (§0) and
+   cannot be bypassed.
+2. **The agentic loop** (`pkg/engine/loop.go`) calls
+   `engine.ValidateExplorationQuery` for exploration queries only — this is
+   where the complexity mode (strict/moderate/relaxed) is enforced. The
+   `QueryExecutorAdapter` also calls `ValidateExplorationQuery` for
+   exploration queries as a defense-in-depth layer.
+
+The specific rules:
 - **Read-only, always** — Both exploration queries and final answer queries
   are restricted to `SELECT` (and read-only CTEs). This is the Data Source
   Read-Only Invariant from §0 — an absolute rule, not a configurable
@@ -226,6 +272,71 @@ metadata is the foundation of the LLM's ability to generate correct queries.
 
 **If introspection fails, the user cannot get answers.** Ensure all drivers
 return accurate schema data. Test with real databases, not just mocks.
+
+### 1.6 Functionality Silos (Code Architecture)
+
+The codebase is organized into **functionality silos** — logical sections
+each behind an interface where it makes practical sense. The silos exist to
+make the agentic loop and other core sections **independently testable** with
+mocks, not to add abstraction for its own sake.
+
+> **Priority note:** The silos are a *secondary* concern — a means to
+> protect the fundamental goal (§0), never a goal in themselves. If keeping
+> a silo's boundary intact conflicts with answer correctness, safety, or
+> reliability, the higher-priority goal wins. But when the boundaries cost
+> nothing extra, hold them: they are what let future agents iterate on the
+> loop's prompt/round/safety behavior in a vacuum, with fast mocked tests,
+> instead of only observing it live against a real LLM and database.
+
+The canonical architecture documents:
+
+- [`FUNCTIONALITY_SILO_DEFINITIONS.md`](FUNCTIONALITY_SILO_DEFINITIONS.md) — what each section is, how they connect, and what black-boxing each requires.
+- [`FUNCTIONALITY_SILO_TARGET.md`](FUNCTIONALITY_SILO_TARGET.md) — the end-state architecture (interfaces, package layout, wiring).
+- [`FUNCTIONALITY_SILO_PLAN.md`](FUNCTIONALITY_SILO_PLAN.md) — the step-by-step extraction plan and risk register.
+- [`AGENT_LOOP_DETAILS.md`](AGENT_LOOP_DETAILS.md) — every path, tool, limit, and prompt in the loop.
+
+**The core boundary — `pkg/engine/` is a black box.** The engine package
+must remain free of any import of `pkg/models`, `pkg/services`, `database/sql`,
+Wails runtime, or the filesystem. It defines its own value types and 8
+interfaces (`LLMClient`, `QueryExecutor`, `OutputHandler`,
+`ConversationStore`, `LLMProviderStore`, `DataSourceStore`,
+`SchemaIntrospector`, `ConfigurationProvider`). Its test suite (`loop_test.go`)
+proves the loop runs against mocks with no live LLM, database, or app.
+
+**The bridge — `pkg/services/engine_adapters.go`.** The SQLite-backed
+implementations of those interfaces live in the `services` package (not a
+sub-package) so they can call the existing CRUD functions directly without
+an import cycle. They are **conversion shims only**: each method maps
+`engine.*Meta` ↔ `models.*` and delegates to an existing service function.
+Do not put business logic in the adapters.
+
+**What lives where (do not blur these lines):**
+
+| Concern | Location |
+|---|---|
+| The tool-calling loop (`AgenticLoop.Run`) | `pkg/engine/loop.go` |
+| Read-only + complexity validation | `pkg/engine/safety.go` (pure) |
+| HTML rendering, markdown, result formatting | `pkg/engine/rendering.go` (pure) |
+| Chart config resolution | `pkg/engine/charts.go` (pure) |
+| Error classification / credential sanitization | `pkg/engine/response.go`, `pkg/engine/sql_errors.go` (pure) |
+| Shared types (ChatMessage, Tool, QueryResult, DataSchema, ToolTranscript, AgentLoopConfig, meta types) | `pkg/engine/types.go` |
+| Interface contracts | `pkg/engine/ports.go` |
+| Prompt + tool *construction* (needs driver registry + full `DataSourceConfig`) | `pkg/services/agentic_loop.go` (`buildTools`, `buildToolSystemPrompt`, `buildCompactSystemPrompt`, `buildToolLlmMessages`) |
+| Orchestration (`ProcessUserMessageWithContext`) | `pkg/services/discussion_engine.go` |
+| SQL execution (`executeSQLWithMode`) | `pkg/services/sql_execution.go` |
+| SQLite-backed interface implementations | `pkg/services/engine_adapters.go`, `pkg/services/output_handler.go` |
+
+**Type aliases keep the migration transparent.** `pkg/services` re-exports
+engine types via aliases (e.g. `type LLMClient = engine.LLMClient`) so the
+provider files and existing call sites compile unchanged. `pkg/models` aliases
+`AgentLoopConfig` to `engine.AgentLoopConfig`. When adding a type, define it
+canonically in `pkg/engine` and alias it where needed — don't create two
+structurally-identical-but-distinct types.
+
+**When extending the loop:** add new tool handlers in `pkg/engine/loop.go`
+and extend the `OutputHandler`/`QueryExecutor` interfaces in
+`pkg/engine/ports.go` rather than reaching back into services. Add a
+mock-based test in `pkg/engine/loop_test.go` for every new path.
 
 ---
 
@@ -323,23 +434,38 @@ New database drivers must be registered in `db_registry.go` via `init()`.
 Unregistered drivers will not appear in the connection type selector and will
 fail silently.
 
-**Always verify:** `len(driverRegistry) == 9` after registration.
+**Always verify the count after registration.** As of this writing there are
+**11** registered drivers (MySQL, PostgreSQL, SQLite, SQL Server, MariaDB,
+Snowflake, BigQuery, Redshift, Google Sheets, plus CSV/Excel handled via the
+file-based data source path). Re-count `len(driverRegistry)` (or run
+`grep -rn "RegisterDriver(" pkg/services/db_*.go`) rather than trusting this
+number — it will drift as drivers are added and this document will not always
+be updated in the same commit.
 
 ### 3.4 Data Storage
 
-All application data is stored in `~/.yourql/yourql.db`:
+All application data is stored in `~/.yourql/yourql.db`. Tables, as of
+`pkg/models/database.go`:
 
 | Table | Purpose |
 |---|---|
 | `conversations` | Discussions (title, settings, status) |
-| `conversation_messages` | Messages (user, assistant, system) |
+| `conversation_messages` | Messages (user, assistant, system, exploration) — includes rendered HTML content, raw LLM content, SQL results, tool transcript |
 | `llm_providers` | AI provider configs (name, type, model, API key) |
-| `data_sources` | DB connection configs (name, type, credentials) |
+| `data_sources` | DB connection configs (name, type, credentials, per-source JSON config) |
 | `skills` | Reusable Markdown prompt fragments |
 | `conversation_skills` | Many-to-many: active skills per discussion |
+| `queries` | Query execution log (SQL, timing, tokens, errors) — tracking only, no UI reading path |
+| `app_settings` | Key-value: theme, accent, scale |
+| `discussion_defaults` | Key-value: defaults applied to new discussions |
+| `agent_loop_config` | Key-value: user overrides for agentic-loop prompts/tool descriptions |
 | `schema_migrations` | Migration tracking |
-| `table_descriptions` | Custom table metadata |
-| `column_descriptions` | Custom column metadata |
+
+**Table and column descriptions are not separate tables.** They live as JSON
+fields (`TableDescriptions`, `ColumnDescriptions` — `map[string]string`)
+inside `data_sources.config`, parsed via `DataSource.ParseConfig()`
+(`pkg/models/db_connection.go`). Don't go looking for `table_descriptions` /
+`column_descriptions` tables — they don't exist.
 
 **Never modify the schema outside of the migration system.** Users may have
 existing data that depends on the current schema.
@@ -375,7 +501,42 @@ Each discussion has per-conversation settings:
 **Changes to these settings must be reflected in both the database schema and
 the prompt construction logic.**
 
-### 3.8 UX & Trust Best Practices
+### 3.8 Auto-Updater Safety
+
+YourQL can check for, download, and install its own updates (`pkg/services/updater.go`
+plus per-OS `updater_darwin.go` / `updater_windows.go` / `updater_linux.go`,
+bound via `app.go`'s `CheckForUpdate`, `DownloadUpdate`, `PerformUpgradeRestart`).
+This is a distinct trust domain from both `models.DB` (§3.1) and a user's data
+source (§0): it replaces **the application binary itself**, on disk, and exits
+the running process. Get this wrong and the user loses the app, not just data.
+
+- **Never execute or install a downloaded update without verifying its SHA256
+  checksum first.** `DownloadUpdate` must refuse to proceed (and must not stage
+  a runnable/openable artifact) if `expectedSHA256` is empty or doesn't match.
+- **The updater never signs, re-signs, or patches binaries.** Code signing
+  (macOS notarization, Windows Authenticode) is a release-pipeline
+  responsibility, not something performed at runtime. The updater only
+  relocates an already-signed artifact it downloaded from the official release.
+- **`appVersion` (declared in `main.go`) must default to `"dev"` and only ever
+  be set via `-ldflags "-X main.appVersion=..."` at build time.** `CheckForUpdate`
+  treats `"dev"` as a signal to skip itself entirely (no network call, no
+  update offered) — this is how local/development builds are kept from
+  self-updating. Never hardcode a real version number into this variable's
+  default; that silently defeats the dev-build guard. See `VERSION_UPGRADE.md`
+  Path 0 for the full rationale.
+- **`PerformUpgradeRestart` calls `os.Exit(0)` after handing off to a detached
+  script.** This is irreversible from the app's perspective — it must only be
+  reachable after (a) a verified download and (b) explicit user confirmation
+  in the UI ("Restart Now"), never automatically or silently. This is the same
+  "confirm before destructive/irreversible actions" principle as §3.9's delete/
+  clear/archive rule below, applied to the app's own binary instead of
+  conversation data.
+- **The replacement scripts run as the current user, never elevated**, and
+  only touch paths the user already owns (see `VERSION_UPGRADE.md` §"Security
+  Considerations" for the per-OS detail: `ditto` for macOS code-signature
+  preservation, PID-wait loops before replacing, atomic move-into-place).
+
+### 3.9 UX & Trust Best Practices
 
 - **Never expose raw stack traces or driver error strings directly to the
   user without context.** Wrap technical errors in plain language, and put
@@ -429,10 +590,16 @@ instead.
 
 Pause and document your reasoning if:
 
-- The change touches `discussion_engine.go` or `sql_execution.go`
-- The change modifies the system prompt construction
+- The change touches `discussion_engine.go`, `agentic_loop.go`, `sql_execution.go`,
+  or their engine-package equivalents (`pkg/engine/loop.go`, `pkg/engine/safety.go`,
+  `pkg/engine/ports.go`)
+- The change modifies the system prompt construction or the agentic loop's tool
+  definitions/one-shot finality rules
 - The change adds or removes schema columns
 - The change affects multiple drivers or LLM providers
+- The change touches the auto-updater (`pkg/services/updater*.go`) — anything
+  that downloads, verifies, or replaces the app binary carries irreversible-
+  by-the-app-itself risk; see §3.8
 - The reward is incremental (not a clear fix for a broken answer)
 
 ### 4.3 When to Proceed
@@ -531,18 +698,32 @@ When changing database-related code, test with:
 | Concept | Key File(s) |
 |---|---|
 | Wails bindings | `app.go` |
-| App entry point | `main.go` |
-| Core query flow | `pkg/services/discussion_engine.go` |
+| App entry point | `main.go` (also holds the build-time-injected `appVersion` var) |
+| Agentic tool-calling loop | `pkg/engine/loop.go` (`AgenticLoop.Run` — see §1.3) |
+| Engine interfaces (ports) | `pkg/engine/ports.go` |
+| Engine shared types | `pkg/engine/types.go` |
+| Read-only + complexity safety | `pkg/engine/safety.go` |
+| HTML rendering / markdown | `pkg/engine/rendering.go` |
+| Chart config resolution | `pkg/engine/charts.go` |
+| Error classification / sanitization | `pkg/engine/response.go`, `pkg/engine/sql_errors.go` |
+| Loop mock tests | `pkg/engine/loop_test.go` |
+| Engine adapters (SQLite-backed) | `pkg/services/engine_adapters.go` |
+| Output persistence (DB half of OutputHandler) | `pkg/services/output_handler.go` |
+| Core query flow (orchestration) | `pkg/services/discussion_engine.go` (`ProcessUserMessageWithContext`) |
+| Prompt + tool construction | `pkg/services/agentic_loop.go` (`buildTools`, `buildToolSystemPrompt`, `buildToolLlmMessages`) |
 | SQL execution | `pkg/services/sql_execution.go` |
 | Driver interface | `pkg/services/db_driver.go` |
 | Driver registration | `pkg/services/db_registry.go` |
-| LLM interface | `pkg/services/llm_client.go` |
+| LLM interface (alias) | `pkg/services/llm_client.go` |
 | Provider implementations | `pkg/services/llm_openai.go`, `llm_anthropic.go`, `llm_ollama.go`, `llm_local.go` |
+| Conversation export (HTML/Markdown/PDF) | `pkg/services/export.go` |
+| Auto-updater (check/download/verify) | `pkg/services/updater.go` |
+| Auto-updater (OS-specific replace+relaunch) | `pkg/services/updater_darwin.go`, `updater_windows.go`, `updater_linux.go` |
 | DB connection model | `pkg/models/db_connection.go` |
 | Conversation model | `pkg/models/conversation.go` |
 | DB schema & migrations | `pkg/models/database.go` |
 | Skill model | `pkg/models/skill.go` |
-| Frontend app | `frontend/src/App.svelte` |
+| Frontend app (incl. About page / update UI) | `frontend/src/App.svelte` |
 | Chat view | `frontend/src/ConversationView.svelte` |
 | Settings view | `frontend/src/SettingsView.svelte` |
 | Charts | `frontend/src/VizChart.svelte` |
@@ -557,31 +738,33 @@ func (a *App) SomeFunction() error { ... }
 // Service function — called from app.go
 func SomeService(args) (*Result, error) { ... }
 
-// Driver registration
+// Driver registration — call RegisterDriver (package-level func), not a
+// method on driverRegistry, from an init() in the new driver's own file
 func init() {
-    driverRegistry.Register(&MyDriver{})
+    RegisterDriver(&MyDriver{})
 }
 
-// Migration — only add columns
-ensureColumn("conversations", "new_column", "TEXT", "''")
+// Migration — only add columns (3 args: table, column, column definition)
+ensureColumn("conversations", "new_column", "TEXT DEFAULT ''")
 
 // LLM client creation
 client, err := NewLLMClient(provider)
 response, err := client.ChatCompletion(ctx, messages)
 ```
 
-### LLM Response Action Types
+### Agentic Loop Tools
 
-| Action | Meaning |
+| Tool | Meaning |
 |---|---|
-| `sql_query` | Execute this SQL and return results |
-| `clarification` | Ask the user for more detail |
-| `sql_exploration` | Run a read-only query to understand the data |
-| `answer` | Provide a direct answer without querying |
+| `query_database` (`is_exploration: true`) | Run a read-only query behind the scenes to understand the data; never shown to the user |
+| `query_database` (`is_exploration: false`) | Execute the single surfaced final query and return results to the user |
+| `respond_to_user` | Deliver the final text answer (with or without a preceding query) |
+| `render_chart` | Attach a chart to the just-delivered final result |
 
-None of these actions may ever result in a write to a data source —
-`sql_query` and `sql_exploration` are both restricted to `SELECT`-only
-statements (see §0's Data Source Read-Only Invariant).
+None of these ever result in a write to a data source — every `query_database`
+call, exploration or final, is restricted to `SELECT`-only statements (see
+§0's Data Source Read-Only Invariant). See §1.3 for the one-shot finality rule
+and `FINAL_MESSAGE.md` for the full design rationale.
 
 ---
 

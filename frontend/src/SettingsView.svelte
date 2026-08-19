@@ -32,7 +32,18 @@
     ResetAgentLoopConfigKey,
     ResetAllAgentLoopConfig,
     GetAppSetting,
-    SetAppSetting
+    SetAppSetting,
+    GetLoggingEnabled,
+    SetLoggingEnabled,
+    ExportLog,
+    ClearLog,
+    ExportDatabase,
+    GetActiveDatabaseInfo,
+    PickNewDatabaseLocation,
+    PickExistingDatabaseFile,
+    CreateAndSwitchToNewDatabase,
+    SwitchToExistingDatabase,
+    ResetToDefaultDatabase
   } from '../wailsjs/go/main/App.js'
   import { EventsOn, EventsOff, BrowserOpenURL } from '../wailsjs/runtime/runtime.js'
 
@@ -106,6 +117,39 @@
   let agentLoopFields = $state([])
   let agentLoopStatus = $state('')
 
+  // ==================== Logging ====================
+  let loggingEnabled = $state(false)
+  let loggingRestartNotice = $state(false)
+  let loggingExportStatus = $state('')
+
+  // ==================== Database Switching ====================
+  let dbSwitcherEnabled = $state(false)
+  let activeDbPath = $state('')
+  let activeDbIsDefault = $state(true)
+  let newDbPath = $state('')
+  let switchToPath = $state('')
+  let dbConfirm = $state(null)  // { title, message, action: 'create'|'switch'|'reset', path }
+  let dbError = $state('')
+
+  // ==================== Timeouts ====================
+  let pipelineTimeout = $state(180)
+  let summarizationTimeout = $state(300)
+
+  // ==================== Database Export ====================
+  let exportFormat = $state('xlsx')
+  let exportIncludeCredentials = $state(false)
+  let exportTables = $state({})
+  let exportStatus = $state('')   // '' | 'exporting' | 'success' | 'error'
+  let exportError = $state('')
+  let exportPath = $state('')
+
+  const allExportTables = [
+    'conversations', 'conversation_messages', 'conversation_skills',
+    'llm_providers', 'data_sources', 'skills',
+    'queries', 'app_settings', 'discussion_defaults',
+    'agent_loop_config', 'schema_migrations'
+  ]
+
   const sectionNames = ['tool_descriptions', 'instructions', 'safety', 'charts', 'persona', 'responses']
   const sectionLabels = {
     tool_descriptions: 'Tool Descriptions',
@@ -125,12 +169,228 @@
     }
   }
 
+  async function loadDbSwitcherPrefs() {
+    try {
+      const val = await GetAppSetting('db_switcher_enabled')
+      dbSwitcherEnabled = val === 'true'
+    } catch (e) { /* not set yet, leave disabled */ }
+  }
+
   async function toggleAgentLoop() {
     agentLoopEnabled = !agentLoopEnabled
     try {
       await SetAppSetting('agent_loop_advanced_enabled', agentLoopEnabled ? 'true' : 'false')
     } catch (e) {
       console.error('Failed to save agent loop toggle:', e)
+    }
+  }
+
+  async function toggleDbSwitcher() {
+    dbSwitcherEnabled = !dbSwitcherEnabled
+    try {
+      await SetAppSetting('db_switcher_enabled', dbSwitcherEnabled ? 'true' : 'false')
+    } catch (e) {
+      console.error('Failed to save DB switcher toggle:', e)
+    }
+  }
+
+  async function loadDbSwitcherInfo() {
+    try {
+      const info = await GetActiveDatabaseInfo()
+      activeDbPath = info.path
+      activeDbIsDefault = info.is_default
+    } catch (e) {
+      console.error('Failed to load database info:', e)
+    }
+  }
+
+  async function pickNewDbLocation() {
+    try {
+      const path = await PickNewDatabaseLocation()
+      if (path) newDbPath = path
+    } catch (e) {
+      console.error('PickNewDatabaseLocation:', e)
+    }
+  }
+
+  async function pickExistingDbFile() {
+    try {
+      const path = await PickExistingDatabaseFile()
+      if (path) switchToPath = path
+    } catch (e) {
+      console.error('PickExistingDatabaseFile:', e)
+    }
+  }
+
+  async function createAndSwitch() {
+    if (!newDbPath) return
+    dbError = ''
+    dbConfirm = {
+      title: 'Create New Database',
+      message: 'This creates a brand-new, empty YourQL database and restarts the app. Nothing in your current database is deleted.',
+      action: 'create',
+      path: newDbPath
+    }
+  }
+
+  async function switchToExisting() {
+    if (!switchToPath) return
+    dbError = ''
+    dbConfirm = {
+      title: 'Switch Database',
+      message: 'Switch YourQL to "' + switchToPath + '" and restart?',
+      action: 'switch',
+      path: switchToPath
+    }
+  }
+
+  async function resetToDefault() {
+    dbError = ''
+    dbConfirm = {
+      title: 'Reset to Default',
+      message: 'Return YourQL to its default database (~/.yourql/yourql.db) and restart?',
+      action: 'reset',
+      path: ''
+    }
+  }
+
+  function cancelDbConfirm() {
+    dbConfirm = null
+  }
+
+  async function confirmDbAction() {
+    const c = dbConfirm
+    dbConfirm = null
+    if (!c) return
+    dbError = ''
+    try {
+      if (c.action === 'create') {
+        await CreateAndSwitchToNewDatabase(c.path)
+      } else if (c.action === 'switch') {
+        await SwitchToExistingDatabase(c.path)
+      } else if (c.action === 'reset') {
+        await ResetToDefaultDatabase()
+      }
+    } catch (e) {
+      dbError = e.message || String(e)
+    }
+  }
+
+  async function loadLoggingEnabled() {
+    try {
+      loggingEnabled = await GetLoggingEnabled()
+    } catch (e) {
+      loggingEnabled = false
+    }
+  }
+
+  async function toggleLogging() {
+    loggingEnabled = !loggingEnabled
+    try {
+      await SetLoggingEnabled(loggingEnabled)
+      loggingRestartNotice = true
+    } catch (e) {
+      console.error('Failed to save logging toggle:', e)
+      loggingEnabled = !loggingEnabled // revert
+    }
+  }
+
+  async function loadTimeoutSettings() {
+    try {
+      const pt = await GetAppSetting('pipeline_timeout_seconds')
+      if (pt) pipelineTimeout = parseInt(pt) || 180
+    } catch (e) { /* use default */ }
+    try {
+      const st = await GetAppSetting('summarization_timeout_seconds')
+      if (st) summarizationTimeout = parseInt(st) || 300
+    } catch (e) { /* use default */ }
+  }
+
+  async function saveTimeoutSetting(key, value) {
+    try {
+      await SetAppSetting(key, String(value))
+    } catch (e) {
+      console.error('Failed to save timeout setting:', e)
+    }
+  }
+
+  async function exportLog() {
+    loggingExportStatus = 'exporting'
+    try {
+      const result = await ExportLog()
+      if (result === 'empty') {
+        loggingExportStatus = 'empty'
+        return
+      }
+      if (result === '') {
+        loggingExportStatus = 'success'
+        return
+      }
+      // result contains an error message
+      console.error('Failed to export log:', result)
+      loggingExportStatus = 'error'
+    } catch (e) {
+      console.error('Failed to export log:', e)
+      loggingExportStatus = 'error'
+    }
+  }
+
+  async function clearLog() {
+    loggingExportStatus = 'clearing'
+    try {
+      await ClearLog()
+      loggingExportStatus = 'cleared'
+    } catch (e) {
+      console.error('Failed to clear log:', e)
+      loggingExportStatus = 'error'
+    }
+  }
+
+  // ==================== Database Export helpers ====================
+
+  // Initialize the table checklist — all checked by default.
+  function initExportTables() {
+    const map = {}
+    for (const t of allExportTables) map[t] = true
+    exportTables = map
+  }
+
+  // Derive the list of selected table names for the backend.
+  function selectedTables() {
+    return allExportTables.filter(t => exportTables[t])
+  }
+
+  // Whether zero tables are checked (CSV mode only — controls the Export button).
+  let zeroTablesSelected = $derived(exportFormat === 'csv' && selectedTables().length === 0)
+
+  function selectAllTables() {
+    const map = {}
+    for (const t of allExportTables) map[t] = true
+    exportTables = map
+  }
+
+  function selectNoTables() {
+    const map = {}
+    for (const t of allExportTables) map[t] = false
+    exportTables = map
+  }
+
+  async function handleExportDatabase() {
+    const tables = exportFormat === 'csv' ? selectedTables() : []
+    exportStatus = 'exporting'
+    exportError = ''
+    exportPath = ''
+    try {
+      const result = await ExportDatabase(exportFormat, tables, exportIncludeCredentials)
+      if (result === '') {
+        exportStatus = 'success'
+      } else {
+        exportError = result
+        exportStatus = 'error'
+      }
+    } catch (e) {
+      exportError = String(e || 'Unknown error')
+      exportStatus = 'error'
     }
   }
 
@@ -260,6 +520,9 @@
   onMount(() => {
     loadSkills()
     loadAgentLoopEnabled()
+    loadDbSwitcherPrefs()
+    loadLoggingEnabled()
+    initExportTables()
   })
 
   function applyScale(scale) {
@@ -381,12 +644,15 @@
     include_table_comments: false,
     exploration_allowed: false,
     max_exploration_rounds: 2,
+    max_tools_per_round: 0,
     exploration_safety: 'strict',
     max_action_retries: 3,
     max_final_query_retries: 2,
     default_limit: 0,
     exploration_default_limit: 0,
-    query_length_threshold: 0
+    query_length_threshold: 0,
+    compact_prompts: false,
+    force_schema_tools: false
   })
 
   // Temporary business rules for editing
@@ -593,12 +859,15 @@
       include_table_comments: false,
       exploration_allowed: true,
       max_exploration_rounds: 2,
+      max_tools_per_round: 0,
       exploration_safety: 'strict',
       max_action_retries: 3,
       max_final_query_retries: 2,
       default_limit: 0,
       exploration_default_limit: 0,
-      query_length_threshold: 0
+      query_length_threshold: 0,
+      compact_prompts: false,
+      force_schema_tools: false
     }
 
     // Parse existing config from connection
@@ -611,12 +880,15 @@
         if (parsed.column_descriptions) config.column_descriptions = parsed.column_descriptions
         if (typeof parsed.exploration_allowed === 'boolean') config.exploration_allowed = parsed.exploration_allowed
         if (parsed.max_exploration_rounds) config.max_exploration_rounds = parsed.max_exploration_rounds
+        if (parsed.max_tools_per_round) config.max_tools_per_round = parsed.max_tools_per_round
         if (parsed.exploration_safety) config.exploration_safety = parsed.exploration_safety
         if (parsed.max_action_retries) config.max_action_retries = parsed.max_action_retries
         if (parsed.max_final_query_retries) config.max_final_query_retries = parsed.max_final_query_retries
         if (parsed.default_limit) config.default_limit = parsed.default_limit
         if (parsed.exploration_default_limit) config.exploration_default_limit = parsed.exploration_default_limit
         if (parsed.query_length_threshold) config.query_length_threshold = parsed.query_length_threshold
+        if (typeof parsed.compact_prompts === 'boolean') config.compact_prompts = parsed.compact_prompts
+        if (typeof parsed.force_schema_tools === 'boolean') config.force_schema_tools = parsed.force_schema_tools
       } catch (e) {
         console.error('Failed to parse config:', e)
       }
@@ -685,12 +957,15 @@
         column_descriptions: dbDetailConfig.column_descriptions,
         exploration_allowed: dbDetailConfig.exploration_allowed,
         max_exploration_rounds: dbDetailConfig.max_exploration_rounds,
+        max_tools_per_round: dbDetailConfig.max_tools_per_round,
         exploration_safety: dbDetailConfig.exploration_safety,
         max_action_retries: dbDetailConfig.max_action_retries,
         max_final_query_retries: dbDetailConfig.max_final_query_retries,
         default_limit: dbDetailConfig.default_limit,
         exploration_default_limit: dbDetailConfig.exploration_default_limit,
-        query_length_threshold: dbDetailConfig.query_length_threshold
+        query_length_threshold: dbDetailConfig.query_length_threshold,
+        compact_prompts: dbDetailConfig.compact_prompts,
+        force_schema_tools: dbDetailConfig.force_schema_tools
       }
       const configStr = JSON.stringify(config)
 
@@ -955,6 +1230,14 @@
         Agent Loop
       </button>
     {/if}
+    {#if dbSwitcherEnabled}
+      <button
+        class="tab-btn {activeSettingsTab === 'appdb' ? 'active' : ''}"
+        onclick={() => { activeSettingsTab = 'appdb'; loadDbSwitcherInfo() }}
+      >
+        App Database
+      </button>
+    {/if}
 
   </div>
 
@@ -979,12 +1262,12 @@
                 <h4>Provider Info</h4>
                 <div class="form-grid">
                   <div class="form-group">
-                    <label>Name <span class="required">*</span></label>
-                    <input type="text" bind:value={llmForm.name} placeholder="My GPT-4" />
+                    <label for="llm-name">Name <span class="required">*</span></label>
+                    <input type="text" id="llm-name" bind:value={llmForm.name} placeholder="My GPT-4" />
                   </div>
                   <div class="form-group">
-                    <label>Provider</label>
-                    <select bind:value={llmForm.provider} disabled={!isNewLLM}>
+                    <label for="llm-provider">Provider</label>
+                    <select id="llm-provider" bind:value={llmForm.provider} disabled={!isNewLLM}>
                       <option value="openai">OpenAI</option>
                       <option value="anthropic">Anthropic</option>
                       <option value="ollama">Ollama</option>
@@ -992,13 +1275,13 @@
                     </select>
                   </div>
                   <div class="form-group">
-                    <label>Model <span class="required">*</span></label>
-                    <input type="text" bind:value={llmForm.model} placeholder="gpt-4-turbo" />
+                    <label for="llm-model">Model <span class="required">*</span></label>
+                    <input type="text" id="llm-model" bind:value={llmForm.model} placeholder="gpt-4-turbo" />
                   </div>
                   <div class="form-group">
-                    <label>Max Tokens</label>
+                    <label for="llm-max-tokens">Max Tokens</label>
                     <div class="input-with-detect">
-                      <input type="number" bind:value={llmForm.maxTokens} placeholder="4096" min="1" max={editingLLMProvider?.contextWindow > 0 ? editingLLMProvider.contextWindow : undefined} />
+                      <input type="number" id="llm-max-tokens" bind:value={llmForm.maxTokens} placeholder="4096" min="1" max={editingLLMProvider?.contextWindow > 0 ? editingLLMProvider.contextWindow : undefined} />
                       {#if !isNewLLM && editingLLMProvider}
                         <button class="btn btn-small" onclick={async () => { llmStatus = ''; try { const detected = await DetectModelMaxTokens(editingLLMProvider.id); if (detected > 0) { llmForm.maxTokens = detected; llmStatus = `Model max detected: ${detected} tokens.`; } else { llmStatus = 'Could not detect model max tokens. Using manual setting.'; } } catch(e) { llmStatus = 'Detection failed: ' + e.toString(); } }}>Detect</button>
                       {/if}
@@ -1012,12 +1295,12 @@
                     {/if}
                   </div>
                   <div class="form-group">
-                    <label>Base URL (optional)</label>
-                    <input type="text" bind:value={llmForm.baseURL} placeholder="https://api.openai.com" />
+                    <label for="llm-base-url">Base URL (optional)</label>
+                    <input type="text" id="llm-base-url" bind:value={llmForm.baseURL} placeholder="https://api.openai.com" />
                   </div>
                   <div class="form-group">
-                    <label>API Key</label>
-                    <input type="password" bind:value={llmForm.apiKey} placeholder={isNewLLM ? 'sk-...' : 'sk-... (leave blank to keep current)'} />
+                    <label for="llm-api-key">API Key</label>
+                    <input type="password" id="llm-api-key" bind:value={llmForm.apiKey} placeholder={isNewLLM ? 'sk-...' : 'sk-... (leave blank to keep current)'} />
                   </div>
                 </div>
               </div>
@@ -1105,12 +1388,12 @@
                   <h4>Connection Info</h4>
                   <div class="form-grid">
                     <div class="form-group">
-                      <label>Name <span class="required">*</span></label>
-                      <input type="text" bind:value={dbDetailForm.name} placeholder="My Data Source" />
+                      <label for="ds-name">Name <span class="required">*</span></label>
+                      <input type="text" id="ds-name" bind:value={dbDetailForm.name} placeholder="My Data Source" />
                     </div>
                     <div class="form-group">
-                      <label>Type</label>
-                      <select bind:value={dbDetailForm.type}>
+                      <label for="ds-type">Type</label>
+                      <select id="ds-type" bind:value={dbDetailForm.type}>
                         <option value="mysql">MySQL</option>
                         <option value="mariadb">MariaDB</option>
                         <option value="postgresql">PostgreSQL</option>
@@ -1128,13 +1411,13 @@
                     </div>
                     {#if dbDetailForm.type === 'csv_file' || dbDetailForm.type === 'excel_file'}
                     <div class="form-group">
-                      <label>File <span class="required">*</span></label>
-                      <input type="text" bind:value={dbDetailForm.filePath} placeholder="/path/to/file.csv" />
+                      <label for="ds-file">File <span class="required">*</span></label>
+                      <input type="text" id="ds-file" bind:value={dbDetailForm.filePath} placeholder="/path/to/file.csv" />
                     </div>
                     {:else if dbDetailForm.type === 'google_sheets'}
                     <div class="form-group">
-                      <label>Spreadsheet ID / URL <span class="required">*</span></label>
-                      <input type="text" bind:value={dbDetailForm.filePath} placeholder="ABC123 or https://docs.google.com/spreadsheets/d/ABC123/edit" />
+                      <label for="ds-sheet-id">Spreadsheet ID / URL <span class="required">*</span></label>
+                      <input type="text" id="ds-sheet-id" bind:value={dbDetailForm.filePath} placeholder="ABC123 or https://docs.google.com/spreadsheets/d/ABC123/edit" />
                     </div>
                     {/if}
                     {#if dbDetailForm.type === 'google_sheets'}
@@ -1164,44 +1447,44 @@
                     </div>
                     {:else if dbDetailForm.type !== 'bigquery' && dbDetailForm.type !== 'sqlite'}
                     <div class="form-group">
-                      <label>Host {#if isDBFieldRequired(dbDetailForm.type, 'host')}<span class="required">*</span>{/if}</label>
-                      <input type="text" bind:value={dbDetailForm.host} placeholder="localhost" />
+                      <label for="ds-host">Host {#if isDBFieldRequired(dbDetailForm.type, 'host')}<span class="required">*</span>{/if}</label>
+                      <input type="text" id="ds-host" bind:value={dbDetailForm.host} placeholder="localhost" />
                     </div>
                     {/if}
                     {#if dbDetailForm.type !== 'bigquery' && dbDetailForm.type !== 'sqlite' && dbDetailForm.type !== 'google_sheets'}
                     <div class="form-group">
-                      <label>Port {#if isDBFieldRequired(dbDetailForm.type, 'port')}<span class="required">*</span>{/if}</label>
-                      <input type="number" bind:value={dbDetailForm.port} />
+                      <label for="ds-port">Port {#if isDBFieldRequired(dbDetailForm.type, 'port')}<span class="required">*</span>{/if}</label>
+                      <input type="number" id="ds-port" bind:value={dbDetailForm.port} />
                     </div>
                     {/if}
                     <div class="form-group">
-                      <label>Database {#if isDBFieldRequired(dbDetailForm.type, 'database')}<span class="required">*</span>{/if}</label>
+                      <label for="ds-database">Database {#if isDBFieldRequired(dbDetailForm.type, 'database')}<span class="required">*</span>{/if}</label>
                       {#if dbDetailForm.type === 'google_sheets'}
                         <!-- Google Sheets uses spreadsheet ID above, no database field -->
                       {:else if dbDetailForm.type === 'sqlite'}
-                        <input type="text" bind:value={dbDetailForm.database} placeholder="/path/to/database.db" />
+                        <input type="text" id="ds-database" bind:value={dbDetailForm.database} placeholder="/path/to/database.db" />
                       {:else if dbDetailForm.type === 'bigquery'}
-                        <input type="text" bind:value={dbDetailForm.database} placeholder="Project ID" />
+                        <input type="text" id="ds-database" bind:value={dbDetailForm.database} placeholder="Project ID" />
                       {:else}
-                        <input type="text" bind:value={dbDetailForm.database} placeholder="e.g. classicmodels" />
+                        <input type="text" id="ds-database" bind:value={dbDetailForm.database} placeholder="e.g. classicmodels" />
                       {/if}
                     </div>
                     {#if dbDetailForm.type !== 'bigquery' && dbDetailForm.type !== 'sqlite' && dbDetailForm.type !== 'google_sheets'}
                     <div class="form-group">
-                      <label>Username {#if isDBFieldRequired(dbDetailForm.type, 'username')}<span class="required">*</span>{/if}</label>
-                      <input type="text" bind:value={dbDetailForm.username} placeholder="e.g. root" />
+                      <label for="ds-username">Username {#if isDBFieldRequired(dbDetailForm.type, 'username')}<span class="required">*</span>{/if}</label>
+                      <input type="text" id="ds-username" bind:value={dbDetailForm.username} placeholder="e.g. root" />
                     </div>
                     {/if}
                     {#if dbDetailForm.type !== 'bigquery' && dbDetailForm.type !== 'sqlite' && dbDetailForm.type !== 'google_sheets'}
                     <div class="form-group">
-                      <label>Password {#if isDBFieldRequired(dbDetailForm.type, 'password')}<span class="required">*</span>{/if}</label>
-                      <input type="password" bind:value={dbDetailForm.password} placeholder={isNewConnection ? '' : '(leave blank to keep current)'} />
+                      <label for="ds-password">Password {#if isDBFieldRequired(dbDetailForm.type, 'password')}<span class="required">*</span>{/if}</label>
+                      <input type="password" id="ds-password" bind:value={dbDetailForm.password} placeholder={isNewConnection ? '' : '(leave blank to keep current)'} />
                     </div>
                     {/if}
                     {#if dbDetailForm.type !== 'bigquery' && dbDetailForm.type !== 'sqlite' && dbDetailForm.type !== 'google_sheets'}
                     <div class="form-group">
-                      <label>SSL Mode</label>
-                      <select bind:value={dbDetailForm.sslMode}>
+                      <label for="ds-ssl">SSL Mode</label>
+                      <select id="ds-ssl" bind:value={dbDetailForm.sslMode}>
                         <option value="disable">false</option>
                         <option value="require">true</option>
                         <option value="prefer">preferred</option>
@@ -1211,8 +1494,8 @@
                     {#if dbDetailForm.type === 'postgresql' || dbDetailForm.type === 'redshift'}
                       {@const pgExtra = (() => { try { return JSON.parse(dbDetailForm.extra || '{}') } catch(e) { return {} } })()}
                       <div class="form-group">
-                        <label>PostgreSQL SSL Mode</label>
-                        <select value={pgExtra.sslmode || 'require'} onchange={(e) => { pgExtra.sslmode = e.target.value; dbDetailForm.extra = JSON.stringify(pgExtra) }}>
+                        <label for="ds-pg-ssl">PostgreSQL SSL Mode</label>
+                        <select id="ds-pg-ssl" value={pgExtra.sslmode || 'require'} onchange={(e) => { pgExtra.sslmode = e.target.value; dbDetailForm.extra = JSON.stringify(pgExtra) }}>
                           <option value="disable">disable</option>
                           <option value="require">require</option>
                           <option value="verify-ca">verify-ca</option>
@@ -1220,8 +1503,8 @@
                         </select>
                       </div>
                       <div class="form-group">
-                        <label>Search Path</label>
-                        <input type="text" value={pgExtra.search_path || ''} placeholder="public" oninput={(e) => { pgExtra.search_path = e.target.value; dbDetailForm.extra = JSON.stringify(pgExtra) }} />
+                        <label for="ds-pg-search-path">Search Path</label>
+                        <input type="text" id="ds-pg-search-path" value={pgExtra.search_path || ''} placeholder="public" oninput={(e) => { pgExtra.search_path = e.target.value; dbDetailForm.extra = JSON.stringify(pgExtra) }} />
                       </div>
                     {/if}
                     {#if dbDetailForm.type === 'sqlserver'}
@@ -1233,42 +1516,42 @@
                         <label><input type="checkbox" checked={!!msExtra.trust_server_certificate} onchange={(e) => { msExtra.trust_server_certificate = e.target.checked; dbDetailForm.extra = JSON.stringify(msExtra) }} /> Trust Server Certificate</label>
                       </div>
                       <div class="form-group">
-                        <label>Named Instance</label>
-                        <input type="text" value={msExtra.instance || ''} placeholder="SQLEXPRESS" oninput={(e) => { msExtra.instance = e.target.value; dbDetailForm.extra = JSON.stringify(msExtra) }} />
+                        <label for="ds-ms-instance">Named Instance</label>
+                        <input type="text" id="ds-ms-instance" value={msExtra.instance || ''} placeholder="SQLEXPRESS" oninput={(e) => { msExtra.instance = e.target.value; dbDetailForm.extra = JSON.stringify(msExtra) }} />
                       </div>
                     {/if}
                     {#if dbDetailForm.type === 'snowflake'}
                       {@const sfExtra = (() => { try { return JSON.parse(dbDetailForm.extra || '{}') } catch(e) { return {} } })()}
                       <div class="form-group">
-                        <label>Account *</label>
-                        <input type="text" value={sfExtra.account || ''} placeholder="xy12345.us-east-1" oninput={(e) => { sfExtra.account = e.target.value; dbDetailForm.extra = JSON.stringify(sfExtra) }} />
+                        <label for="ds-sf-account">Account *</label>
+                        <input type="text" id="ds-sf-account" value={sfExtra.account || ''} placeholder="xy12345.us-east-1" oninput={(e) => { sfExtra.account = e.target.value; dbDetailForm.extra = JSON.stringify(sfExtra) }} />
                       </div>
                       <div class="form-group">
-                        <label>Warehouse</label>
-                        <input type="text" value={sfExtra.warehouse || ''} placeholder="COMPUTE_WH" oninput={(e) => { sfExtra.warehouse = e.target.value; dbDetailForm.extra = JSON.stringify(sfExtra) }} />
+                        <label for="ds-sf-warehouse">Warehouse</label>
+                        <input type="text" id="ds-sf-warehouse" value={sfExtra.warehouse || ''} placeholder="COMPUTE_WH" oninput={(e) => { sfExtra.warehouse = e.target.value; dbDetailForm.extra = JSON.stringify(sfExtra) }} />
                       </div>
                       <div class="form-group">
-                        <label>Role</label>
-                        <input type="text" value={sfExtra.role || ''} placeholder="ANALYST" oninput={(e) => { sfExtra.role = e.target.value; dbDetailForm.extra = JSON.stringify(sfExtra) }} />
+                        <label for="ds-sf-role">Role</label>
+                        <input type="text" id="ds-sf-role" value={sfExtra.role || ''} placeholder="ANALYST" oninput={(e) => { sfExtra.role = e.target.value; dbDetailForm.extra = JSON.stringify(sfExtra) }} />
                       </div>
                       <div class="form-group">
-                        <label>Schema</label>
-                        <input type="text" value={sfExtra.schema_name || ''} placeholder="PUBLIC" oninput={(e) => { sfExtra.schema_name = e.target.value; dbDetailForm.extra = JSON.stringify(sfExtra) }} />
+                        <label for="ds-sf-schema">Schema</label>
+                        <input type="text" id="ds-sf-schema" value={sfExtra.schema_name || ''} placeholder="PUBLIC" oninput={(e) => { sfExtra.schema_name = e.target.value; dbDetailForm.extra = JSON.stringify(sfExtra) }} />
                       </div>
                     {/if}
                     {#if dbDetailForm.type === 'bigquery'}
                       {@const bqExtra = (() => { try { return JSON.parse(dbDetailForm.extra || '{}') } catch(e) { return {} } })()}
                       <div class="form-group">
-                        <label>Project ID *</label>
-                        <input type="text" value={bqExtra.project_id || ''} placeholder="my-gcp-project" oninput={(e) => { bqExtra.project_id = e.target.value; dbDetailForm.extra = JSON.stringify(bqExtra) }} />
+                        <label for="ds-bq-project">Project ID *</label>
+                        <input type="text" id="ds-bq-project" value={bqExtra.project_id || ''} placeholder="my-gcp-project" oninput={(e) => { bqExtra.project_id = e.target.value; dbDetailForm.extra = JSON.stringify(bqExtra) }} />
                       </div>
                       <div class="form-group">
-                        <label>Dataset *</label>
-                        <input type="text" value={bqExtra.dataset || ''} placeholder="my_dataset" oninput={(e) => { bqExtra.dataset = e.target.value; dbDetailForm.extra = JSON.stringify(bqExtra) }} />
+                        <label for="ds-bq-dataset">Dataset *</label>
+                        <input type="text" id="ds-bq-dataset" value={bqExtra.dataset || ''} placeholder="my_dataset" oninput={(e) => { bqExtra.dataset = e.target.value; dbDetailForm.extra = JSON.stringify(bqExtra) }} />
                       </div>
                       <div class="form-group">
-                        <label>Service Account Key (JSON)</label>
-                        <textarea value={bqExtra.service_account_key || ''} placeholder="Paste service account JSON key" rows="4" oninput={(e) => { bqExtra.service_account_key = e.target.value; dbDetailForm.extra = JSON.stringify(bqExtra) }}></textarea>
+                        <label for="ds-bq-sa-key">Service Account Key (JSON)</label>
+                        <textarea id="ds-bq-sa-key" value={bqExtra.service_account_key || ''} placeholder="Paste service account JSON key" rows="4" oninput={(e) => { bqExtra.service_account_key = e.target.value; dbDetailForm.extra = JSON.stringify(bqExtra) }}></textarea>
                       </div>
                     {/if}
                   </div>
@@ -1278,8 +1561,9 @@
                 <div class="db-section">
                   <h4>Custom System Prompt</h4>
                   <div class="form-group">
-                    <label>Override Default System Prompt</label>
+                    <label for="ds-system-prompt">Override Default System Prompt</label>
                     <textarea
+                      id="ds-system-prompt"
                       bind:value={dbDetailConfig.system_prompt}
                       placeholder="Enter a custom system prompt for this data source. Leave empty to use the default."
                       rows="6"
@@ -1292,8 +1576,9 @@
                 <div class="db-section">
                   <h4>Business Rules</h4>
                   <div class="form-group">
-                    <label>Rules (one per line)</label>
+                    <label for="ds-rules">Rules (one per line)</label>
                     <textarea
+                      id="ds-rules"
                       bind:value={tempBusinessRules}
                       placeholder="e.g., Always include WHERE clause&#10;Never expose customer SSN&#10;Use ISO date format"
                       rows="4"
@@ -1315,6 +1600,11 @@
                     <div class="form-group">
                       <label>Max Exploration Rounds</label>
                       <input type="number" bind:value={dbDetailConfig.max_exploration_rounds} />
+                    </div>
+                    <div class="form-group">
+                      <label>Max Tools Per Round</label>
+                      <input type="number" bind:value={dbDetailConfig.max_tools_per_round} placeholder="0 = unbounded" />
+                      <p class="hint">Limits how many query_database calls the model can batch into a single response. 0 = unbounded.</p>
                     </div>
                     <div class="form-group">
                       <label>Safety Mode</label>
@@ -1346,6 +1636,20 @@
                     <div class="form-group">
                       <label>Query Length Threshold</label>
                       <input type="number" bind:value={dbDetailConfig.query_length_threshold} />
+                    </div>
+                    <div class="form-group">
+                      <label>
+                        <input type="checkbox" bind:checked={dbDetailConfig.compact_prompts} />
+                        Compact System Prompt
+                      </label>
+                      <p class="hint">Reduces prompt size for local/small models. Disables skill personas and chart suggestions for conversations on this connection.</p>
+                    </div>
+                    <div class="form-group">
+                      <label>
+                        <input type="checkbox" bind:checked={dbDetailConfig.force_schema_tools} />
+                        Force Schema Tools
+                      </label>
+                      <p class="hint">Always use on-demand list_tables/describe_table tools for schema discovery instead of sending the full schema in every prompt. Recommended for local/small models and large schemas.</p>
                     </div>
                   </div>
                 </div>
@@ -1407,8 +1711,9 @@
                           <span class="row-count">({table.row_count} rows, {table.columns.length} columns)</span>
                         </div>
                         <div class="schema-table-desc">
-                          <label>Table Description:</label>
+                          <label for="table-desc-{table.name}">Table Description:</label>
                           <input
+                            id="table-desc-{table.name}"
                             type="text"
                             value={dbDetailConfig.table_descriptions[table.name] || ''}
                             placeholder="Describe this table..."
@@ -1552,8 +1857,8 @@
         <div class="form-card">
           <h4>Provider & Source</h4>
           <div class="form-group">
-            <label>Default LLM Provider</label>
-            <select bind:value={defaultsForm.llm_provider_id} onchange={saveDefaults}>
+            <label for="defaults-llm">Default LLM Provider</label>
+            <select id="defaults-llm" bind:value={defaultsForm.llm_provider_id} onchange={saveDefaults}>
               <option value={null}>None (ask each time)</option>
               {#each llmProviders as p}
                 <option value={p.id}>{p.name}</option>
@@ -1561,8 +1866,8 @@
             </select>
           </div>
           <div class="form-group">
-            <label>Default Data Source</label>
-            <select bind:value={defaultsForm.data_source_id} onchange={saveDefaults}>
+            <label for="defaults-ds">Default Data Source</label>
+            <select id="defaults-ds" bind:value={defaultsForm.data_source_id} onchange={saveDefaults}>
               <option value={null}>None (ask each time)</option>
               {#each dataSources as ds}
                 <option value={ds.id}>{ds.name}</option>
@@ -1574,13 +1879,13 @@
         <div class="form-card">
           <h4>Conversation Behavior</h4>
           <div class="form-group">
-            <label>Messages in Context</label>
-            <input type="number" min="1" max="15" bind:value={defaultsForm.max_context_messages} onchange={saveDefaults} />
+            <label for="defaults-max-ctx">Messages in Context</label>
+            <input type="number" id="defaults-max-ctx" min="1" max="15" bind:value={defaultsForm.max_context_messages} onchange={saveDefaults} />
             <p class="hint">How many recent messages to send to the LLM (max 15). Default: 5. Higher values risk context-window exhaustion and empty responses.</p>
           </div>
           <div class="form-group">
-            <label>Total Messages (0 = unlimited)</label>
-            <input type="number" min="0" max="1000" bind:value={defaultsForm.max_messages} onchange={saveDefaults} />
+            <label for="defaults-max-msgs">Total Messages (0 = unlimited)</label>
+            <input type="number" id="defaults-max-msgs" min="0" max="1000" bind:value={defaultsForm.max_messages} onchange={saveDefaults} />
             <p class="hint">Maximum messages stored in the conversation history.</p>
           </div>
         </div>
@@ -1748,7 +2053,143 @@
               Customize the prompts, tool descriptions, and instructions your AI model receives. For advanced users who want fine-grained control over model behavior.
             </div>
           </div>
+          <div class="checkbox-group" style="margin-top: var(--space-sm);">
+            <label>
+              <input type="checkbox" checked={dbSwitcherEnabled} onchange={toggleDbSwitcher} />
+              Enable Application Database Switching
+            </label>
+            <div style="color: var(--text-tertiary); font-size: var(--font-xs); margin-top: var(--space-2xs);">
+              Create a new blank database or switch YourQL to a different SQLite
+              file. Switching restarts the application. Your current database is
+              left untouched on disk — you can always switch back.
+            </div>
+          </div>
         </div>
+
+        <!-- Diagnostic Logging -->
+        <div class="form-card">
+          <h4>Diagnostic Logging</h4>
+          <p class="card-hint">Record application activity to a log file for troubleshooting. Changes take effect after restart.</p>
+          <div class="checkbox-group">
+            <label>
+              <input type="checkbox" checked={loggingEnabled} onchange={toggleLogging} />
+              Enable diagnostic logging
+            </label>
+            <div style="color: var(--text-tertiary); font-size: var(--font-xs); margin-top: var(--space-2xs);">
+              Logs are written to ~/.yourql/yourql.log. No sensitive information (API keys, passwords) is included.
+            </div>
+          </div>
+          {#if loggingRestartNotice}
+            <div style="margin-top: var(--space-xs); padding: 8px 12px; background: var(--color-accent-light); border: 1px solid var(--color-accent-border); border-radius: 6px; color: var(--color-accent); font-size: var(--font-sm);">
+              ⚠ Restart YourQL for this change to take effect.
+            </div>
+          {/if}
+          <div style="margin-top: var(--space-sm); display: flex; align-items: center; gap: var(--space-sm);">
+            <button
+              class="btn btn-secondary"
+              style="font-size: var(--font-sm);"
+              onclick={exportLog}
+              disabled={loggingExportStatus === 'exporting'}
+            >
+              {loggingExportStatus === 'exporting' ? 'Exporting…' : 'Export Log'}
+            </button>
+            <button
+              class="btn btn-secondary"
+              style="font-size: var(--font-sm);"
+              onclick={clearLog}
+              disabled={loggingExportStatus === 'clearing'}
+            >
+              {loggingExportStatus === 'clearing' ? 'Clearing…' : 'Clear Log'}
+            </button>
+            {#if loggingExportStatus === 'success'}
+              <span style="color: var(--color-success); font-size: var(--font-sm);">✓ Exported</span>
+            {:else if loggingExportStatus === 'cleared'}
+              <span style="color: var(--color-success); font-size: var(--font-sm);">✓ Cleared</span>
+            {:else if loggingExportStatus === 'empty'}
+              <span style="color: var(--text-tertiary); font-size: var(--font-sm);">No log data</span>
+            {:else if loggingExportStatus === 'error'}
+              <span style="color: var(--color-danger); font-size: var(--font-sm);">Failed</span>
+            {/if}
+          </div>
+        </div>
+
+        <!-- Database Export -->
+        <div class="form-card">
+          <h4>Export Your Data</h4>
+          <p class="card-hint">Download a complete copy of your YourQL database — all conversations, settings, skills, and configurations in a portable format you can open in any spreadsheet app.</p>
+
+          <div class="form-group">
+            <label for="export-format">Format</label>
+            <select id="export-format" bind:value={exportFormat}>
+              <option value="xlsx">Excel (.xlsx) — one workbook, all tables</option>
+              <option value="csv">CSV (.zip) — select tables, one file each</option>
+            </select>
+          </div>
+
+          {#if exportFormat === 'csv'}
+            <div class="form-group" style="margin-top: var(--space-sm);">
+              <label>Tables to export</label>
+              <div style="display: flex; gap: var(--space-sm); margin-bottom: var(--space-sm);">
+                <button class="btn btn-tiny" onclick={selectAllTables}>Select All</button>
+                <button class="btn btn-tiny" onclick={selectNoTables}>Select None</button>
+              </div>
+              <div class="export-table-checklist">
+                {#each allExportTables as table}
+                  <label class="checkbox-group" style="margin-bottom: var(--space-2xs);">
+                    <input type="checkbox" bind:checked={exportTables[table]} />
+                    {table}
+                  </label>
+                {/each}
+              </div>
+            </div>
+          {/if}
+
+          <div class="checkbox-group" style="margin-top: var(--space-sm);">
+            <label>
+              <input type="checkbox" bind:checked={exportIncludeCredentials} />
+              Include credentials (API keys and passwords)
+            </label>
+            {#if exportIncludeCredentials}
+              <div style="color: var(--color-danger); font-size: var(--font-xs); margin-top: var(--space-2xs);">
+                ⚠️ This will include your API keys and database passwords in plaintext. Do not share this file.
+              </div>
+            {/if}
+          </div>
+
+          <div style="margin-top: var(--space-sm); display: flex; align-items: center; gap: var(--space-sm);">
+            <button
+              class="btn btn-primary"
+              style="font-size: var(--font-sm);"
+              onclick={handleExportDatabase}
+              disabled={exportStatus === 'exporting' || zeroTablesSelected}
+            >
+              {exportStatus === 'exporting' ? 'Exporting…' : 'Export Database'}
+            </button>
+            {#if exportStatus === 'success'}
+              <span style="color: var(--color-success); font-size: var(--font-sm);">✓ Exported — check your chosen folder</span>
+            {:else if exportStatus === 'error'}
+              <span style="color: var(--color-danger); font-size: var(--font-sm);">⚠ Failed: {exportError}</span>
+            {/if}
+          </div>
+        </div>
+
+        <!-- Pipeline & Summarization Timeouts -->
+        <div class="form-card">
+          <h4>Timeouts</h4>
+            <p class="card-hint">Maximum time (in seconds) before a long-running operation is cancelled. Increase these if you have a slow LLM provider or complex questions.</p>
+            <div style="display:flex; gap: var(--space-md); flex-wrap: wrap;">
+              <div style="flex: 1; min-width: 200px;">
+                <label for="timeout-pipeline">Pipeline timeout</label>
+                <input id="timeout-pipeline" type="number" min="30" max="3600" class="timeout-input" bind:value={pipelineTimeout} onchange={() => saveTimeoutSetting('pipeline_timeout_seconds', pipelineTimeout)} />
+                <p style="color: var(--text-tertiary); font-size: var(--font-xs); margin-top: 2px;">Covers the entire LLM conversation turn. Default 180.</p>
+              </div>
+              <div style="flex: 1; min-width: 200px;">
+                <label for="timeout-summarization">Summarization timeout</label>
+                <input id="timeout-summarization" type="number" min="10" max="600" class="timeout-input" bind:value={summarizationTimeout} onchange={() => saveTimeoutSetting('summarization_timeout_seconds', summarizationTimeout)} />
+                <p style="color: var(--text-tertiary); font-size: var(--font-xs); margin-top: 2px;">Independent of the pipeline timeout. Default 300.</p>
+              </div>
+            </div>
+          </div>
       </div>
     {:else if activeSettingsTab === 'agentloop'}
       <div class="settings-section">
@@ -1778,9 +2219,10 @@
               <h4>{sectionLabels[section] || section}</h4>
               {#each sectionFields as field (field.key)}
                 <div class="form-group" style="margin-bottom: var(--space-3xl);">
-                  <label>{field.label}</label>
+                  <label for="agent-loop-{field.key}">{field.label}</label>
                   <div class="field-tooltip">{field.description}</div>
                   <textarea
+                    id="agent-loop-{field.key}"
                     class="agent-loop-textarea"
                     value={agentLoopConfigValues[field.key] || ''}
                     placeholder={field.description}
@@ -1800,21 +2242,133 @@
           {/if}
         {/each}
       </div>
+    {:else if activeSettingsTab === 'appdb'}
+      <div class="settings-section">
+        <h3>Application Database</h3>
+        <p class="section-desc">
+          YourQL stores conversations, provider configs, data source configs,
+          and skills in a local SQLite database. Switching creates a new blank
+          database or points YourQL at a different file — the application
+          restarts after switching.
+        </p>
+
+        {#if dbError}
+          <div style="margin-bottom: var(--space-md); padding: 8px 12px; background: var(--color-danger-light, #fdecec); border: 1px solid var(--color-danger-border, #f5c2c2); border-radius: 6px; color: var(--color-danger, #b3261e); font-size: var(--font-sm);">
+            {dbError}
+          </div>
+        {/if}
+
+        <div class="form-card">
+          <p class="card-hint" style="margin-bottom: var(--space-sm);">
+            <strong>Current database:</strong><br />
+            {activeDbPath}
+            {#if activeDbIsDefault}
+              <span style="color: var(--text-tertiary);"> (default)</span>
+            {/if}
+          </p>
+        </div>
+
+        <div class="form-card">
+          <h4>Create New Blank Database</h4>
+          <p class="card-hint">
+            Creates a brand-new, empty YourQL database at a location you
+            choose — like launching the app for the very first time. Nothing
+            in your current database is deleted.
+          </p>
+          <div style="display: flex; gap: var(--space-sm); flex-wrap: wrap;">
+            <input
+              type="text"
+              class="form-input"
+              placeholder="Path to new database (e.g. ~/Documents/yourql-new.db)"
+              bind:value={newDbPath}
+              style="flex: 1; min-width: 250px;"
+            />
+            <button class="btn btn-secondary" onclick={pickNewDbLocation}>
+              Browse...
+            </button>
+            <button
+              class="btn btn-primary"
+              onclick={createAndSwitch}
+              disabled={!newDbPath}
+            >
+              Create & Restart
+            </button>
+          </div>
+        </div>
+
+        <div class="form-card">
+          <h4>Switch to Existing Database</h4>
+          <p class="card-hint">
+            Point YourQL at an existing SQLite database file and restart.
+          </p>
+          <div style="display: flex; gap: var(--space-sm); flex-wrap: wrap;">
+            <input
+              type="text"
+              class="form-input"
+              placeholder="Path to existing database"
+              bind:value={switchToPath}
+              style="flex: 1; min-width: 250px;"
+            />
+            <button class="btn btn-secondary" onclick={pickExistingDbFile}>
+              Browse...
+            </button>
+            <button
+              class="btn btn-primary"
+              onclick={switchToExisting}
+              disabled={!switchToPath}
+            >
+              Switch & Restart
+            </button>
+          </div>
+        </div>
+
+        {#if !activeDbIsDefault}
+          <div class="form-card">
+            <h4>Reset to Default</h4>
+            <p class="card-hint">
+              Return YourQL to its default database location
+              (~/.yourql/yourql.db) and restart.
+            </p>
+            <button class="btn btn-secondary" onclick={resetToDefault}>
+              Reset to Default & Restart
+            </button>
+          </div>
+        {/if}
+
+        <div style="margin-top: var(--space-md); color: var(--text-tertiary); font-size: var(--font-xs);">
+          ⚠ Switching databases always restarts YourQL. Any in-progress
+          conversations will be interrupted. Your current database is left
+          untouched on disk — you can always switch back.
+        </div>
+      </div>
     {/if}
   </div>
 </div>
 
 {#if showSkillEditor && skillEditor}
-  <div class="skill-editor-overlay" onclick={() => { showSkillEditor = false; skillEditor = null }}>
-    <div class="skill-editor" onclick={(e) => e.stopPropagation()}>
+  <div class="skill-editor-overlay" role="dialog" aria-modal="true" onclick={() => { showSkillEditor = false; skillEditor = null }} onkeydown={(e) => { if (e.key === 'Escape') { showSkillEditor = false; skillEditor = null } }}>
+    <div class="skill-editor" role="document" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}>
       <h3>{skillEditor.id ? 'Edit Skill' : 'New Skill'}</h3>
-      <label>Name</label>
-      <input type="text" bind:value={skillEditor.name} placeholder="Sales Domain Context" />
-      <label>Markdown Content</label>
-      <textarea bind:value={skillEditor.markdown_content} placeholder="Revenue is in USD. Fiscal year starts July 1.&#10;Exclude test accounts from all queries."></textarea>
+      <label for="skill-editor-name">Name</label>
+      <input type="text" id="skill-editor-name" bind:value={skillEditor.name} placeholder="Sales Domain Context" />
+      <label for="skill-editor-content">Markdown Content</label>
+      <textarea id="skill-editor-content" bind:value={skillEditor.markdown_content} placeholder="Revenue is in USD. Fiscal year starts July 1.&#10;Exclude test accounts from all queries."></textarea>
       <div class="skill-editor-actions">
         <button class="btn btn-primary" onclick={handleSaveSkill}>Save</button>
         <button class="btn btn-secondary" onclick={() => { showSkillEditor = false; skillEditor = null }}>Cancel</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if dbConfirm}
+  <div class="skill-editor-overlay" role="dialog" aria-modal="true" onclick={cancelDbConfirm} onkeydown={(e) => { if (e.key === 'Escape') cancelDbConfirm() }}>
+    <div class="skill-editor" role="document" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}>
+      <h3>{dbConfirm.title}</h3>
+      <p style="margin-bottom: var(--space-md);">{dbConfirm.message}</p>
+      <div class="skill-editor-actions">
+        <button class="btn btn-primary" onclick={confirmDbAction}>Confirm & Restart</button>
+        <button class="btn btn-secondary" onclick={cancelDbConfirm}>Cancel</button>
       </div>
     </div>
   </div>
@@ -2010,6 +2564,34 @@
 
   .btn-danger:hover {
     background: var(--color-accent-light);
+  }
+
+  .btn-tiny {
+    padding: 2px 8px;
+    font-size: 11px;
+    line-height: 1.4;
+    background: var(--border-primary);
+    color: var(--text-secondary);
+    border: 1px solid var(--text-secondary);
+    border-radius: 4px;
+    cursor: pointer;
+  }
+
+  .btn-tiny:hover {
+    background: var(--text-muted);
+  }
+
+  .export-table-checklist {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-2xs) var(--space-lg);
+    font-size: var(--font-sm);
+    padding: var(--space-sm) var(--space-md);
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    max-height: 12rem;
+    overflow-y: auto;
   }
 
   .status-message {

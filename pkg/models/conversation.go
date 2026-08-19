@@ -22,4 +22,5 @@ type Conversation struct {
 	Summarize          bool       `json:"summarize"`
 	VizEnabled         bool       `json:"viz_enabled"`
 	StreamingEnabled   bool       `json:"streaming_enabled"`
+	Tags               []string   `json:"tags,omitempty"`
 }

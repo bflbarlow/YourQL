@@ -167,6 +167,7 @@ func (c *AnthropicClient) doAnthropicRequest(ctx context.Context, jsonData []byt
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		log.Printf("[Anthropic] ERROR — HTTP %d from %s (model=%s): %s", resp.StatusCode, c.baseURL, c.model, string(body))
 		return nil, fmt.Errorf("Anthropic API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -315,7 +316,7 @@ func parseAnthropicResponse(body []byte) (*ChatMessage, error) {
 		return nil, fmt.Errorf("API returned empty response (no content blocks)")
 	}
 
-	msg := &ChatMessage{Role: "assistant"}
+	msg := &ChatMessage{Role: "assistant", FinishReason: response.StopReason, PromptTokens: response.Usage.InputTokens, CompletionTokens: response.Usage.OutputTokens}
 
 	for _, block := range response.Content {
 		switch block.Type {
@@ -493,6 +494,7 @@ func (c *AnthropicClient) ChatCompletionWithToolsStreaming(ctx context.Context, 
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		log.Printf("[Anthropic] ERROR — HTTP %d from %s (model=%s): %s", resp.StatusCode, c.baseURL, c.model, string(body))
 		return nil, "", "", fmt.Errorf("Anthropic API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -541,10 +543,10 @@ func (c *AnthropicClient) ChatCompletionWithToolsStreaming(ctx context.Context, 
 			var ev struct {
 				Index        int `json:"index"`
 				ContentBlock struct {
-					Type  string `json:"type"`
-					Text  string `json:"text"`
-					ID    string `json:"id"`
-					Name  string `json:"name"`
+					Type string `json:"type"`
+					Text string `json:"text"`
+					ID   string `json:"id"`
+					Name string `json:"name"`
 				} `json:"content_block"`
 			}
 			if err := json.Unmarshal([]byte(data), &ev); err != nil {
@@ -571,10 +573,10 @@ func (c *AnthropicClient) ChatCompletionWithToolsStreaming(ctx context.Context, 
 			var ev struct {
 				Index int `json:"index"`
 				Delta struct {
-					Type         string `json:"type"`
-					Text         string `json:"text"`
-					PartialJSON  string `json:"partial_json"`
-					Thinking     string `json:"thinking"`
+					Type        string `json:"type"`
+					Text        string `json:"text"`
+					PartialJSON string `json:"partial_json"`
+					Thinking    string `json:"thinking"`
 				} `json:"delta"`
 			}
 			if err := json.Unmarshal([]byte(data), &ev); err != nil {
@@ -585,7 +587,7 @@ func (c *AnthropicClient) ChatCompletionWithToolsStreaming(ctx context.Context, 
 				continue
 			}
 			switch ev.Delta.Type {
-		case "text_delta":
+			case "text_delta":
 				ba.text.WriteString(ev.Delta.Text)
 				if onEvent != nil && !thinkingActive {
 					onEvent(StreamEvent{Type: StreamContentDelta, Content: ev.Delta.Text})
@@ -645,6 +647,7 @@ func (c *AnthropicClient) ChatCompletionWithToolsStreaming(ctx context.Context, 
 	}
 
 	if scanErr := scanner.Err(); scanErr != nil {
+		log.Printf("[Anthropic] ERROR — SSE stream error from %s (model=%s): %v", c.baseURL, c.model, scanErr)
 		return nil, "", "", fmt.Errorf("SSE stream error: %w", scanErr)
 	}
 
@@ -654,7 +657,7 @@ func (c *AnthropicClient) ChatCompletionWithToolsStreaming(ctx context.Context, 
 	}
 
 	// Assemble the final ChatMessage from accumulated blocks.
-	msg := &ChatMessage{Role: "assistant"}
+	msg := &ChatMessage{Role: "assistant", FinishReason: stopReason}
 	var hasToolCalls bool
 	for _, ba := range blocks {
 		if ba == nil || !ba.started {
@@ -780,6 +783,7 @@ func TestAnthropicConnection(apiKey, model, baseURL string) (string, error) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		log.Printf("[Anthropic] ERROR — HTTP %d from %s (model=%s): %s", resp.StatusCode, baseURL, model, string(body))
 		return "", fmt.Errorf("Anthropic API error: status %d: %s", resp.StatusCode, string(body))
 	}
 

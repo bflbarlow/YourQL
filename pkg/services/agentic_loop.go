@@ -7,9 +7,12 @@ import (
 	"fmt"
 	"html"
 	"log"
+	"math"
+	"strconv"
 	"strings"
 	"time"
 
+	"YourQL/pkg/engine"
 	"YourQL/pkg/models"
 )
 
@@ -23,7 +26,7 @@ import (
 
 // buildTools returns the tool definitions for the agentic loop, reading
 // descriptions from AgentLoopConfig (user overrides or hardcoded defaults).
-func buildTools(cfg *models.AgentLoopConfig, vizEnabled bool) []Tool {
+func buildTools(cfg *models.AgentLoopConfig, vizEnabled bool, schema *DataSchema, dbConnection *models.DataSource) []Tool {
 	tools := []Tool{
 		{
 			Type: "function",
@@ -87,6 +90,49 @@ func buildTools(cfg *models.AgentLoopConfig, vizEnabled bool) []Tool {
 			},
 		})
 	}
+
+	// On-demand schema tools: register list_tables and describe_table
+	// when the user has opted in via the ForceSchemaTools checkbox, or when
+	// the data source's schema size meets the global threshold (10 tables).
+	// Below the threshold without the checkbox, the full schema is sent in
+	// the system prompt instead — these tools are not needed.
+	const globalSchemaToolThreshold = 10
+	if schema != nil && dbConnection != nil {
+		forceTools := false
+		if cfg2, err := dbConnection.ParseConfig(); err == nil && cfg2.ForceSchemaTools {
+			forceTools = true
+		}
+		if forceTools || len(schema.Tables) >= globalSchemaToolThreshold {
+			tools = append(tools, Tool{
+				Type: "function",
+				Function: FunctionDef{
+					Name:        "list_tables",
+					Description: "List all tables in the database with their row counts. Use this to discover what tables are available before describing specific ones.",
+					Parameters: map[string]any{
+						"type":       "object",
+						"properties": map[string]any{},
+					},
+				},
+			}, Tool{
+				Type: "function",
+				Function: FunctionDef{
+					Name:        "describe_table",
+					Description: "Return the full column-level schema for a single table (column names, types, nullability, primary/foreign keys). Call this after list_tables to get the detail you need before writing a query.",
+					Parameters: map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"table_name": map[string]any{
+								"type":        "string",
+								"description": "The exact name of the table to describe (as returned by list_tables).",
+							},
+						},
+						"required": []string{"table_name"},
+					},
+				},
+			})
+		}
+	}
+
 	return tools
 }
 
@@ -133,7 +179,13 @@ type pendingFinalResult struct {
 func (p *pendingFinalResult) render(query *models.Query, dbConnection *models.DataSource, conversation *models.Conversation, chartConfig string) error {
 	var summary *string
 	if conversation.Summarize && p.result != nil {
-		s, err := summarizeResults(p.ctx, p.client, p.userMessage, p.sql, p.result, p.skillsContent, conversation.ID)
+		// Summarization runs on its OWN context and timeout so a slow main
+		// loop can never starve it of the shared pipeline deadline (see
+		// TIMEOUT_RESOLUTION.md). The timeout is configurable in Settings.
+		sumTimeout := GetTimeoutSetting("summarization_timeout_seconds", 300)
+		sCtx, sCancel := context.WithTimeout(context.Background(), time.Duration(sumTimeout)*time.Second)
+		s, err := summarizeResults(sCtx, p.client, p.userMessage, p.sql, p.result, p.skillsContent, conversation.ID)
+		sCancel()
 		if err != nil {
 			log.Printf("[AgenticLoop] Summarization failed: %v", err)
 			// Surface a small note to the user instead of silent failure.
@@ -182,10 +234,12 @@ type TechDetail struct {
 	} `json:"request"`
 
 	Response struct {
-		FinishReason string            `json:"finish_reason,omitempty"`
-		TextContent  string            `json:"text_content,omitempty"`
-		RawOutput    string            `json:"raw_output,omitempty"` // full raw model response text
-		ToolCalls    []ToolCallSummary `json:"tool_calls,omitempty"`
+		FinishReason     string            `json:"finish_reason,omitempty"`
+		TextContent      string            `json:"text_content,omitempty"`
+		RawOutput        string            `json:"raw_output,omitempty"`
+		ToolCalls        []ToolCallSummary `json:"tool_calls,omitempty"`
+		PromptTokens     int               `json:"prompt_tokens,omitempty"`
+		CompletionTokens int               `json:"completion_tokens,omitempty"`
 	} `json:"response"`
 
 	SQL struct {
@@ -217,11 +271,18 @@ func storeTechDetail(conversationID uint, detail TechDetail) {
 }
 
 // ---------------------------------------------------------------------------
-// formatToolResult — truncated preview of query results for tool messages
+// formatToolResult — compact digest of query results for tool messages.
+// Produces a line-oriented summary (row count, columns, up to 50 sample rows,
+// stats for numeric columns) instead of a full markdown table. This keeps
+// tool result messages small when replayed in conversation history, while
+// still giving the model enough awareness to decide whether to re-query for
+// exact data. The higher sample count (was 3) ensures the model sees enough
+// distinct values from categorical lookups (e.g., SELECT DISTINCT status)
+// to reason about schema semantics without burning exploration rounds.
 // ---------------------------------------------------------------------------
 
 const (
-	toolResultMaxRows      = 50
+	toolResultSampleRows   = 50
 	toolResultMaxCellChars = 200
 )
 
@@ -229,43 +290,165 @@ func formatToolResult(result *QueryResult) string {
 	if result == nil {
 		return "(no results)"
 	}
-	if result.RowCount == 0 {
-		return "(0 rows returned)"
-	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Query returned %d row(s).\n\n", result.RowCount))
+	sb.WriteString(fmt.Sprintf("Query returned %d row(s).", result.RowCount))
 
-	sb.WriteString("| ")
+	if result.RowCount == 0 {
+		return sb.String()
+	}
+
+	// Column names
+	sb.WriteString("\nColumns:")
 	for i, col := range result.Columns {
 		if i > 0 {
-			sb.WriteString(" | ")
+			sb.WriteString(",")
 		}
+		sb.WriteString(" ")
 		sb.WriteString(humanizeColumnName(col))
 	}
-	sb.WriteString(" |\n")
-	sb.WriteString("|" + strings.Repeat("---|", len(result.Columns)) + "\n")
 
-	for i, row := range result.Rows {
-		if i >= toolResultMaxRows {
-			sb.WriteString(fmt.Sprintf("\n… %d more row(s) not shown\n", result.RowCount-i))
-			break
-		}
-		sb.WriteString("| ")
-		for j, val := range row {
-			if j > 0 {
-				sb.WriteString(" | ")
+	// Sample rows (up to toolResultSampleRows)
+	sampleCount := len(result.Rows)
+	if sampleCount > toolResultSampleRows {
+		sampleCount = toolResultSampleRows
+	}
+	if sampleCount > 0 {
+		sb.WriteString(fmt.Sprintf("\nSample (%d of %d):", sampleCount, result.RowCount))
+		for i := 0; i < sampleCount; i++ {
+			var rowParts []string
+			for _, val := range result.Rows[i] {
+				cell := fmt.Sprintf("%v", val)
+				if len(cell) > toolResultMaxCellChars {
+					cell = cell[:toolResultMaxCellChars] + "..."
+				}
+				rowParts = append(rowParts, cell)
 			}
-			cell := fmt.Sprintf("%v", val)
-			if len(cell) > toolResultMaxCellChars {
-				cell = cell[:toolResultMaxCellChars] + "..."
-			}
-			sb.WriteString(cell)
+			sb.WriteString("\n  ")
+			sb.WriteString(strings.Join(rowParts, "|"))
 		}
-		sb.WriteString(" |\n")
+	}
+
+	// Numeric column stats (avg, min, max)
+	humanizedCols := make([]string, len(result.Columns))
+	for i, col := range result.Columns {
+		humanizedCols[i] = humanizeColumnName(col)
+	}
+	numericCols := detectNumericColumns(result.Columns, result.Rows)
+	if len(numericCols) > 0 {
+		sb.WriteString("\nColumn stats:")
+		for _, ci := range numericCols {
+			stats := computeToolResultColStats(ci, result.Rows)
+			sb.WriteString(fmt.Sprintf("\n  %s: avg=%.2f min=%.2f max=%.2f",
+				humanizedCols[ci], stats.avg, stats.min, stats.max))
+		}
 	}
 
 	return sb.String()
+}
+
+// detectNumericColumns returns the indices of columns where all non-NULL
+// row values can be parsed as float64.
+func detectNumericColumns(columns []string, rows [][]interface{}) []int {
+	var numeric []int
+	for ci := range columns {
+		if len(rows) == 0 {
+			continue
+		}
+		allNumeric := true
+		hasValue := false
+		for ri := range rows {
+			val := rows[ri][ci]
+			if val == nil {
+				continue
+			}
+			hasValue = true
+			switch v := val.(type) {
+			case float64, float32:
+			case int, int8, int16, int32, int64:
+			case []byte:
+				if _, err := strconv.ParseFloat(string(v), 64); err != nil {
+					allNumeric = false
+					break
+				}
+			case string:
+				if _, err := strconv.ParseFloat(v, 64); err != nil {
+					allNumeric = false
+					break
+				}
+			default:
+				allNumeric = false
+				break
+			}
+			if !allNumeric {
+				break
+			}
+		}
+		if hasValue && allNumeric {
+			numeric = append(numeric, ci)
+		}
+	}
+	return numeric
+}
+
+type toolResultColStats struct {
+	avg, min, max float64
+}
+
+func computeToolResultColStats(ci int, rows [][]interface{}) toolResultColStats {
+	var sum float64
+	var count int
+	var min = math.MaxFloat64
+	var max = -math.MaxFloat64
+	for ri := range rows {
+		v := toFloat64ForStats(rows[ri][ci])
+		if v == nil {
+			continue
+		}
+		sum += *v
+		count++
+		if *v < min {
+			min = *v
+		}
+		if *v > max {
+			max = *v
+		}
+	}
+	if count == 0 {
+		return toolResultColStats{}
+	}
+	return toolResultColStats{avg: sum / float64(count), min: min, max: max}
+}
+
+func toFloat64ForStats(val interface{}) *float64 {
+	if val == nil {
+		return nil
+	}
+	switch v := val.(type) {
+	case float64:
+		return &v
+	case float32:
+		f := float64(v)
+		return &f
+	case int:
+		f := float64(v)
+		return &f
+	case int64:
+		f := float64(v)
+		return &f
+	case int32:
+		f := float64(v)
+		return &f
+	case []byte:
+		if f, err := strconv.ParseFloat(string(v), 64); err == nil {
+			return &f
+		}
+	case string:
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return &f
+		}
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -329,18 +512,26 @@ func renderToolQueryResults(query *models.Query, sql string, results *QueryResul
 		Result:          results,
 		ExplorationHTML: explorationHTML,
 		Summary:         summary,
+		HasChart:        chartConfig != "",
 	}
-	assistantMessageHTML := assistantResp.ToHTML()
 
-	// When the model batches respond_to_user alongside query_database,
-	// render the markdown text above the results table in a single combined
-	// message — saves one full round-trip.
-	if respondText != "" {
-		htmlText := renderMarkdown(respondText)
-		if strings.TrimSpace(stripHTMLTags(htmlText)) == "" && respondText != "" {
-			htmlText = fmt.Sprintf("<pre style=\"white-space:pre-wrap; font-family:inherit;\">%s</pre>", html.EscapeString(respondText))
+	// When summarization is enabled, the summary text and the results
+	// table with collapsible wrapper are both rendered by ToHTML(). Only
+	// use textAboveTableHTML for respondText when no summary is present.
+	var textAboveTableHTML string
+	if summary == nil || *summary == "" {
+		if respondText != "" {
+			htmlText := renderMarkdown(respondText)
+			if strings.TrimSpace(stripHTMLTags(htmlText)) == "" && respondText != "" {
+				htmlText = fmt.Sprintf("<pre style=\"white-space:pre-wrap; font-family:inherit;\">%s</pre>", html.EscapeString(respondText))
+			}
+			textAboveTableHTML = fmt.Sprintf("<div class=\"markdown-content\">%s</div>", htmlText)
 		}
-		assistantMessageHTML = fmt.Sprintf("<div class=\"markdown-content\">%s</div>%s", htmlText, assistantMessageHTML)
+	}
+
+	assistantMessageHTML := assistantResp.ToHTML()
+	if textAboveTableHTML != "" {
+		assistantMessageHTML = textAboveTableHTML + assistantMessageHTML
 	}
 
 	llmContent := "" // no raw LLM response JSON in the tool-calling path
@@ -359,6 +550,10 @@ func renderToolQueryResults(query *models.Query, sql string, results *QueryResul
 		resolved, err := resolveChartConfig(chartConfig, results.Columns, results.Rows)
 		if err == nil && resolved != "" {
 			metadataMap["chart_config"] = json.RawMessage(resolved)
+		} else if err != nil {
+			log.Printf("[AgenticLoop] Chart config resolution failed: %v", err)
+		} else {
+			log.Printf("[AgenticLoop] Chart config resolution returned empty result")
 		}
 	}
 
@@ -433,7 +628,7 @@ func buildToolMessages(t ToolTranscript) []ChatMessage {
 		}
 		calls = append(calls, ToolCall{
 			ID:       fmt.Sprintf("hist_%d", i),
-			Function: ToolCallFunction{Name: action.Tool, Arguments: action.Arguments},
+			Function: ToolCallFunction{Name: action.Tool, Arguments: stripReasoningFromArgs(action.Arguments)},
 		})
 	}
 
@@ -457,6 +652,74 @@ func buildToolMessages(t ToolTranscript) []ChatMessage {
 	return out
 }
 
+// stripReasoningFromArgs removes the "reasoning" field from a JSON tool-call
+// arguments string before it's replayed in conversation history. The reasoning
+// is the model's own chain-of-thought justification for the query — valuable
+// within the current turn, but dead weight on subsequent turns. If the
+// arguments can't be parsed as JSON, the original string is returned unchanged.
+func stripReasoningFromArgs(argsJSON string) string {
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(argsJSON), &m); err != nil {
+		return argsJSON
+	}
+	delete(m, "reasoning")
+	trimmed, err := json.Marshal(m)
+	if err != nil {
+		return argsJSON
+	}
+	return string(trimmed)
+}
+
+// ---------------------------------------------------------------------------
+// buildCompactSystemPrompt — minimal system prompt for compact mode
+// ---------------------------------------------------------------------------
+
+func buildCompactSystemPrompt(schema *DataSchema, dbConnection *models.DataSource, vizEnabled bool) string {
+	var sb strings.Builder
+
+	// Database identity
+	sb.WriteString(dbConnection.Type)
+	if dbConnection.Database != nil && *dbConnection.Database != "" {
+		sb.WriteString(fmt.Sprintf(" — %s", *dbConnection.Database))
+	}
+	sb.WriteString("\n")
+
+	// Compact table list (names + row counts only, no column detail)
+	if schema != nil && len(schema.Tables) > 0 {
+		sb.WriteString("Tables:")
+		for i, table := range schema.Tables {
+			if i > 0 {
+				sb.WriteString(",")
+			}
+			sb.WriteString(fmt.Sprintf(" %s(%d)", table.Name, table.RowCount))
+		}
+		sb.WriteString("\n")
+	}
+
+	// One-line dialect rule
+	switch dbConnection.Type {
+	case "MySQL", "mariadb":
+		sb.WriteString("Dialect: backtick quoting, LIMIT 1000, INFORMATION_SCHEMA\n")
+	case "PostgreSQL", "redshift":
+		sb.WriteString("Dialect: double-quote identifiers, LIMIT 1000, information_schema\n")
+	case "SQLite":
+		sb.WriteString("Dialect: double-quote identifiers, LIMIT 1000, sqlite_master\n")
+	case "SQL Server":
+		sb.WriteString("Dialect: bracket [identifier] quoting, SELECT TOP 1000, INFORMATION_SCHEMA\n")
+	default:
+		sb.WriteString("Dialect: standard SQL quoting, LIMIT 1000\n")
+	}
+
+	// Tools (terse)
+	if vizEnabled {
+		sb.WriteString("Tools: query_database (SELECT only, is_exploration flag), respond_to_user, render_chart\n")
+	} else {
+		sb.WriteString("Tools: query_database (SELECT only, is_exploration flag), respond_to_user\n")
+	}
+
+	return sb.String()
+}
+
 // ---------------------------------------------------------------------------
 // buildToolSystemPrompt — system prompt for the tool-calling protocol
 // ---------------------------------------------------------------------------
@@ -468,6 +731,18 @@ func buildToolSystemPrompt(schema *DataSchema, hasDB bool, dbConnection *models.
 	cfg, cfgErr := GetAgentLoopConfig()
 	if cfgErr != nil {
 		cfg = &models.AgentLoopConfig{} // fall back to zero values (hardcoded defaults will be used)
+	}
+
+	// Compact prompt mode: when enabled, return a minimal system prompt
+	// that omits full column-level schemas, persona text, chart guidance,
+	// and verbose instructions. Intended for small/local models where the
+	// full prompt alone can exhaust context. Skills are not injected in
+	// this mode (the caller handles that separately).
+	if dbConnection != nil {
+		config, err := dbConnection.ParseConfig()
+		if err == nil && config.CompactPrompts {
+			return buildCompactSystemPrompt(schema, dbConnection, vizEnabled)
+		}
 	}
 
 	if dbConnection != nil {
@@ -492,71 +767,93 @@ func buildToolSystemPrompt(schema *DataSchema, hasDB bool, dbConnection *models.
 	}
 
 	if hasDB && schema != nil && len(schema.Tables) > 0 {
-		sb.WriteString("## Database Schema\n")
-		var config *models.DataSourceConfig
-		var configErr error
-		if dbConnection != nil {
-			config, configErr = dbConnection.ParseConfig()
+		// On-demand schema mode: when the user has opted in via
+		// ForceSchemaTools or the schema meets the global threshold,
+		// omit the full column-level schema and instruct the model
+		// to use list_tables/describe_table tools instead.
+		const globalSchemaToolThreshold = 10
+		forceTools := false
+		tmpCfg, tmpErr := dbConnection.ParseConfig()
+		if tmpErr == nil && tmpCfg.ForceSchemaTools {
+			forceTools = true
 		}
-		var tableDescriptions map[string]string
-		var columnDescriptions map[string]string
-		if configErr == nil && config != nil {
-			tableDescriptions = config.TableDescriptions
-			columnDescriptions = config.ColumnDescriptions
-		}
-		for _, table := range schema.Tables {
-			sb.WriteString(fmt.Sprintf("Table: `%s` (%d rows)", table.Name, table.RowCount))
-			if table.Description != "" {
-				sb.WriteString(fmt.Sprintf(" [comment: %s]", table.Description))
+		if forceTools || (len(schema.Tables) >= globalSchemaToolThreshold && tmpErr == nil && !tmpCfg.CompactPrompts) {
+			// Skip the full schema section — the model will use tools instead.
+			// Still include the table names + row counts so the model has
+			// enough context to decide whether to call describe_table.
+			var names []string
+			for _, t := range schema.Tables {
+				names = append(names, fmt.Sprintf("`%s` (%d rows)", t.Name, t.RowCount))
 			}
-			if desc, ok := tableDescriptions[table.Name]; ok {
-				sb.WriteString(fmt.Sprintf(" [description: %s]", desc))
+			sb.WriteString(fmt.Sprintf("## Available Tables\n%s\n\n", strings.Join(names, "\n")))
+			sb.WriteString("Use list_tables and describe_table tools to explore the schema before writing queries.\n")
+		} else {
+			sb.WriteString("## Database Schema\n")
+			var config *models.DataSourceConfig
+			var configErr error
+			if dbConnection != nil {
+				config, configErr = dbConnection.ParseConfig()
+			}
+			var tableDescriptions map[string]string
+			var columnDescriptions map[string]string
+			if configErr == nil && config != nil {
+				tableDescriptions = config.TableDescriptions
+				columnDescriptions = config.ColumnDescriptions
+			}
+			for _, table := range schema.Tables {
+				sb.WriteString(fmt.Sprintf("Table: `%s` (%d rows)", table.Name, table.RowCount))
+				if table.Description != "" {
+					sb.WriteString(fmt.Sprintf(" [comment: %s]", table.Description))
+				}
+				if desc, ok := tableDescriptions[table.Name]; ok {
+					sb.WriteString(fmt.Sprintf(" [description: %s]", desc))
+				}
+				sb.WriteString("\n")
+
+				for _, col := range table.Columns {
+					nullable := ""
+					if col.IsNullable {
+						nullable = " NULL"
+					}
+					pk := ""
+					if col.IsPrimaryKey {
+						pk = " PRIMARY KEY"
+					}
+					colDesc := ""
+					if desc, ok := columnDescriptions[table.Name+"."+col.Name]; ok {
+						colDesc = fmt.Sprintf(" [description: %s]", desc)
+					}
+					sb.WriteString(fmt.Sprintf("  - `%s`: %s%s%s%s\n", col.Name, col.DataType, nullable, pk, colDesc))
+				}
+
+				if len(table.Indexes) > 0 {
+					sb.WriteString("  Indexes:\n")
+					for _, idx := range table.Indexes {
+						unique := ""
+						if idx.IsUnique {
+							unique = " UNIQUE"
+						}
+						sb.WriteString(fmt.Sprintf("    - %s%s: (%s)\n", idx.Name, unique, strings.Join(idx.Columns, ", ")))
+					}
+				}
+
+				if len(table.ForeignKeys) > 0 {
+					sb.WriteString("  Foreign Keys:\n")
+					for _, fk := range table.ForeignKeys {
+						sb.WriteString(fmt.Sprintf("    - %s: %s -> `%s`.`%s`", fk.Name, fk.Column, fk.RefTable, fk.RefColumn))
+						if fk.OnDelete != "" {
+							sb.WriteString(fmt.Sprintf(" ON DELETE %s", fk.OnDelete))
+						}
+						if fk.OnUpdate != "" {
+							sb.WriteString(fmt.Sprintf(" ON UPDATE %s", fk.OnUpdate))
+						}
+						sb.WriteString("\n")
+					}
+				}
+				sb.WriteString("\n")
 			}
 			sb.WriteString("\n")
-
-			for _, col := range table.Columns {
-				nullable := ""
-				if col.IsNullable {
-					nullable = " NULL"
-				}
-				pk := ""
-				if col.IsPrimaryKey {
-					pk = " PRIMARY KEY"
-				}
-				colDesc := ""
-				if desc, ok := columnDescriptions[table.Name+"."+col.Name]; ok {
-					colDesc = fmt.Sprintf(" [description: %s]", desc)
-				}
-				sb.WriteString(fmt.Sprintf("  - `%s`: %s%s%s%s\n", col.Name, col.DataType, nullable, pk, colDesc))
-			}
-
-			if len(table.Indexes) > 0 {
-				sb.WriteString("  Indexes:\n")
-				for _, idx := range table.Indexes {
-					unique := ""
-					if idx.IsUnique {
-						unique = " UNIQUE"
-					}
-					sb.WriteString(fmt.Sprintf("    - %s%s: (%s)\n", idx.Name, unique, strings.Join(idx.Columns, ", ")))
-				}
-			}
-
-			if len(table.ForeignKeys) > 0 {
-				sb.WriteString("  Foreign Keys:\n")
-				for _, fk := range table.ForeignKeys {
-					sb.WriteString(fmt.Sprintf("    - %s: %s -> `%s`.`%s`", fk.Name, fk.Column, fk.RefTable, fk.RefColumn))
-					if fk.OnDelete != "" {
-						sb.WriteString(fmt.Sprintf(" ON DELETE %s", fk.OnDelete))
-					}
-					if fk.OnUpdate != "" {
-						sb.WriteString(fmt.Sprintf(" ON UPDATE %s", fk.OnUpdate))
-					}
-					sb.WriteString("\n")
-				}
-			}
-			sb.WriteString("\n")
 		}
-		sb.WriteString("\n")
 	}
 
 	if hasDB && dbConnection != nil {
@@ -592,7 +889,11 @@ func buildToolSystemPrompt(schema *DataSchema, hasDB bool, dbConnection *models.
 				if safety == "" {
 					safety = "strict"
 				}
-				sb.WriteString(fmt.Sprintf("- **Exploration:** enabled (max %d rounds, %s mode)\n", config.MaxExplorationRounds, safety))
+				if config.MaxToolsPerRound > 0 {
+					sb.WriteString(fmt.Sprintf("- **Exploration:** enabled (max %d exploration queries total, max %d per round, %s mode)\n", config.MaxExplorationRounds, config.MaxToolsPerRound, safety))
+				} else {
+					sb.WriteString(fmt.Sprintf("- **Exploration:** enabled (max %d exploration queries total, %s mode)\n", config.MaxExplorationRounds, safety))
+				}
 			} else {
 				sb.WriteString("- **Exploration:** disabled\n")
 			}
@@ -691,6 +992,14 @@ func buildToolLlmMessages(userMessage string, history []*models.ConversationMess
 
 		role := msg.Role
 		if role == "user" || role == "assistant" || role == "exploration" {
+			// Exploration messages are tech-detail debug data ("[Round N — ...]").
+			// They must never be injected as system messages into LLM context —
+			// models with strict chat templates (Qwen3, Llama 3, Mistral)
+			// enforce that system messages must be at the very first position,
+			// and will reject the entire request with a Jinja exception.
+			if role == "exploration" {
+				continue
+			}
 			if role == "assistant" && isErrorMessage(msg.Metadata) {
 				continue
 			}
@@ -699,9 +1008,6 @@ func buildToolLlmMessages(userMessage string, history []*models.ConversationMess
 				content = *msg.LLMContent
 			} else if role == "assistant" && strings.Contains(content, "<") {
 				content = stripHTMLTags(content)
-			}
-			if role == "exploration" {
-				role = "system"
 			}
 			messages = append(messages, ChatMessage{Role: role, Content: content})
 
@@ -731,10 +1037,13 @@ func runAgenticLoop(
 	client LLMClient,
 	messages []ChatMessage,
 	dbConnection *models.DataSource,
+	schema *DataSchema,
 	conversation *models.Conversation,
 	maxExplorationRounds int,
+	maxToolsPerRound int,
 	maxErrorRetries int,
 	safetyMode ExplorationSafetyMode,
+	contextWindow *int,
 	userMessage string,
 	skillsContent string,
 	onStream func(StreamEvent),
@@ -743,35 +1052,88 @@ func runAgenticLoop(
 	if cfgErr != nil {
 		return fmt.Errorf("failed to load agent loop config: %w", cfgErr)
 	}
-	tools := buildTools(cfg, conversation.VizEnabled)
+	tools := buildTools(cfg, conversation.VizEnabled, schema, dbConnection)
 
 	var pendingFinal *pendingFinalResult
 	var explorationResults []ExplorationResult
 	var transcriptActions []TranscriptAction
-	var explorationRoundsUsed, errorRetriesUsed int
+	var explorationToolCallsUsed, errorRetriesUsed int
+	var toolsThisRound int
+	var lastQueryHadError bool
+	var renderChartNeedsRetry bool // set when render_chart fails with "no pending" — gives model one more turn after query
 	totalRoundCap := maxExplorationRounds + maxErrorRetries + 4
+	loopStart := time.Now()
+	log.Printf("[AgenticLoop] Starting loop — maxRounds=%d, maxTools=%d, maxRetries=%d, safety=%d, messages=%d",
+		maxExplorationRounds, maxToolsPerRound, maxErrorRetries, safetyMode, len(messages))
 
 	for round := 0; round < totalRoundCap; round++ {
 		// Check for user-initiated cancellation before each round.
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		toolsThisRound = 0
+		log.Printf("[AgenticLoop] Round %d — elapsed=%v, messages=%d, tools=%d",
+			round, time.Since(loopStart).Round(time.Second), len(messages), len(tools))
 
 		var response *ChatMessage
 		var rawResponse string
 		var llmErr error
+		var streamChunks, streamBytes int
 		if onStream != nil {
-			response, _, rawResponse, llmErr = client.ChatCompletionWithToolsStreaming(ctx, messages, tools, onStream)
+			wrappedStream := func(ev StreamEvent) {
+				streamChunks++
+				if ev.Type == StreamDone {
+					streamBytes = streamChunks // conservative: 1 chunk ≈ 1 event line
+				}
+				onStream(ev)
+			}
+			response, _, rawResponse, llmErr = client.ChatCompletionWithToolsStreaming(ctx, messages, tools, wrappedStream)
 		} else {
 			response, _, rawResponse, llmErr = client.ChatCompletionWithTools(ctx, messages, tools)
 		}
 		if llmErr != nil {
+			log.Printf("[AgenticLoop] LLM call FAILED round=%d elapsed=%v messages=%d: %v",
+				round, time.Since(loopStart).Round(time.Second), len(messages), llmErr)
 			return fmt.Errorf("LLM call failed: %w", llmErr)
 		}
 
 		kind := roundKindOther
 		td := TechDetail{Version: 1, Round: round}
 		roundStart := time.Now()
+
+		// Snapshot response-level metadata once per round. logRound is
+		// invoked once per tool call below, so anything that appends must
+		// happen here — otherwise each logRound call re-appends the same
+		// tool calls and the count shown in the tech-details toggle
+		// double-counts them.
+		td.Response.FinishReason = response.FinishReason
+		if td.Response.FinishReason == "" {
+			td.Response.FinishReason = "stop"
+		}
+		if len(response.ToolCalls) > 0 {
+			td.Response.FinishReason = "tool_calls"
+			for _, tc := range response.ToolCalls {
+				td.Response.ToolCalls = append(td.Response.ToolCalls, ToolCallSummary{
+					Name:      tc.Function.Name,
+					Arguments: tc.Function.Arguments,
+				})
+			}
+		} else if response.Content != "" {
+			td.Response.TextContent = response.Content
+		}
+		td.Response.RawOutput = rawResponse
+		td.Response.PromptTokens = response.PromptTokens
+		td.Response.CompletionTokens = response.CompletionTokens
+		if streamChunks > 0 {
+			td.Stream.ChunkCount = streamChunks
+			td.Stream.ByteCount = streamBytes
+		}
+
+		// Store at most one tech-detail message per round. logRound fires
+		// once per tool call (and once per event), so the store is guarded
+		// by a per-round flag — otherwise a single round produces one
+		// duplicate "[Round N — …]" message per tool call.
+		storedThisRound := false
 		logRound := func(k roundKind) {
 			kind = k
 			td.Kind = string(k)
@@ -787,21 +1149,11 @@ func runAgenticLoop(
 			if msgJSON, err := json.Marshal(messages); err == nil {
 				td.Request.RawMessages = string(msgJSON)
 			}
-			td.Response.FinishReason = "stop"
-			if len(response.ToolCalls) > 0 {
-				td.Response.FinishReason = "tool_calls"
-				for _, tc := range response.ToolCalls {
-					td.Response.ToolCalls = append(td.Response.ToolCalls, ToolCallSummary{
-						Name:      tc.Function.Name,
-						Arguments: tc.Function.Arguments,
-					})
-				}
-			} else if response.Content != "" {
-				td.Response.TextContent = response.Content
-			}
 			td.DurationMs = int(time.Since(roundStart).Milliseconds())
-			td.Response.RawOutput = rawResponse
-			storeTechDetail(conversation.ID, td)
+			if !storedThisRound {
+				storedThisRound = true
+				storeTechDetail(conversation.ID, td)
+			}
 		}
 
 		// Append the assistant turn before any "tool" role replies
@@ -823,6 +1175,16 @@ func runAgenticLoop(
 				pendingFinal.respondText = response.Content
 				return pendingFinal.render(query, dbConnection, conversation, "")
 			}
+			// When summarization is on and the last query failed, reject
+			// respond_to_user — the model must fix the error and retry.
+			if conversation.Summarize && lastQueryHadError && pendingFinal == nil {
+				logRound(roundKindOther)
+				messages = append(messages, ChatMessage{
+					Role:    "tool",
+					Content: cfg.ResponseQueryErrorRequiresRetry,
+				})
+				continue
+			}
 			transcript := buildTranscript(transcriptActions)
 			return handleRespond(query, response.Content, conversation.ID, explorationResults, transcript)
 		}
@@ -836,13 +1198,46 @@ func runAgenticLoop(
 				}
 				return nil
 			}
+			// Classify the empty response for the harness: context_overflow
+			// when prompt tokens are within 10%% of the model's context window
+			// and 0 completion tokens were produced; empty_response otherwise.
+			category := "empty_response"
+			detail := "model returned 0 tokens and no tool calls"
+			clarMsg := cfg.ResponseEmptyTruncated
+			if response.PromptTokens > 0 && response.CompletionTokens == 0 &&
+				contextWindow != nil && *contextWindow > 0 &&
+				response.PromptTokens >= (*contextWindow * 9 / 10) {
+				category = "context_overflow"
+				detail = fmt.Sprintf("prompt %d tokens vs %d context limit; 0 completion tokens", response.PromptTokens, *contextWindow)
+				clarMsg = cfg.ResponseContextOverflow
+			}
 			return handleClarification(query, LLMResponse{
 				Action:                "clarification",
-				ClarificationQuestion: cfg.ResponseEmptyTruncated,
+				ClarificationQuestion: clarMsg,
+				FailureCategory:       category,
+				FailureDetail:         detail,
 			}, conversation.ID)
 		}
 
-		for _, tc := range response.ToolCalls {
+		for toolIdx, tc := range response.ToolCalls {
+			// Tools-per-round cap: reject excess query_database calls before
+			// they reach the switch. Only the first maxToolsPerRound calls
+			// execute; the rest get feedback and continue without running.
+			if maxToolsPerRound > 0 && tc.Function.Name == "query_database" {
+				toolsThisRound++
+				if toolsThisRound > maxToolsPerRound {
+					kind = roundKindOther
+					logRound(kind)
+					messages = append(messages, ChatMessage{
+						Role:       "tool",
+						ToolCallID: tc.ID,
+						Name:       tc.Function.Name,
+						Content:    fmt.Sprintf(cfg.ResponseTooManyToolsPerRound, maxToolsPerRound, maxToolsPerRound),
+					})
+					continue
+				}
+			}
+
 			switch tc.Function.Name {
 			case "query_database":
 				if pendingFinal != nil {
@@ -873,7 +1268,7 @@ func runAgenticLoop(
 				}
 
 				// Exploration budget check
-				if args.IsExploration && explorationRoundsUsed >= maxExplorationRounds {
+				if args.IsExploration && explorationToolCallsUsed >= maxExplorationRounds {
 					kind = roundKindExploration
 					logRound(kind)
 					messages = append(messages, ChatMessage{
@@ -885,9 +1280,9 @@ func runAgenticLoop(
 
 				// Exploration safety gate
 				if args.IsExploration {
-					if verr := validateExplorationQuery(args.SQL, safetyMode); verr != nil {
+					if verr := engine.ValidateExplorationQuery(args.SQL, safetyMode); verr != nil {
 						kind = roundKindExploration
-						explorationRoundsUsed++
+						explorationToolCallsUsed++
 						logRound(kind)
 						messages = append(messages, ChatMessage{
 							Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name,
@@ -901,8 +1296,9 @@ func runAgenticLoop(
 				toolContent := ""
 				if execErr == nil {
 					toolContent = formatToolResult(result)
+					lastQueryHadError = false
 				} else {
-					toolContent = fmt.Sprintf("Query failed: %v", execErr)
+					toolContent = fmt.Sprintf("Query failed: %s", augmentSQLError(execErr.Error()))
 				}
 
 				transcriptActions = append(transcriptActions, TranscriptAction{
@@ -912,13 +1308,14 @@ func runAgenticLoop(
 				})
 
 				if execErr != nil {
+					lastQueryHadError = true
 					// User-initiated cancellation — bail out immediately, do not render an error.
 					if errors.Is(execErr, context.Canceled) {
 						return context.Canceled
 					}
 					if args.IsExploration {
 						kind = roundKindExploration
-						explorationRoundsUsed++
+						explorationToolCallsUsed++
 					} else {
 						kind = roundKindErrorRetry
 						if errorRetriesUsed >= maxErrorRetries {
@@ -957,14 +1354,59 @@ func runAgenticLoop(
 						userMessage:        userMessage,
 						skillsContent:      skillsContent,
 					}
-					if !conversation.VizEnabled {
-						return pendingFinal.render(query, dbConnection, conversation, "")
+
+					// Capture the assistant's text content as a respond_to_user
+					// action in the transcript for history replay. When the model
+					// pairs explanatory text alongside query_database in the same
+					// message, that text must be preserved — without it the
+					// reconstructed history confuses the model on the next turn.
+					//
+					// When this query is a retry after a failed render_chart
+					// (renderChartNeedsRetry), the model's text is typically
+					// self-debugging monologue ("let me re-run this...") — not
+					// user-facing content. Suppress respondText in that case.
+					if response.Content != "" {
+						argsJSON, _ := json.Marshal(map[string]string{"text": response.Content})
+						transcriptActions = append(transcriptActions, TranscriptAction{
+							Tool:      "respond_to_user",
+							Arguments: string(argsJSON),
+						})
+						pendingFinal.transcript = buildTranscript(transcriptActions)
+						if !renderChartNeedsRetry {
+							pendingFinal.respondText = response.Content
+						}
 					}
-					continue // give the model a round to optionally call render_chart
+
+					// Only skip the return if the model batched a render_chart
+					// call alongside query_database in this same response —
+					// process it inline on the next tool-call iteration.
+					// If no chart call is present, return immediately to avoid
+					// wasting a full extra LLM round-trip on an empty response.
+					//
+					// Exception: if the model previously attempted render_chart and
+					// got a "no pending query result" error, give it one more turn
+					// so it can call render_chart now that a result is available.
+					hasChartInBatch := false
+					if conversation.VizEnabled {
+						for j := range response.ToolCalls {
+							if response.ToolCalls[j].Function.Name == "render_chart" {
+								hasChartInBatch = true
+								break
+							}
+						}
+					}
+					if !hasChartInBatch {
+						if renderChartNeedsRetry {
+							renderChartNeedsRetry = false
+						} else {
+							return pendingFinal.render(query, dbConnection, conversation, "")
+						}
+					}
+					continue
 				}
 
 				kind = roundKindExploration
-				explorationRoundsUsed++
+				explorationToolCallsUsed++
 				logRound(kind)
 
 				// Accumulate for user-facing exploration trace
@@ -974,6 +1416,94 @@ func runAgenticLoop(
 					Round:     round + 1,
 					Explained: args.Reasoning,
 				})
+
+			case "list_tables":
+				kind = roundKindExploration
+				logRound(kind)
+				if schema == nil {
+					messages = append(messages, ChatMessage{
+						Role:       "tool",
+						ToolCallID: tc.ID,
+						Name:       tc.Function.Name,
+						Content:    "Schema not available.",
+					})
+					continue
+				}
+				var parts []string
+				for _, t := range schema.Tables {
+					parts = append(parts, fmt.Sprintf("%s(%d)", t.Name, t.RowCount))
+				}
+				messages = append(messages, ChatMessage{
+					Role:       "tool",
+					ToolCallID: tc.ID,
+					Name:       tc.Function.Name,
+					Content:    fmt.Sprintf("Tables: %s", strings.Join(parts, ", ")),
+				})
+				continue
+
+			case "describe_table":
+				kind = roundKindExploration
+				var describeArgs struct {
+					TableName string `json:"table_name"`
+				}
+				if err := json.Unmarshal([]byte(tc.Function.Arguments), &describeArgs); err != nil || describeArgs.TableName == "" {
+					logRound(kind)
+					messages = append(messages, ChatMessage{
+						Role:       "tool",
+						ToolCallID: tc.ID,
+						Name:       tc.Function.Name,
+						Content:    "Error: table_name is required.",
+					})
+					continue
+				}
+				logRound(kind)
+				var found *TableInfo
+				if schema != nil {
+					for i := range schema.Tables {
+						if strings.EqualFold(schema.Tables[i].Name, describeArgs.TableName) {
+							found = &schema.Tables[i]
+							break
+						}
+					}
+				}
+				if found == nil {
+					var available []string
+					if schema != nil {
+						for _, t := range schema.Tables {
+							available = append(available, t.Name)
+						}
+					}
+					messages = append(messages, ChatMessage{
+						Role:       "tool",
+						ToolCallID: tc.ID,
+						Name:       tc.Function.Name,
+						Content:    fmt.Sprintf("Table '%s' not found. Available tables: %s", describeArgs.TableName, strings.Join(available, ", ")),
+					})
+					continue
+				}
+				var sb strings.Builder
+				sb.WriteString(fmt.Sprintf("Table: `%s` (%d rows)\n", found.Name, found.RowCount))
+				if found.Description != "" {
+					sb.WriteString(fmt.Sprintf("  [comment: %s]\n", found.Description))
+				}
+				for _, col := range found.Columns {
+					nullable := ""
+					if col.IsNullable {
+						nullable = " NULL"
+					}
+					pk := ""
+					if col.IsPrimaryKey {
+						pk = " PRIMARY KEY"
+					}
+					sb.WriteString(fmt.Sprintf("  - `%s`: %s%s%s\n", col.Name, col.DataType, nullable, pk))
+				}
+				messages = append(messages, ChatMessage{
+					Role:       "tool",
+					ToolCallID: tc.ID,
+					Name:       tc.Function.Name,
+					Content:    sb.String(),
+				})
+				continue
 
 			case "render_chart":
 				kind = roundKindChart
@@ -987,6 +1517,7 @@ func runAgenticLoop(
 							Content: fmt.Sprintf(cfg.ResponseRenderChartParseError, err),
 						})
 					} else {
+						renderChartNeedsRetry = true
 						messages = append(messages, ChatMessage{
 							Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name,
 							Content: cfg.ResponseRenderChartNoPending,
@@ -1023,9 +1554,38 @@ func runAgenticLoop(
 				if pendingFinal != nil {
 					// Batched: render the respond text above the results table
 					// in a single combined message — one round-trip, one bubble.
+					// However, if render_chart exists later in the same batch,
+					// defer so it can consume pendingFinal with the real chart
+					// config instead of an empty one (§SUMMARIZE_DATA_VIZ_CONFLICT).
+					hasChartAfter := false
+					for k := toolIdx + 1; k < len(response.ToolCalls); k++ {
+						if response.ToolCalls[k].Function.Name == "render_chart" {
+							hasChartAfter = true
+							break
+						}
+					}
+					if hasChartAfter {
+						// Stash respondText for the transcript but do not
+						// consume pendingFinal — let render_chart do it.
+						pendingFinal.respondText = args.Text
+						continue
+					}
 					pendingFinal.respondText = args.Text
 					return pendingFinal.render(query, dbConnection, conversation, "")
 				}
+
+				// When summarization is on and the last query failed,
+				// reject respond_to_user — the model must fix the error.
+				if conversation.Summarize && lastQueryHadError {
+					messages = append(messages, ChatMessage{
+						Role:       "tool",
+						ToolCallID: tc.ID,
+						Name:       tc.Function.Name,
+						Content:    cfg.ResponseQueryErrorRequiresRetry,
+					})
+					continue
+				}
+
 				transcript := buildTranscript(transcriptActions)
 				return handleRespond(query, args.Text, conversation.ID, explorationResults, transcript)
 
@@ -1047,6 +1607,8 @@ func runAgenticLoop(
 	return handleClarification(query, LLMResponse{
 		Action:                "clarification",
 		ClarificationQuestion: cfg.ResponseLoopExhausted,
+		FailureCategory:       "loop_exhausted",
+		FailureDetail:         "agentic loop reached the round limit",
 	}, conversation.ID)
 }
 

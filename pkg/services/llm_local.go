@@ -124,6 +124,7 @@ func (c *LocalClient) ChatCompletionWithPayload(ctx context.Context, messages []
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		log.Printf("[Local] ERROR — HTTP %d from %s (model=%s): %s", resp.StatusCode, c.baseURL, c.model, string(body))
 		return "", string(legacyJSON), string(body), fmt.Errorf("local API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -166,6 +167,7 @@ func (c *LocalClient) ChatCompletionWithTools(ctx context.Context, messages []Ch
 
 	log.Printf("[Local] Fallback response (%d chars): %s", len(content), truncateString(content, 200))
 	msg := parseFallbackResponse(content)
+	msg.FinishReason = "stop"
 	return msg, reqJSON, respJSON, nil
 }
 
@@ -207,6 +209,7 @@ func (c *LocalClient) ChatCompletionWithToolsStreaming(ctx context.Context, mess
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		log.Printf("[Local] ERROR — HTTP %d from %s (model=%s): %s", resp.StatusCode, c.baseURL, c.model, string(body))
 		return nil, "", "", fmt.Errorf("local API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -260,6 +263,7 @@ func (c *LocalClient) ChatCompletionWithToolsStreaming(ctx context.Context, mess
 
 		_ = sawDone // stream may end without explicit [DONE]
 		msg := parseFallbackResponse(contentBuf.String())
+		msg.FinishReason = "stop"
 		// Fallback: surface raw output when parsing produced nothing.
 		if msg.Content == "" && len(msg.ToolCalls) == 0 && contentBuf.Len() > 0 {
 			msg.Content = truncateString(contentBuf.String(), 2000)
@@ -293,6 +297,7 @@ func (c *LocalClient) ChatCompletionWithToolsStreaming(ctx context.Context, mess
 	}
 
 	msg := parseFallbackResponse(reply)
+	msg.FinishReason = "stop"
 	if onEvent != nil {
 		onEvent(StreamEvent{Type: StreamContentDelta, Content: msg.Content})
 		onEvent(StreamEvent{Type: StreamDone})
@@ -341,6 +346,7 @@ func TestLocalConnection(baseURL, model string) (string, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		log.Printf("[Local] ERROR — HTTP %d from %s (model=%s): %s", resp.StatusCode, baseURL, model, string(body))
 		return "", fmt.Errorf("local model API error: status %d: %s", resp.StatusCode, string(body))
 	}
 

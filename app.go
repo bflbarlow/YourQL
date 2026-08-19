@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"YourQL/pkg/models"
 	"YourQL/pkg/services"
@@ -36,6 +38,11 @@ func (a *App) startup(ctx context.Context) {
 	if err := models.ConnectDatabase(); err != nil {
 		slog.Error("database error", "error", err)
 	}
+	// Configure diagnostic file logging (reads logging_enabled from app_settings).
+	setupLogging()
+	// Wire the build-time-injected version into services so export metadata
+	// can include the real app version (ldflags, or "dev" fallback).
+	services.SetAppVersionGetter(func() string { return appVersion })
 }
 
 // registerCancel stores a cancel function for a conversation.
@@ -71,6 +78,12 @@ func (a *App) CancelProcessing(conversationID uint) error {
 // shutdown is called when the app is about to quit.
 func (a *App) shutdown(ctx context.Context) {
 	slog.Info("shutting down")
+	logFileMu.Lock()
+	if logFile != nil {
+		logFile.Close()
+		logFile = nil
+	}
+	logFileMu.Unlock()
 	if models.DB != nil {
 		models.DB.Close()
 	}
@@ -96,7 +109,24 @@ func (a *App) ListDiscussions() ([]string, error) {
 }
 
 func (a *App) ListConversations() ([]*models.Conversation, error) {
-	return services.ListConversationsByUser()
+	return services.ListConversationsWithTags()
+}
+
+// Tags
+func (a *App) AddTagToConversation(conversationID uint, tagName string) error {
+	return services.AddTagToConversation(conversationID, tagName)
+}
+
+func (a *App) RemoveTagFromConversation(conversationID uint, tagName string) error {
+	return services.RemoveTagFromConversation(conversationID, tagName)
+}
+
+func (a *App) GetTagsForConversation(conversationID uint) ([]string, error) {
+	return services.GetTagsForConversation(conversationID)
+}
+
+func (a *App) ListAllTags() ([]string, error) {
+	return services.ListAllTags()
 }
 
 func (a *App) CreateConversation(title string, llmProviderID, dbConnectionID *uint) (*models.Conversation, error) {
@@ -1089,4 +1119,217 @@ func (a *App) DownloadUpdate(downloadURL, expectedSHA256 string) error {
 // PerformUpgradeRestart runs the OS-specific upgrade script and exits the app.
 func (a *App) PerformUpgradeRestart() error {
 	return services.PerformUpgradeRestart()
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostic Logging
+// ---------------------------------------------------------------------------
+
+// GetLoggingEnabled returns whether diagnostic file logging is enabled.
+func (a *App) GetLoggingEnabled() (bool, error) {
+	val, err := services.GetAppSetting("logging_enabled")
+	if err != nil {
+		return false, err
+	}
+	return val == "true", nil
+}
+
+// SetLoggingEnabled toggles diagnostic file logging. Changes take effect
+// after the app is restarted.
+func (a *App) SetLoggingEnabled(enabled bool) error {
+	val := "false"
+	if enabled {
+		val = "true"
+	}
+	return services.SetAppSetting("logging_enabled", val)
+}
+
+// ExportLog opens a native save dialog and writes the diagnostic log
+// file to the user-chosen path.
+// Returns:
+//   ""         — success (file was saved)
+//   "empty"    — log file doesn't exist or has no content
+//   any other  — error message for the frontend to display
+func (a *App) ExportLog() string {
+	logPath := filepath.Join(os.Getenv("HOME"), ".yourql", "yourql.log")
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "empty"
+		}
+		return fmt.Sprintf("Failed to read log file: %v", err)
+	}
+
+	if len(data) == 0 {
+		return "empty"
+	}
+
+	now := time.Now().Format("2006-01-02")
+	path, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		DefaultFilename: "yourql-log-" + now + ".log",
+		Title:           "Export Diagnostic Log",
+		Filters: []runtime.FileFilter{
+			{DisplayName: "Log Files (*.log)", Pattern: "*.log"},
+		},
+	})
+	if err != nil {
+		return fmt.Sprintf("Failed to open save dialog: %v", err)
+	}
+	if path == "" {
+		return ""
+	}
+
+	if err := writeFile(path, string(data)); err != nil {
+		return fmt.Sprintf("Failed to write log file: %v", err)
+	}
+
+	return ""
+}
+
+// ClearLog truncates the diagnostic log file. If the file is currently
+// open for writing (logging enabled), the handle is used for safe
+// truncation. Otherwise the file is truncated via os.WriteFile.
+func (a *App) ClearLog() error {
+	logPath := filepath.Join(os.Getenv("HOME"), ".yourql", "yourql.log")
+
+	logFileMu.Lock()
+	defer logFileMu.Unlock()
+
+	if logFile != nil {
+		if _, err := logFile.Seek(0, 0); err != nil {
+			return fmt.Errorf("failed to seek log file for truncation: %w", err)
+		}
+		if err := logFile.Truncate(0); err != nil {
+			return fmt.Errorf("failed to truncate log file: %w", err)
+		}
+		if _, err := logFile.Seek(0, 0); err != nil {
+			return fmt.Errorf("failed to reset log file position: %w", err)
+		}
+	} else {
+		if err := os.WriteFile(logPath, nil, 0600); err != nil {
+			// File doesn't exist — not an error
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return fmt.Errorf("failed to clear log file: %w", err)
+		}
+	}
+
+	slog.Info("log file cleared", "path", logPath)
+	return nil
+}
+
+// ==================== Full Database Export ====================
+
+// ExportDatabase exports the full YourQL database to an Excel workbook (.xlsx)
+// or a zipped set of CSVs. Returns an empty string on success or user-cancel,
+// or an error message string on failure.
+//
+// format is "xlsx" or "csv". tables is the list of table names to include —
+// relevant for CSV only (Excel always includes every table); pass nil/empty
+// to export everything. includeCredentials controls whether sensitive columns
+// (api_key, password, auth_config, extra) and secret-shaped JSON keys are
+// stripped from the output.
+func (a *App) ExportDatabase(format string, tables []string, includeCredentials bool) string {
+	var defaultExt, title, filterName, filterPattern string
+
+	switch format {
+	case "xlsx":
+		defaultExt = ".xlsx"
+		title = "Export as Excel"
+		filterName = "Excel Files (*.xlsx)"
+		filterPattern = "*.xlsx"
+	case "csv":
+		defaultExt = ".zip"
+		title = "Export as CSV (ZIP)"
+		filterName = "ZIP Files (*.zip)"
+		filterPattern = "*.zip"
+	default:
+		return "unsupported format: " + format
+	}
+
+	path, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		DefaultFilename: "YourQL-export" + defaultExt,
+		Title:           title,
+		Filters: []runtime.FileFilter{
+			{DisplayName: filterName, Pattern: filterPattern},
+		},
+	})
+	if err != nil {
+		return err.Error()
+	}
+	if path == "" {
+		return "" // user cancelled
+	}
+
+	switch format {
+	case "xlsx":
+		if err := services.ExportDatabaseXLSX(path, includeCredentials); err != nil {
+			return err.Error()
+		}
+	case "csv":
+		if err := services.ExportDatabaseCSV(path, tables, includeCredentials); err != nil {
+			return err.Error()
+		}
+	}
+
+	return ""
+}
+
+// ==================== Application Database Switching ====================
+
+// GetActiveDatabaseInfo returns the path of the currently active app
+// database and whether it's the default (unmodified) location.
+func (a *App) GetActiveDatabaseInfo() (*services.ActiveDatabaseInfo, error) {
+	return services.GetActiveDatabaseInfo()
+}
+
+// PickNewDatabaseLocation opens a native "Save File" dialog so the user can
+// choose where a new blank database should live. The file need not exist
+// yet. Returns the chosen path, or "" if cancelled.
+func (a *App) PickNewDatabaseLocation() (string, error) {
+	return runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		Title:           "Create New YourQL Database",
+		DefaultFilename: "yourql.db",
+		Filters: []runtime.FileFilter{
+			{DisplayName: "SQLite Database (*.db)", Pattern: "*.db"},
+		},
+	})
+}
+
+// PickExistingDatabaseFile opens a native "Open File" dialog for selecting
+// an existing yourql.db to switch to. Returns the chosen path, or "" if
+// cancelled.
+func (a *App) PickExistingDatabaseFile() (string, error) {
+	return runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "Choose YourQL Database",
+		Filters: []runtime.FileFilter{
+			{DisplayName: "SQLite Database (*.db)", Pattern: "*.db"},
+		},
+	})
+}
+
+// CreateAndSwitchToNewDatabase creates a blank, fully-migrated database at
+// path (refusing to overwrite a non-empty existing file), points YourQL at
+// it via the pointer file, and restarts the app.
+func (a *App) CreateAndSwitchToNewDatabase(path string) error {
+	if err := models.CreateBlankDatabaseAt(path); err != nil {
+		return err
+	}
+	return services.SwitchActiveDatabase(path)
+}
+
+// SwitchToExistingDatabase points YourQL at an existing SQLite file and
+// restarts. Does not validate the file is a YourQL database — migrate()
+// will run against whatever file it points at on the next launch, and
+// migrate() is always additive/idempotent.
+func (a *App) SwitchToExistingDatabase(path string) error {
+	return services.SwitchActiveDatabase(path)
+}
+
+// ResetToDefaultDatabase clears the pointer file, returning YourQL to its
+// default ~/.yourql/yourql.db on next launch, and restarts.
+func (a *App) ResetToDefaultDatabase() error {
+	return services.ResetToDefaultDatabase()
 }

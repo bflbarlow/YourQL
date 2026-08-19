@@ -4,6 +4,8 @@ import {services} from '../models';
 import {models} from '../models';
 import {main} from '../models';
 
+export function AddTagToConversation(arg1:number,arg2:string):Promise<void>;
+
 export function ArchiveConversation(arg1:number):Promise<void>;
 
 export function CancelGoogleSheetsAuth(arg1:number):Promise<void>;
@@ -15,6 +17,10 @@ export function CancelProcessing(arg1:number):Promise<void>;
 export function CheckForUpdate():Promise<services.UpdateInfo>;
 
 export function ClearConversationMessages(arg1:number):Promise<void>;
+
+export function ClearLog():Promise<void>;
+
+export function CreateAndSwitchToNewDatabase(arg1:string):Promise<void>;
 
 export function CreateConversation(arg1:string,arg2:any,arg3:any):Promise<models.Conversation>;
 
@@ -46,6 +52,12 @@ export function ExportConversationMarkdown(arg1:number):Promise<string>;
 
 export function ExportConversationPDF():Promise<void>;
 
+export function ExportDatabase(arg1:string,arg2:Array<string>,arg3:boolean):Promise<string>;
+
+export function ExportLog():Promise<string>;
+
+export function GetActiveDatabaseInfo():Promise<services.ActiveDatabaseInfo>;
+
 export function GetAgentLoopConfig():Promise<main.AgentLoopConfigJSON>;
 
 export function GetAppSetting(arg1:string):Promise<string>;
@@ -60,9 +72,15 @@ export function GetDiscussionDefaults():Promise<models.DiscussionDefaults>;
 
 export function GetGeneralSettings():Promise<main.GeneralSettings>;
 
+export function GetLoggingEnabled():Promise<boolean>;
+
 export function GetSchemaPreview(arg1:number):Promise<main.SchemaPreview>;
 
 export function GetSupportedDBTypes():Promise<Array<services.DBTypeInfo>>;
+
+export function GetTagsForConversation(arg1:number):Promise<Array<string>>;
+
+export function ListAllTags():Promise<Array<string>>;
 
 export function ListConversations():Promise<Array<models.Conversation>>;
 
@@ -78,11 +96,19 @@ export function MigrateGoogleAuthConfig(arg1:string,arg2:number):Promise<void>;
 
 export function PerformUpgradeRestart():Promise<void>;
 
+export function PickExistingDatabaseFile():Promise<string>;
+
+export function PickNewDatabaseLocation():Promise<string>;
+
 export function ProcessUserMessage(arg1:number,arg2:string):Promise<void>;
+
+export function RemoveTagFromConversation(arg1:number,arg2:string):Promise<void>;
 
 export function ResetAgentLoopConfigKey(arg1:string):Promise<void>;
 
 export function ResetAllAgentLoopConfig():Promise<void>;
+
+export function ResetToDefaultDatabase():Promise<void>;
 
 export function RestoreConversation(arg1:number):Promise<void>;
 
@@ -98,11 +124,15 @@ export function SetDefaultDataSource(arg1:number):Promise<void>;
 
 export function SetDefaultLLMProvider(arg1:number):Promise<void>;
 
+export function SetLoggingEnabled(arg1:boolean):Promise<void>;
+
 export function SetSkillActive(arg1:number,arg2:boolean):Promise<void>;
 
 export function StartGoogleSheetsAuth(arg1:number):Promise<Record<string, any>>;
 
 export function StartGoogleSheetsAuthTemp(arg1:string):Promise<Record<string, any>>;
+
+export function SwitchToExistingDatabase(arg1:string):Promise<void>;
 
 export function TestDataSource(arg1:number):Promise<string>;
 

@@ -36,14 +36,26 @@ type DataSourceConfig struct {
 	IncludeIndexes       bool              `json:"include_indexes,omitempty"`
 	IncludeForeignKeys   bool              `json:"include_foreign_keys,omitempty"`
 	IncludeTableComments bool              `json:"include_table_comments,omitempty"`
-	MaxExplorationRounds int               `json:"max_exploration_rounds,omitempty"`
-	ExplorationSafety    string            `json:"exploration_safety,omitempty"`
-	ExplorationAllowed   bool              `json:"exploration_allowed,omitempty"`
-	MaxActionRetries     int               `json:"max_action_retries,omitempty"`
-	MaxFinalQueryRetries int               `json:"max_final_query_retries,omitempty"`
-	DefaultLimit         int               `json:"default_limit,omitempty"`
-	ExplorationDefaultLimit int            `json:"exploration_default_limit,omitempty"`
-	QueryLengthThreshold int               `json:"query_length_threshold,omitempty"`
+	// MaxExplorationRounds limits the number of exploration query_database
+	// tool calls the model may make before being forced to produce a final
+	// query. Despite the "rounds" name (a legacy from the pre-tool-calling
+	// protocol where one LLM call produced exactly one query), the counter
+	// is incremented per tool call, not per LLM round-trip — a single
+	// batched response containing 3 tool calls consumes 3 against this
+	// budget. The JSON key is intentionally not renamed to avoid breaking
+	// existing data-source configs; only the documentation and UI label
+	// should explain the tool-call semantics.
+	MaxExplorationRounds    int    `json:"max_exploration_rounds,omitempty"`
+	MaxToolsPerRound        int    `json:"max_tools_per_round,omitempty"`
+	ExplorationSafety       string `json:"exploration_safety,omitempty"`
+	ExplorationAllowed      bool   `json:"exploration_allowed,omitempty"`
+	MaxActionRetries        int    `json:"max_action_retries,omitempty"`
+	MaxFinalQueryRetries    int    `json:"max_final_query_retries,omitempty"`
+	DefaultLimit            int    `json:"default_limit,omitempty"`
+	ExplorationDefaultLimit int    `json:"exploration_default_limit,omitempty"`
+	QueryLengthThreshold    int    `json:"query_length_threshold,omitempty"`
+	CompactPrompts          bool   `json:"compact_prompts,omitempty"`
+	ForceSchemaTools        bool   `json:"force_schema_tools,omitempty"`
 }
 
 func (c *DataSource) ParseConfig() (*DataSourceConfig, error) {

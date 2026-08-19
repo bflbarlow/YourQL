@@ -53,12 +53,17 @@ type openAIChatRequest struct {
 	Model            string              `json:"model"`
 	Messages         []openAIChatMessage `json:"messages"`
 	Stream           bool                `json:"stream,omitempty"`
+	StreamOptions    *streamOptions      `json:"stream_options,omitempty"`
 	MaxTokens        int                 `json:"max_tokens,omitempty"`
 	Temperature      float64             `json:"temperature,omitempty"`
 	TopP             float64             `json:"top_p,omitempty"`
 	FrequencyPenalty float64             `json:"frequency_penalty,omitempty"`
 	PresencePenalty  float64             `json:"presence_penalty,omitempty"`
 	Tools            []Tool              `json:"tools,omitempty"`
+}
+
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type openAIChatMessage struct {
@@ -82,7 +87,8 @@ type openAIToolCallFunction struct {
 
 type openAIChatResponse struct {
 	Choices []struct {
-		Message struct {
+		FinishReason string `json:"finish_reason"`
+		Message      struct {
 			Role      string           `json:"role"`
 			Content   string           `json:"content"`
 			ToolCalls []openAIToolCall `json:"tool_calls,omitempty"`
@@ -161,6 +167,7 @@ func (c *OpenAIClient) ChatCompletionWithPayload(ctx context.Context, messages [
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		log.Printf("[OpenAI] ERROR — HTTP %d from %s/chat/completions (model=%s): %s", resp.StatusCode, c.baseURL, c.model, string(body))
 		return "", "", "", fmt.Errorf("OpenAI API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -253,6 +260,7 @@ func (c *OpenAIClient) ChatCompletionWithTools(ctx context.Context, messages []C
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		log.Printf("[OpenAI] ERROR — HTTP %d from %s/chat/completions (model=%s): %s", resp.StatusCode, c.baseURL, c.model, string(body))
 		return nil, "", "", fmt.Errorf("OpenAI API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -282,8 +290,11 @@ func (c *OpenAIClient) ChatCompletionWithTools(ctx context.Context, messages []C
 
 	choice := response.Choices[0]
 	msg := &ChatMessage{
-		Role:    choice.Message.Role,
-		Content: choice.Message.Content,
+		Role:             choice.Message.Role,
+		Content:          choice.Message.Content,
+		FinishReason:     choice.FinishReason,
+		PromptTokens:     response.Usage.PromptTokens,
+		CompletionTokens: response.Usage.CompletionTokens,
 	}
 	if len(choice.Message.ToolCalls) > 0 {
 		msg.ToolCalls = make([]ToolCall, len(choice.Message.ToolCalls))
@@ -330,12 +341,13 @@ func (c *OpenAIClient) ChatCompletionWithToolsStreaming(ctx context.Context, mes
 	}
 
 	reqBody := openAIChatRequest{
-		Model:       c.model,
-		Messages:    openAIMessages,
-		Temperature: 0.1,
-		MaxTokens:   c.maxTokens,
-		Tools:       tools,
-		Stream:      true,
+		Model:         c.model,
+		Messages:      openAIMessages,
+		Temperature:   0.1,
+		MaxTokens:     c.maxTokens,
+		Tools:         tools,
+		Stream:        true,
+		StreamOptions: &streamOptions{IncludeUsage: true},
 	}
 
 	jsonData, err := json.Marshal(reqBody)
@@ -364,6 +376,7 @@ func (c *OpenAIClient) ChatCompletionWithToolsStreaming(ctx context.Context, mes
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		log.Printf("[OpenAI] ERROR — HTTP %d from %s/chat/completions (model=%s): %s", resp.StatusCode, c.baseURL, c.model, string(body))
 		return nil, "", "", fmt.Errorf("OpenAI API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -376,6 +389,7 @@ func (c *OpenAIClient) ChatCompletionWithToolsStreaming(ctx context.Context, mes
 	var toolCallNames []string
 	var toolCallArgs []string
 	var finishReason string
+	var streamPromptTokens, streamCompletionTokens int
 	var streamChunks, streamBytes int
 
 	// Optional raw-SSE capture for debugging (gated behind YOURQL_DEBUG_STREAMS=1).
@@ -422,6 +436,20 @@ func (c *OpenAIClient) ChatCompletionWithToolsStreaming(ctx context.Context, mes
 		}
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			log.Printf("[OpenAI] Failed to parse SSE chunk: %v — line: %s", err, truncateString(data, 200))
+			continue
+		}
+
+		// With stream_options.include_usage, OpenAI emits a usage chunk
+		// at the end of the stream (has usage, no choices).
+		var usageChunk struct {
+			Usage struct {
+				PromptTokens     int `json:"prompt_tokens"`
+				CompletionTokens int `json:"completion_tokens"`
+			} `json:"usage"`
+		}
+		if err := json.Unmarshal([]byte(data), &usageChunk); err == nil && usageChunk.Usage.PromptTokens > 0 {
+			streamPromptTokens = usageChunk.Usage.PromptTokens
+			streamCompletionTokens = usageChunk.Usage.CompletionTokens
 			continue
 		}
 
@@ -487,6 +515,7 @@ func (c *OpenAIClient) ChatCompletionWithToolsStreaming(ctx context.Context, mes
 	}
 
 	if scanErr := scanner.Err(); scanErr != nil {
+		log.Printf("[OpenAI] ERROR — SSE stream error from %s (model=%s): %v", c.baseURL, c.model, scanErr)
 		return nil, "", "", fmt.Errorf("SSE stream error: %w", scanErr)
 	}
 
@@ -502,8 +531,11 @@ func (c *OpenAIClient) ChatCompletionWithToolsStreaming(ctx context.Context, mes
 
 	// Assemble the final ChatMessage
 	msg := &ChatMessage{
-		Role:    "assistant",
-		Content: contentBuf.String(),
+		Role:             "assistant",
+		Content:          contentBuf.String(),
+		FinishReason:     finishReason,
+		PromptTokens:     streamPromptTokens,
+		CompletionTokens: streamCompletionTokens,
 	}
 	// Fallback: if the parser produced nothing usable but the model did
 	// emit text (common with partial/broken tool-call JSON), surface the

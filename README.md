@@ -16,10 +16,10 @@ Everything runs locally on your machine. Your database credentials, conversation
 - **Streaming responses** — See the LLM's answer stream in real-time, with token usage stats displayed per response.
 - **Explore data safely** — Before writing a final query, YourQL can run read-only exploration queries to understand your schema, all within configurable safety constraints (strict/moderate/relaxed modes).
 - **Visualize results** — Bar charts, line graphs, pie charts, scatter plots, and more, generated automatically when you ask for a visualization or when the data calls for one.
-- **Summaries you can read** — Long tables of numbers are automatically summarized into plain-English answers so you don't have to decipher raw results.
-- **Keep everything organized** — Pin, archive, duplicate, rename, or clear discussions. Limit how much history is sent to the LLM. Set a custom system prompt or business rules per database. Archived discussions show a visual accent-colored indicator.
+- **Summaries you can read** — Long tables of numbers are automatically summarized into plain-English answers so you don't have to decipher raw results. The summary is generated via a second LLM call, with the model's reasoning streamed live so you see activity instead of a spinning cursor.
+- **Keep everything organized** — Tag discussions with labels, search across titles, tags, data sources, and models. Pin conversations to keep important threads at the top. Archive, duplicate, rename, or clear discussions. Limit how much history is sent to the LLM. Set a custom system prompt or business rules per database.
 - **Define reusable Skills** — Write Markdown snippets with domain knowledge, business rules, or preferred query patterns and activate them per-conversation.
-- **Persistent UI settings** — Theme (light/dark/system), accent color, and UI scale choices survive app refreshes and restarts. Export discussions as PDF.
+- **Persistent UI settings** — Theme (light/dark/system), accent color, UI scale, pipeline timeout, and summarization timeout survive app refreshes and restarts. Export discussions as PDF, HTML, or Markdown.
 - **Fine-tune AI behavior (advanced)** — For power users, YourQL lets you customize the exact prompts, instructions, and tool descriptions your AI model receives — giving you full control over how it thinks about your data.
 
 ---
@@ -183,6 +183,8 @@ YourQL remembers your preferences across sessions. All settings are persisted in
 | **Theme** | Light, Dark, System | Follows OS preference in System mode |
 | **Accent Color** | Blue, Green, Orange, Purple, Red, Teal, or custom hex | Applied to buttons, links, borders, and interactive elements |
 | **UI Scale** | Small, Medium, Large | Adjusts text size and spacing across the entire interface |
+| **Pipeline timeout** | 30–3600 seconds | Maximum time for an entire conversation turn (default: 180s) |
+| **Summarization timeout** | 10–600 seconds | Maximum time for the result-summary LLM call (default: 300s) |
 
 Settings survive app refreshes, restarts, and upgrades. On first launch after upgrading from a version that stored settings in browser storage, your existing preferences are automatically migrated.
 
@@ -210,6 +212,8 @@ YourQL is built with [Wails v2](https://wails.io/), combining a Go backend with 
 | App database | SQLite (via `modernc.org/sqlite`, pure Go) |
 | External databases | Native drivers per type (see list above) |
 | LLM APIs | OpenAI, Anthropic, Ollama, custom HTTP endpoints |
+
+The agentic tool-calling loop is isolated in `pkg/engine/` as a black-box package — it depends only on three injected interfaces (`LLMClient`, `QueryExecutor`, `OutputHandler`) and has zero knowledge of the app database, Wails, or the filesystem. This makes the loop's round behavior, safety validation, error retry, and one-shot finality fully testable with mocks. See `documentation/FUNCTIONALITY_SILO_DEFINITIONS.md` for the full architecture.
 
 ### Data Storage
 
@@ -246,7 +250,11 @@ Comprehensive documentation is available in the [`documentation/`](documentation
 | [`DARK_MODE_ENHANCEMENT.md`](documentation/DARK_MODE_ENHANCEMENT.md) | Dark mode implementation details |
 | [`DATA_VIZ_ENHANCEMENT.md`](documentation/DATA_VIZ_ENHANCEMENT.md) | Chart and visualization system |
 | [`SKILLS_ENHANCEMENT.md`](documentation/SKILLS_ENHANCEMENT.md) | Skills system design |
-| [`FILES_ENHANCEMENT.md`](documentation/FILES_ENHANCEMENT.md) | CSV and Excel file data source support |
+| [`FUNCTIONALITY_SILO_DEFINITIONS.md`](documentation/FUNCTIONALITY_SILO_DEFINITIONS.md) | Architecture silos — what each logical section is, how they connect, and what black-boxing them requires |
+| [`FUNCTIONALITY_SILO_TARGET.md`](documentation/FUNCTIONALITY_SILO_TARGET.md) | End-state target architecture — interfaces, package layout, and wiring |
+| [`FUNCTIONALITY_SILO_PLAN.md`](documentation/FUNCTIONALITY_SILO_PLAN.md) | Step-by-step extraction plan with risk register |
+| [`AGENT_LOOP_DETAILS.md`](documentation/AGENT_LOOP_DETAILS.md) | Complete reference — every path, tool, limit, prompt, and termination state in the agentic loop |
+| [`DISC_SEARCH.md`](documentation/DISC_SEARCH.md) | Discussion tags and search — implementation spec |
 | [`GOOGLE_SHEETS_ENHANCEMENT.md`](documentation/GOOGLE_SHEETS_ENHANCEMENT.md) | Google Sheets integration (OAuth) |
 | [`ANSWER_ENHANCEMENT.md`](documentation/ANSWER_ENHANCEMENT.md) | Answer rendering and quality improvements |
 | [`ANSWER_CLARIFICATION_ISSUE.md`](documentation/ANSWER_CLARIFICATION_ISSUE.md) | Clarification flow analysis |
@@ -285,9 +293,11 @@ YourQL/
 ├── app.go                       # Wails bindings (Go ↔ frontend bridge)
 ├── main.go                      # Application entry point
 ├── pkg/
-│   ├── models/                  # Data structures, DB schemas, migrations
-│   └── services/                # Core logic — discussion engine, LLM clients,
-│                                #   SQL execution, schema introspection, drivers
+│   ├── engine/                 # Isolated agentic loop — types, interfaces,
+│   │                           #   safety validation, rendering, charts, loop logic
+│   ├── models/                 # Data structures, DB schemas, migrations
+│   └── services/               # Core logic — orchestration, LLM clients,
+│                               #   SQL execution, drivers, tags, adapters
 ├── frontend/                    # Svelte 5 UI
 │   └── src/
 │       ├── main.js              # App bootstrap, theme/accent/scale init & persistence
