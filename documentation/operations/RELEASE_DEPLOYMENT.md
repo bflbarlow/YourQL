@@ -1,7 +1,11 @@
 # YourQL — Release & Deployment Guide
 
-> **Version:** 0.4.0  
-> **Last updated:** 2026-08-07
+> **Version:** 0.4.7  
+> **Last updated:** 2026-08-25
+
+> **Note (v0.4.7):** Per `AGENT_READ_FIRST.md` §3.8, `main.go`'s default
+> remains `"dev"` — never hardcode a real version there. The shipped version
+> comes exclusively from the ldflags injection of the git tag.
 
 This document is a step-by-step checklist for cutting a release. Follow every
 step in order. Do not skip verification steps — a broken release is worse than
