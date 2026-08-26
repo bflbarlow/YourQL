@@ -158,7 +158,7 @@ func EmitClarificationDB(conversationID uint, queryID uint, category string, mes
 	}
 
 	llmContentJSON, _ := json.Marshal(map[string]interface{}{
-		"action":                "clarification",
+		"action":                 "clarification",
 		"clarification_question": message,
 		"failure_category":       category,
 	})

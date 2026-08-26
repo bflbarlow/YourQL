@@ -1,9 +1,11 @@
 package services
 
 import (
+	"strings"
 	"testing"
 
 	"YourQL/pkg/engine"
+	"YourQL/pkg/models"
 )
 
 func TestValidateReadOnlySQL_AllowsSelects(t *testing.T) {
@@ -128,4 +130,101 @@ func TestValidateExplorationQuery_ReadOnlyEnforcedInAllModes(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestSanitizeSQLError(t *testing.T) {
+	cases := []struct {
+		name, in, wantContains, wantNotContains string
+	}{
+		{
+			name:            "mysql DSN style",
+			in:              "dial tcp: lookup: too many colons — user:hunter2@tcp(db.example.com:3306)/orders",
+			wantContains:    "user:***@",
+			wantNotContains: "hunter2",
+		},
+		{
+			// Note: the bare user:pass@ regex also consumes the URI scheme and
+			// userinfo — over-stripping is safe and intentional. The contract
+			// under test is: no secret survives, host context remains.
+			name:            "postgres URI style",
+			in:              `failed to connect: pq: postgres://alice:s3cret@db.example.com:5432/app`,
+			wantContains:    "db.example.com:5432/app",
+			wantNotContains: "s3cret",
+		},
+		{
+			name:            "plain error unchanged",
+			in:              "query execution failed: Unknown column 'foo' in 'field list'",
+			wantContains:    "Unknown column",
+			wantNotContains: "***",
+		},
+	}
+	for _, tc := range cases {
+		got := sanitizeSQLError(tc.in)
+		if !strings.Contains(got, tc.wantContains) {
+			t.Errorf("%s: sanitized output %q must contain %q", tc.name, got, tc.wantContains)
+		}
+		if tc.wantNotContains != "" && strings.Contains(got, tc.wantNotContains) {
+			t.Errorf("%s: sanitized output %q must not contain credential %q", tc.name, got, tc.wantNotContains)
+		}
+	}
+	if got := sanitizeSQLError(""); got != "" {
+		t.Errorf("empty input must stay empty, got %q", got)
+	}
+}
+
+func TestApplyDefaultLimit(t *testing.T) {
+	conn := &models.DataSource{}
+
+	limit := func(q string, exploration bool) string {
+		out := applyDefaultLimit(q, conn, exploration)
+		if len(out) <= len(q)+len(" LIMIT 999999") && out == q {
+			return ""
+		}
+		return out
+	}
+
+	long := strings.Repeat("SELECT * FROM t WHERE c = 'x' OR ", 10) + "1=1"
+
+	t.Run("short query untouched", func(t *testing.T) {
+		q := "SELECT * FROM small"
+		if got := applyDefaultLimit(q, conn, false); got != q {
+			t.Errorf("short query must not be modified, got %q", got)
+		}
+	})
+
+	t.Run("existing limit respected", func(t *testing.T) {
+		q := long + " LIMIT 5"
+		if got := applyDefaultLimit(q, conn, false); got != q {
+			t.Errorf("existing LIMIT must not be duplicated or changed, got %q", got)
+		}
+	})
+
+	t.Run("plain select gets limit appended", func(t *testing.T) {
+		got := limit(long, false)
+		if got == "" || !strings.HasSuffix(got, " LIMIT 1000") {
+			t.Errorf("expected final LIMIT 1000, got %q", got)
+		}
+	})
+
+	t.Run("exploration uses lower default", func(t *testing.T) {
+		got := limit(long, true)
+		if got == "" || !strings.HasSuffix(got, " LIMIT 100") {
+			t.Errorf("expected exploration LIMIT 100, got %q", got)
+		}
+	})
+
+	t.Run("trailing semicolon stripped before limit", func(t *testing.T) {
+		got := limit(long+";", false)
+		if got == "" || strings.Contains(got, ";LIMIT") || strings.Contains(got, "; LIMIT") {
+			t.Errorf("semicolon must be stripped before appending LIMIT, got %q", got)
+		}
+	})
+
+	t.Run("union wrapped in outer select", func(t *testing.T) {
+		u := strings.Repeat("SELECT 1 AS x -- padding padding padding\nUNION ALL SELECT ", 6) + "2"
+		got := applyDefaultLimit(u, conn, false)
+		if !strings.HasPrefix(strings.ToUpper(got), "SELECT * FROM (") || !strings.Contains(got, ") subq LIMIT") {
+			t.Errorf("union query should be wrapped for correct limiting, got %q", got)
+		}
+	})
 }

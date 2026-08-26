@@ -122,5 +122,3 @@ func inferTypes(headers []string, rows [][]string) []string {
 	}
 	return types
 }
-
-

@@ -20,10 +20,10 @@ func init() {
 // SQLServerDriver implements DBDriver for Microsoft SQL Server.
 type SQLServerDriver struct{}
 
-func (d *SQLServerDriver) TypeKey() string      { return "sqlserver" }
-func (d *SQLServerDriver) OpenDriver() string   { return "sqlserver" }
-func (d *SQLServerDriver) DisplayName() string  { return "SQL Server" }
-func (d *SQLServerDriver) DefaultPort() int     { return 1433 }
+func (d *SQLServerDriver) TypeKey() string     { return "sqlserver" }
+func (d *SQLServerDriver) OpenDriver() string  { return "sqlserver" }
+func (d *SQLServerDriver) DisplayName() string { return "SQL Server" }
+func (d *SQLServerDriver) DefaultPort() int    { return 1433 }
 func (d *SQLServerDriver) SQLDialectHint() string {
 	return "SQL Server — bracket [identifier] quoting, TOP N instead of LIMIT, GETDATE() for current time"
 }

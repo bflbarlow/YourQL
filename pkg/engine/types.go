@@ -329,18 +329,18 @@ type Clarification struct {
 
 // LoopConfig is all configuration needed by the agentic loop.
 type LoopConfig struct {
-	MaxExplorationRounds int
-	MaxToolsPerRound     int
-	MaxErrorRetries      int
-	TotalRoundCap        int
-	SafetyMode           ExplorationSafetyMode
-	ContextWindow        *int
-	ModelName            string
-	VizEnabled           bool
-	Summarize            bool
-	StreamingEnabled     bool
+	MaxExplorationRounds        int
+	MaxToolsPerRound            int
+	MaxErrorRetries             int
+	TotalRoundCap               int
+	SafetyMode                  ExplorationSafetyMode
+	ContextWindow               *int
+	ModelName                   string
+	VizEnabled                  bool
+	Summarize                   bool
+	StreamingEnabled            bool
 	SummarizationTimeoutSeconds int
-	AgentConfig          *AgentLoopConfig
+	AgentConfig                 *AgentLoopConfig
 }
 
 // ---------------------------------------------------------------------------
@@ -382,14 +382,14 @@ type NewMessage struct {
 
 // LLMProviderMeta is a lightweight view of an LLM provider config.
 type LLMProviderMeta struct {
-	ID            uint
-	Name          string
-	Provider      string
-	APIKey        string
-	Model         string
-	BaseURL       string
-	ContextWindow *int
-	MaxTokens     *int
+	ID             uint
+	Name           string
+	Provider       string
+	APIKey         string
+	Model          string
+	BaseURL        string
+	ContextWindow  *int
+	MaxTokens      *int
 	ModelMaxTokens *int
 }
 

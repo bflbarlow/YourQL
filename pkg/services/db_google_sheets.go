@@ -46,8 +46,8 @@ func extractSpreadsheetID(raw string) string {
 // No persistent connections, no CGO — pure Go google.golang.org/api/sheets/v4 client.
 type GoogleSheetsDriver struct{}
 
-func (d *GoogleSheetsDriver) TypeKey() string    { return "google_sheets" }
-func (d *GoogleSheetsDriver) OpenDriver() string { return "sqlite" }
+func (d *GoogleSheetsDriver) TypeKey() string     { return "google_sheets" }
+func (d *GoogleSheetsDriver) OpenDriver() string  { return "sqlite" }
 func (d *GoogleSheetsDriver) DisplayName() string { return "Google Sheets" }
 func (d *GoogleSheetsDriver) DefaultPort() int    { return 0 }
 func (d *GoogleSheetsDriver) SQLDialectHint() string {

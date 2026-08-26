@@ -17,10 +17,10 @@ func init() {
 // Reuses the MySQL wire protocol driver since MariaDB is protocol-compatible.
 type MariaDBDriver struct{}
 
-func (d *MariaDBDriver) TypeKey() string      { return "mariadb" }
-func (d *MariaDBDriver) OpenDriver() string   { return "mysql" }
-func (d *MariaDBDriver) DisplayName() string  { return "MariaDB" }
-func (d *MariaDBDriver) DefaultPort() int     { return 3306 }
+func (d *MariaDBDriver) TypeKey() string     { return "mariadb" }
+func (d *MariaDBDriver) OpenDriver() string  { return "mysql" }
+func (d *MariaDBDriver) DisplayName() string { return "MariaDB" }
+func (d *MariaDBDriver) DefaultPort() int    { return 3306 }
 func (d *MariaDBDriver) SQLDialectHint() string {
 	return "MariaDB — backtick `identifier` quoting, LIMIT, RETURNING clause on INSERT/UPDATE/DELETE, sequences via CREATE SEQUENCE, ENGINE=Aria/ColumnStore options"
 }

@@ -19,17 +19,17 @@ func init() {
 // Redshift is based on PostgreSQL and uses the pgx driver.
 type RedshiftDriver struct{}
 
-func (d *RedshiftDriver) TypeKey() string      { return "redshift" }
-func (d *RedshiftDriver) OpenDriver() string   { return "pgx" }
-func (d *RedshiftDriver) DisplayName() string  { return "Redshift" }
-func (d *RedshiftDriver) DefaultPort() int     { return 5439 }
+func (d *RedshiftDriver) TypeKey() string     { return "redshift" }
+func (d *RedshiftDriver) OpenDriver() string  { return "pgx" }
+func (d *RedshiftDriver) DisplayName() string { return "Redshift" }
+func (d *RedshiftDriver) DefaultPort() int    { return 5439 }
 func (d *RedshiftDriver) SQLDialectHint() string {
 	return "Redshift — PostgreSQL-compatible dialect; DISTKEY/SORTKEY table options, COPY/UNLOAD commands, no SERIAL type (use IDENTITY), no indexes (use SORTKEY), VACUUM/ANALYZE"
 }
 
 // RedshiftExtra holds Redshift-specific connection parameters.
 type RedshiftExtra struct {
-	SSLMode    string `json:"sslmode,omitempty"`    // disable, require, verify-ca, verify-full
+	SSLMode    string `json:"sslmode,omitempty"` // disable, require, verify-ca, verify-full
 	SearchPath string `json:"search_path,omitempty"`
 }
 

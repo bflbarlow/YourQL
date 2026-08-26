@@ -45,12 +45,12 @@ func CreateLLMProvider(name, provider, model, baseURL, apiKey string, isDefault 
 	}
 
 	p := &models.LLMProvider{
-		ID:       uint(id),
-		Name:     name,
-		Provider: provider,
-		Model:    &model,
-		BaseURL:  &baseURL,
-		IsActive: isActive,
+		ID:        uint(id),
+		Name:      name,
+		Provider:  provider,
+		Model:     &model,
+		BaseURL:   &baseURL,
+		IsActive:  isActive,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}

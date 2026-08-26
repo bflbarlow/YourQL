@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,9 +19,9 @@ import (
 
 // App struct
 type App struct {
-	ctx               context.Context
-	activeCancels     map[uint]context.CancelFunc
-	activeCancelsMu   sync.Mutex
+	ctx             context.Context
+	activeCancels   map[uint]context.CancelFunc
+	activeCancelsMu sync.Mutex
 }
 
 // NewApp creates a new App application struct
@@ -564,11 +563,11 @@ type SchemaPreview struct {
 }
 
 type SchemaTablePreview struct {
-	Name        string                  `json:"name"`
-	RowCount    int64                   `json:"row_count"`
-	Columns     []SchemaColumnPreview   `json:"columns"`
-	Indexes     int                     `json:"indexes"`
-	ForeignKeys int                     `json:"foreign_keys"`
+	Name        string                `json:"name"`
+	RowCount    int64                 `json:"row_count"`
+	Columns     []SchemaColumnPreview `json:"columns"`
+	Indexes     int                   `json:"indexes"`
+	ForeignKeys int                   `json:"foreign_keys"`
 }
 
 type SchemaColumnPreview struct {
@@ -609,7 +608,7 @@ func (a *App) GetSchemaPreview(id uint) (*SchemaPreview, error) {
 			Name:        t.Name,
 			RowCount:    t.RowCount,
 			Columns:     cols,
-			Indexes:      len(t.Indexes),
+			Indexes:     len(t.Indexes),
 			ForeignKeys: len(t.ForeignKeys),
 		})
 	}
@@ -617,78 +616,14 @@ func (a *App) GetSchemaPreview(id uint) (*SchemaPreview, error) {
 	return preview, nil
 }
 
-// QueryResult represents a row from a query execution (§2.14 – kept for ExecuteQuery)
-type QueryResult struct {
-	Columns   []string         `json:"columns"`
-	Rows      [][]interface{}  `json:"rows"`
-	TotalRows int              `json:"total_rows"`
-}
-
-// ExecuteQuery runs a SQL query against a configured database connection
-func (a *App) ExecuteQuery(connID uint, query string) (*QueryResult, error) {
-	conn, err := services.GetDataSourceByID(connID)
-	if err != nil {
-		return nil, err
-	}
-
-	dsn, err := services.BuildDSN(conn)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build DSN: %w", err)
-	}
-
-	db, err := sql.Open(conn.Type, dsn)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect: %w", err)
-	}
-	defer db.Close()
-
-	if err := db.Ping(); err != nil {
-		return nil, fmt.Errorf("connection failed: %w", err)
-	}
-
-	rows, err := db.Query(query)
-	if err != nil {
-		return nil, fmt.Errorf("query execution failed: %w", err)
-	}
-	defer rows.Close()
-
-	columns, err := rows.Columns()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get columns: %w", err)
-	}
-
-	var result QueryResult
-	result.Columns = columns
-	result.Rows = make([][]interface{}, 0)
-
-	for rows.Next() {
-		values := make([]interface{}, len(columns))
-		valuePtrs := make([]interface{}, len(columns))
-		for i := range values {
-			valuePtrs[i] = &values[i]
-		}
-
-		if err := rows.Scan(valuePtrs...); err != nil {
-			return nil, fmt.Errorf("failed to scan row: %w", err)
-		}
-
-		row := make([]interface{}, len(columns))
-		for i, v := range values {
-			switch val := v.(type) {
-			case []byte:
-				row[i] = string(val)
-			default:
-				row[i] = val
-			}
-		}
-		result.Rows = append(result.Rows, row)
-	}
-
-	result.TotalRows = len(result.Rows)
-	return &result, nil
-}
-
 // ==================== Google Sheets OAuth ====================
+//
+// NOTE: There is deliberately no raw "ExecuteQuery" binding here. Every path
+// that executes SQL against a configured data source must funnel through
+// services.ExecuteSQLWithMode, which enforces the Data Source Read-Only
+// Invariant via engine.ValidateReadOnlySQL (AGENT_READ_FIRST.md §0). Do not
+// reintroduce a direct sql.Open/db.Query binding — it bypasses the single
+// read-only choke point. (Removed 2026-08-24 — see TECH_REVIEW_20260824.md F-1.)
 
 // StartGoogleSheetsAuth begins the OAuth2 loopback flow for a saved data source.
 // Opens the default browser to Google's consent screen; Google redirects to
@@ -1147,9 +1082,10 @@ func (a *App) SetLoggingEnabled(enabled bool) error {
 // ExportLog opens a native save dialog and writes the diagnostic log
 // file to the user-chosen path.
 // Returns:
-//   ""         — success (file was saved)
-//   "empty"    — log file doesn't exist or has no content
-//   any other  — error message for the frontend to display
+//
+//	""         — success (file was saved)
+//	"empty"    — log file doesn't exist or has no content
+//	any other  — error message for the frontend to display
 func (a *App) ExportLog() string {
 	logPath := filepath.Join(os.Getenv("HOME"), ".yourql", "yourql.log")
 

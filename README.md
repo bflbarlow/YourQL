@@ -103,7 +103,7 @@ Run the `.exe` installer and follow the prompts.
 
 ### Upgrading
 
-Replace your current binary with the new one. All your conversations, settings, credentials, and UI preferences are stored in `~/.yourql/yourql.db` and survive upgrades automatically. See [`documentation/VERSION_UPGRADE.md`](documentation/VERSION_UPGRADE.md) for details.
+Replace your current binary with the new one. All your conversations, settings, credentials, and UI preferences are stored in `~/.yourql/yourql.db` and survive upgrades automatically. See [`documentation/VERSION_UPGRADE.md`](documentation/operations/VERSION_UPGRADE.md) for details.
 
 ---
 
@@ -240,28 +240,28 @@ Comprehensive documentation is available in the [`documentation/`](documentation
 | Document | Description |
 |---|---|
 | [`AGENT_READ_FIRST.md`](documentation/AGENT_READ_FIRST.md) | Project charter — fundamental goal, risk framework, and coding standards for all contributors |
-| [`RELEASE_DEPLOYMENT.md`](documentation/RELEASE_DEPLOYMENT.md) | Release process for macOS, Windows, and Linux — build commands, signing, packaging, CI |
-| [`VERSION_UPGRADE.md`](documentation/VERSION_UPGRADE.md) | How users upgrade — manual (works today) and automatic (planned) |
-| [`TESTING_SUITE.md`](documentation/TESTING_SUITE.md) | Testing strategy and test coverage |
-| [`TECH_REVIEW.md`](documentation/TECH_REVIEW.md) | Comprehensive technical review and architecture audit |
+| [`RELEASE_DEPLOYMENT.md`](documentation/operations/RELEASE_DEPLOYMENT.md) | Release process for macOS, Windows, and Linux — build commands, signing, packaging, CI |
+| [`VERSION_UPGRADE.md`](documentation/operations/VERSION_UPGRADE.md) | How users upgrade — manual (works today) and automatic (planned) |
+| [`TESTING_SUITE.md`](documentation/testing/TESTING_SUITE.md) | Testing strategy and test coverage |
+| [`TECH_REVIEW.md`](documentation/operations/TECH_REVIEW.md) | Comprehensive technical review and architecture audit |
 | [`RISK_ANALYSIS_LOG.md`](documentation/RISK_ANALYSIS_LOG.md) | Log of risk/reward analyses for significant changes |
-| [`STREAMING_ENHANCEMENT.md`](documentation/STREAMING_ENHANCEMENT.md) | Streaming LLM response implementation |
-| [`TOOL_CALL_ENHANCEMENT.md`](documentation/TOOL_CALL_ENHANCEMENT.md) | Tool-calling and function-calling support |
-| [`DARK_MODE_ENHANCEMENT.md`](documentation/DARK_MODE_ENHANCEMENT.md) | Dark mode implementation details |
-| [`DATA_VIZ_ENHANCEMENT.md`](documentation/DATA_VIZ_ENHANCEMENT.md) | Chart and visualization system |
-| [`SKILLS_ENHANCEMENT.md`](documentation/SKILLS_ENHANCEMENT.md) | Skills system design |
-| [`FUNCTIONALITY_SILO_DEFINITIONS.md`](documentation/FUNCTIONALITY_SILO_DEFINITIONS.md) | Architecture silos — what each logical section is, how they connect, and what black-boxing them requires |
-| [`FUNCTIONALITY_SILO_TARGET.md`](documentation/FUNCTIONALITY_SILO_TARGET.md) | End-state target architecture — interfaces, package layout, and wiring |
-| [`FUNCTIONALITY_SILO_PLAN.md`](documentation/FUNCTIONALITY_SILO_PLAN.md) | Step-by-step extraction plan with risk register |
+| [`STREAMING_ENHANCEMENT.md`](documentation/enhancements/STREAMING_ENHANCEMENT.md) | Streaming LLM response implementation |
+| [`TOOL_CALL_ENHANCEMENT.md`](documentation/enhancements/TOOL_CALL_ENHANCEMENT.md) | Tool-calling and function-calling support |
+| [`DARK_MODE_ENHANCEMENT.md`](documentation/enhancements/DARK_MODE_ENHANCEMENT.md) | Dark mode implementation details |
+| [`DATA_VIZ_ENHANCEMENT.md`](documentation/enhancements/DATA_VIZ_ENHANCEMENT.md) | Chart and visualization system |
+| [`SKILLS_ENHANCEMENT.md`](documentation/enhancements/SKILLS_ENHANCEMENT.md) | Skills system design |
+| [`FUNCTIONALITY_SILO_DEFINITIONS.md`](documentation/architecture/FUNCTIONALITY_SILO_DEFINITIONS.md) | Architecture silos — what each logical section is, how they connect, and what black-boxing them requires |
+| [`FUNCTIONALITY_SILO_TARGET.md`](documentation/architecture/FUNCTIONALITY_SILO_TARGET.md) | End-state target architecture — interfaces, package layout, and wiring |
+| [`FUNCTIONALITY_SILO_PLAN.md`](documentation/architecture/FUNCTIONALITY_SILO_PLAN.md) | Step-by-step extraction plan with risk register |
 | [`AGENT_LOOP_DETAILS.md`](documentation/AGENT_LOOP_DETAILS.md) | Complete reference — every path, tool, limit, prompt, and termination state in the agentic loop |
-| [`DISC_SEARCH.md`](documentation/DISC_SEARCH.md) | Discussion tags and search — implementation spec |
-| [`GOOGLE_SHEETS_ENHANCEMENT.md`](documentation/GOOGLE_SHEETS_ENHANCEMENT.md) | Google Sheets integration (OAuth) |
-| [`ANSWER_ENHANCEMENT.md`](documentation/ANSWER_ENHANCEMENT.md) | Answer rendering and quality improvements |
-| [`ANSWER_CLARIFICATION_ISSUE.md`](documentation/ANSWER_CLARIFICATION_ISSUE.md) | Clarification flow analysis |
-| [`MODEL_ERRORS_ENHANCEMENT.md`](documentation/MODEL_ERRORS_ENHANCEMENT.md) | Model error handling and recovery |
-| [`MAX_TOKEN_ENHANCEMENT.md`](documentation/MAX_TOKEN_ENHANCEMENT.md) | Per-provider max token configuration |
-| [`HELP_CHAT_ENHANCEMENT.md`](documentation/HELP_CHAT_ENHANCEMENT.md) | In-app help and onboarding |
-| [`AGENT_LOOP_CONFIG.md`](documentation/AGENT_LOOP_CONFIG.md) | User-configurable prompts, tool descriptions, and model instructions (advanced) |
+| [`DISC_SEARCH.md`](documentation/issues/DISC_SEARCH.md) | Discussion tags and search — implementation spec |
+| [`GOOGLE_SHEETS_ENHANCEMENT.md`](documentation/enhancements/GOOGLE_SHEETS_ENHANCEMENT.md) | Google Sheets integration (OAuth) |
+| [`ANSWER_ENHANCEMENT.md`](documentation/enhancements/ANSWER_ENHANCEMENT.md) | Answer rendering and quality improvements |
+| [`ANSWER_CLARIFICATION_ISSUE.md`](documentation/issues/ANSWER_CLARIFICATION_ISSUE.md) | Clarification flow analysis |
+| [`MODEL_ERRORS_ENHANCEMENT.md`](documentation/enhancements/MODEL_ERRORS_ENHANCEMENT.md) | Model error handling and recovery |
+| [`MAX_TOKEN_ENHANCEMENT.md`](documentation/enhancements/MAX_TOKEN_ENHANCEMENT.md) | Per-provider max token configuration |
+| [`HELP_CHAT_ENHANCEMENT.md`](documentation/enhancements/HELP_CHAT_ENHANCEMENT.md) | In-app help and onboarding |
+| [`AGENT_LOOP_CONFIG.md`](documentation/enhancements/AGENT_LOOP_CONFIG.md) | User-configurable prompts, tool descriptions, and model instructions (advanced) |
 
 ---
 
