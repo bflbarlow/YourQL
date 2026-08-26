@@ -18,28 +18,24 @@
   } from '../../../wailsjs/go/main/App.js'
 
   let {
-    conversation = null,     // reactive copy — parent passes selectedConversation
+    conversation = null,     // THE shared reactive object — mutated in place so
+                             // parent state (list row, active thread) stays in
+                             // sync with every change (no stale-copy drift)
     allSkills = [],
     llmProviders = [],
     dataSources = [],
     open = false,
-    onclose = () => {},      // onclose(changed: boolean)
-    ondeleted = () => {}     // fired after successful delete
+    onclose = () => {},      // onclose(changed: boolean, duplicated?)
+    ondeleted = () => {},    // fired after successful delete
+    onchange = () => {}      // onchange(key, value) — lets App sync derived
+                             // UI state (e.g. showTechDetails flag) instantly
   } = $props()
 
-  let conv = $state(null)
   let conversationSkillIDs = $state([])
   let convTags = $state([])
   let tagInput = $state('')
   let allTags = $state([])
   let clearConfirmOpen = $state(false)
-
-  // Mirror the passed conversation into local state so edits are reactive.
-  $effect(() => {
-    if (conversation && open) {
-      conv = { ...conversation }
-    }
-  })
 
   $effect(() => {
     if (open && conversation?.id) {
@@ -68,8 +64,6 @@
     ).slice(0, 8)
   )
 
-  function changed() { /* parent refreshes via loadData() on close */ }
-
   async function updateSetting(fn, ...args) {
     try {
       await fn(...args)
@@ -78,15 +72,24 @@
     }
   }
 
+  // Single funnel for every setting change: mutate the SHARED object (so the
+  // list row / active thread update instantly) and notify App so derived UI
+  // state (showTechDetails etc.) follows.
+  function setField(key, value) {
+    if (!conversation) return
+    conversation[key] = value
+    onchange(key, value)
+  }
+
   function handleProviderChange(e) {
     const val = e.target.value ? parseInt(e.target.value) : null
-    updateSetting(UpdateConversationSettings, conv.id, val, conv.data_source_id || null)
-    conv.llm_provider_id = val
+    updateSetting(UpdateConversationSettings, conversation.id, val, conversation.data_source_id || null)
+    setField('llm_provider_id', val)
   }
   function handleSourceChange(e) {
     const val = e.target.value ? parseInt(e.target.value) : null
-    updateSetting(UpdateConversationSettings, conv.id, conv.llm_provider_id || null, val)
-    conv.data_source_id = val
+    updateSetting(UpdateConversationSettings, conversation.id, conversation.llm_provider_id || null, val)
+    setField('data_source_id', val)
   }
 
   function handleRenameKeydown(e) {
@@ -96,60 +99,60 @@
     }
   }
   function saveRename() {
-    if (!conv?.title?.trim()) return
-    updateSetting(UpdateConversationTitle, conv.id, conv.title.trim())
+    if (!conversation?.title?.trim()) return
+    updateSetting(UpdateConversationTitle, conversation.id, conversation.title.trim())
   }
 
   function setMaxMessages(val) {
-    updateSetting(UpdateConversationMaxMessages, conv.id, val)
-    conv.max_messages = val
+    updateSetting(UpdateConversationMaxMessages, conversation.id, val)
+    setField('max_messages', val)
   }
   function handleMaxMessagesInput(e) {
     const v = parseInt(e.target.value)
-    if (v >= 1 && v <= 500) conv.max_messages = v
+    if (v >= 1 && v <= 500) conversation.max_messages = v
   }
   function handleMaxMessagesBlur() {
-    setMaxMessages(conv.max_messages || 0)
+    setMaxMessages(conversation.max_messages || 0)
   }
 
   function setMaxContext(val) {
-    updateSetting(UpdateConversationMaxContextMessages, conv.id, val)
-    conv.max_context_messages = val
+    updateSetting(UpdateConversationMaxContextMessages, conversation.id, val)
+    setField('max_context_messages', val)
   }
   function handleMaxContextInput(e) {
     const v = parseInt(e.target.value)
-    if (v >= 1 && v <= 15) conv.max_context_messages = v
+    if (v >= 1 && v <= 15) conversation.max_context_messages = v
   }
   function handleMaxContextBlur() {
-    setMaxContext(conv.max_context_messages || 0)
+    setMaxContext(conversation.max_context_messages || 0)
   }
 
   function togglePinned(e) {
-    updateSetting(UpdateConversationPinned, conv.id, e.target.checked)
-    conv.pinned = e.target.checked
+    updateSetting(UpdateConversationPinned, conversation.id, e.target.checked)
+    setField('pinned', e.target.checked)
   }
   function toggleTechDetails(e) {
-    updateSetting(UpdateConversationTechDetails, conv.id, e.target.checked)
-    conv.tech_details = e.target.checked
+    updateSetting(UpdateConversationTechDetails, conversation.id, e.target.checked)
+    setField('tech_details', e.target.checked)
   }
   function toggleContextDetails(e) {
-    updateSetting(UpdateConversationContextDetails, conv.id, e.target.checked)
-    conv.context_details = e.target.checked
+    updateSetting(UpdateConversationContextDetails, conversation.id, e.target.checked)
+    setField('context_details', e.target.checked)
   }
   function toggleSummarize(e) {
-    updateSetting(UpdateConversationSummarize, conv.id, e.target.checked)
-    conv.summarize = e.target.checked
+    updateSetting(UpdateConversationSummarize, conversation.id, e.target.checked)
+    setField('summarize', e.target.checked)
   }
   function toggleViz(e) {
-    updateSetting(UpdateConversationVizEnabled, conv.id, e.target.checked)
-    conv.viz_enabled = e.target.checked
+    updateSetting(UpdateConversationVizEnabled, conversation.id, e.target.checked)
+    setField('viz_enabled', e.target.checked)
   }
   function toggleStreaming(e) {
-    updateSetting(UpdateConversationStreamingEnabled, conv.id, e.target.checked)
-    conv.streaming_enabled = e.target.checked
+    updateSetting(UpdateConversationStreamingEnabled, conversation.id, e.target.checked)
+    setField('streaming_enabled', e.target.checked)
   }
   function toggleSkill(skillId, e) {
-    updateSetting(SetConversationSkill, conv.id, skillId, e.target.checked)
+    updateSetting(SetConversationSkill, conversation.id, skillId, e.target.checked)
   }
 
   // ── Tags ──
@@ -157,16 +160,16 @@
     const val = (name || '').trim()
     if (!val) return
     try {
-      await AddTagToConversation(conv.id, val)
-      convTags = await GetTagsForConversation(conv.id) || []
+      await AddTagToConversation(conversation.id, val)
+      convTags = await GetTagsForConversation(conversation.id) || []
       allTags = await ListAllTags() || []
       tagInput = ''
     } catch (e) { console.error('Failed to add tag:', e) }
   }
   async function removeTag(name) {
     try {
-      await RemoveTagFromConversation(conv.id, name)
-      convTags = await GetTagsForConversation(conv.id) || []
+      await RemoveTagFromConversation(conversation.id, name)
+      convTags = await GetTagsForConversation(conversation.id) || []
       allTags = await ListAllTags() || []
     } catch (e) { console.error('Failed to remove tag:', e) }
   }
@@ -183,46 +186,46 @@
   // ── Actions ──
   async function duplicate() {
     try {
-      const dup = await DuplicateConversation(conv.id)
+      const dup = await DuplicateConversation(conversation.id)
       onclose(false, dup)
     } catch (e) { console.error('Failed to duplicate:', e) }
   }
   function requestClear() { clearConfirmOpen = true }
   async function confirmClear() {
     try {
-      await ClearConversationMessages(conv.id)
+      await ClearConversationMessages(conversation.id)
       clearConfirmOpen = false
       onclose(true)
     } catch (e) { console.error('Failed to clear messages:', e) }
   }
   async function archive() {
     try {
-      await ArchiveConversation(conv.id)
+      await ArchiveConversation(conversation.id)
       onclose(true)
     } catch (e) { console.error('Failed to archive:', e) }
   }
   async function restore() {
     try {
-      await RestoreConversation(conv.id)
+      await RestoreConversation(conversation.id)
       onclose(true)
     } catch (e) { console.error('Failed to restore:', e) }
   }
   async function doDelete() {
     try {
-      await DeleteConversation(conv.id)
-      ondeleted(conv.id)
+      await DeleteConversation(conversation.id)
+      ondeleted(conversation.id)
       onclose(true)
     } catch (e) { console.error('Failed to delete:', e) }
   }
 </script>
 
-<Modal open={open && !!conv} title={conv ? `Settings for “${conv.title}”` : ''} width="lg" onclose={() => onclose(false)}>
-  {#if conv}
+<Modal open={open && !!conversation} title={conversation ? `Settings for “${conversation.title}”` : ''} width="lg" onclose={() => onclose(false)}>
+  {#if conversation}
     <div class="cs-body">
       <!-- LLM Provider -->
       <section>
         <label class="field-label" for="cs-provider">LLM Provider</label>
-        <select id="cs-provider" value={conv.llm_provider_id || ''} onchange={handleProviderChange}>
+        <select id="cs-provider" value={conversation.llm_provider_id || ''} onchange={handleProviderChange}>
           <option value="">(none)</option>
           {#each llmProviders as provider}
             <option value={provider.id}>{provider.name}</option>
@@ -233,7 +236,7 @@
       <!-- DB Connection -->
       <section>
         <label class="field-label" for="cs-source">DB Connection</label>
-        <select id="cs-source" value={conv.data_source_id || ''} onchange={handleSourceChange}>
+        <select id="cs-source" value={conversation.data_source_id || ''} onchange={handleSourceChange}>
           <option value="">(none)</option>
           {#each dataSources as conn}
             <option value={conn.id}>{conn.name}</option>
@@ -244,8 +247,8 @@
       <!-- Rename -->
       <section>
         <label class="field-label" for="cs-rename">Rename</label>
-        <input id="cs-rename" type="text" value={conv.title || ''} placeholder="Enter new name..."
-          oninput={(e) => conv.title = e.target.value}
+        <input id="cs-rename" type="text" value={conversation.title || ''} placeholder="Enter new name..."
+          oninput={(e) => conversation.title = e.target.value}
           onkeydown={handleRenameKeydown}
           onblur={saveRename} />
       </section>
@@ -254,8 +257,8 @@
       <section>
         <span class="field-label">Visible Messages</span>
         <div class="limit-group">
-          <button class="msg-limit-btn" class:active={conv.max_messages === 0} onclick={() => setMaxMessages(0)} type="button">Show All</button>
-          <input type="number" value={conv.max_messages || ''} placeholder="e.g. 50" min="1" max="500"
+          <button class="msg-limit-btn" class:active={conversation.max_messages === 0} onclick={() => setMaxMessages(0)} type="button">Show All</button>
+          <input type="number" value={conversation.max_messages || ''} placeholder="e.g. 50" min="1" max="500"
             oninput={handleMaxMessagesInput} onblur={handleMaxMessagesBlur} />
         </div>
       </section>
@@ -263,8 +266,8 @@
       <section>
         <span class="field-label">Messages in LLM Context</span>
         <div class="limit-group">
-          <button class="msg-limit-btn" class:active={conv.max_context_messages === 15} onclick={() => setMaxContext(15)} type="button">Max 15</button>
-          <input type="number" value={conv.max_context_messages || ''} placeholder="e.g. 5" min="1" max="15"
+          <button class="msg-limit-btn" class:active={conversation.max_context_messages === 15} onclick={() => setMaxContext(15)} type="button">Max 15</button>
+          <input type="number" value={conversation.max_context_messages || ''} placeholder="e.g. 5" min="1" max="15"
             oninput={handleMaxContextInput} onblur={handleMaxContextBlur} />
         </div>
         <p class="hint">Default: 5 messages. Hard cap: 15. Large context windows can cause empty responses.</p>
@@ -272,19 +275,19 @@
 
       <!-- Checkboxes -->
       <section class="checks">
-        <label><input type="checkbox" checked={conv.pinned === true} onchange={togglePinned} /> Pin to top of list</label>
-        <label><input type="checkbox" checked={conv.tech_details === true} onchange={toggleTechDetails} /> Show technical details</label>
-        <label><input type="checkbox" checked={conv.context_details === true} onchange={toggleContextDetails} /> Show context &amp; token details</label>
+        <label><input type="checkbox" checked={conversation.pinned === true} onchange={togglePinned} /> Pin to top of list</label>
+        <label><input type="checkbox" checked={conversation.tech_details === true} onchange={toggleTechDetails} /> Show technical details</label>
+        <label><input type="checkbox" checked={conversation.context_details === true} onchange={toggleContextDetails} /> Show context &amp; token details</label>
         <label>
-          <input type="checkbox" checked={conv.summarize === true} onchange={toggleSummarize} /> Summarize results
+          <input type="checkbox" checked={conversation.summarize === true} onchange={toggleSummarize} /> Summarize results
         </label>
         <p class="hint indent">LLM summarizes query results as a plain-English answer</p>
         <label>
-          <input type="checkbox" checked={conv.viz_enabled !== false} onchange={toggleViz} /> Data visualization
+          <input type="checkbox" checked={conversation.viz_enabled !== false} onchange={toggleViz} /> Data visualization
         </label>
         <p class="hint indent">LLM generates charts (bar, line, pie, scatter) when appropriate</p>
         <label>
-          <input type="checkbox" checked={conv.streaming_enabled === true} onchange={toggleStreaming} /> Stream LLM output
+          <input type="checkbox" checked={conversation.streaming_enabled === true} onchange={toggleStreaming} /> Stream LLM output
         </label>
         <p class="hint indent">Show model output character-by-character in real time</p>
       </section>
@@ -337,7 +340,7 @@
       <section class="actions">
         <button class="action-btn" onclick={duplicate} title="Duplicate" type="button"><Copy size={14} /> Duplicate</button>
         <button class="action-btn danger-ghost" onclick={requestClear} title="Clear messages" type="button"><Trash2 size={14} /> Clear</button>
-        {#if conv.status === 'archived'}
+        {#if conversation.status === 'archived'}
           <button class="action-btn success-ghost" onclick={restore} type="button">Restore</button>
         {/if}
         <button class="action-btn danger-ghost" onclick={archive} type="button">Archive</button>
