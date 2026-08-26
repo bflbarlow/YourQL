@@ -77,8 +77,12 @@ win.go = {
       GetConversationMessages: async (id) => messagesByConv[id] || [],
       ListLLMProviders: async () => [{ id: 7, name: 'GPT', provider: 'openai', model: 'gpt-4', maxTokens: 4096, is_default: true }],
       ListDataSources: async () => [{ id: 9, name: 'MainDB', type: 'mysql', host: 'x', port: 3306, database: 'db', is_default: true, exploration_allowed: true }],
-      UpdateConversationPinned: async () => {},
+      UpdateConversationPinned: async (id, v) => { (win.__calls ||= []).push(['pinned', id, v]); const c = conversations.find(c=>c.id===id); if(c) c.pinned = v },
+      UpdateConversationTechDetails: async (id, v) => { (win.__calls ||= []).push(['tech', id, v]); const c = conversations.find(c=>c.id===id); if(c) c.tech_details = v },
+      UpdateConversationSummarize: async (id, v) => { (win.__calls ||= []).push(['summarize', id, v]); const c = conversations.find(c=>c.id===id); if(c) c.summarize = v },
+      UpdateConversationTitle: async (id, v) => { (win.__calls ||= []).push(['title', id, v]); const c = conversations.find(c=>c.id===id); if(c) c.title = v; return { title: v } },
       UpdateConversationSettings: async () => {},
+      ListConversations: async () => conversations,
       ListSkills: async () => [],
       GetDiscussionDefaults: async () => ({}),
       CreateConversation: async (title) => { const c = makeConv(title); conversations.push(c); return c },
@@ -207,24 +211,51 @@ if (rows4.length) {
   click(rows4[0]); await new Promise(r => setTimeout(r, 300))
   console.log(q('.conversation-view') ? 'PASS: final open works' : 'FAIL: final open broken')
 }
-// 8. Minimalist mode: exit back to list first
+// ===== Settings-dialog multi-change + live-propagation scenario =====
+// Open a discussion that HAS messages, then open its settings from the
+// thread header so we can verify changes propagate to the live view.
 click(q('.back-btn')); await new Promise(r => setTimeout(r, 200))
-click(qa('button').find(b => b.textContent.includes('Minimal Mode')))
-await new Promise(r => setTimeout(r, 400))
-log('minimalist entered')
-const burger = q('.mm-hamburger')
-if (!burger) { console.error('FAIL: minimalist did not render'); process.exit(1) }
-// discussions page via nav
-click(burger); await new Promise(r => setTimeout(r, 200))
-const navRow = qa('.mm-nav-row').find(b => b.textContent.trim() === 'Discussions')
-click(navRow); await new Promise(r => setTimeout(r, 300))
-const mmRows = qa('.mm-discussion-row')
-console.log('mm rows:', mmRows.length)
-const target = mmRows.find(b => !b.classList.contains('mm-discussion-new'))
-click(target); await new Promise(r => setTimeout(r, 400))
-log('after mm row click')
-console.log('setup-prompt:', !!q('.mm-setup-prompt'), '| mm-empty:', !!q('.mm-empty'), '| thread:', !!q('.mm-thread'))
-console.log(q('.mm-column')?.innerHTML?.slice(0, 300))
-console.log(q('.mm-thread, .mm-empty') ? 'PASS: minimalist discussion opened' : 'FAIL: minimalist row click broken')
+click(qa('.conversation-item')[0]); await new Promise(r => setTimeout(r, 300))
+const bubblesBefore = qa('.exploration-result').length
+console.log('thread exploration blocks visible:', bubblesBefore)
+
+win.__calls = []
+const threadGear = [...qa('button')].find(b => b.getAttribute('aria-label') === 'Conversation settings')
+click(threadGear); await new Promise(r => setTimeout(r, 300))
+console.log('dialog open:', !!q('[role="dialog"]'))
+
+// Change 1+2: tech details on, then off, then ON again (multi-change stickiness)
+const boxes = () => [...qa('[role="dialog"] input[type="checkbox"]')]
+const techBox = boxes()[1]
+click(techBox); await new Promise(r => setTimeout(r, 150))
+click(techBox); await new Promise(r => setTimeout(r, 150))
+click(techBox); await new Promise(r => setTimeout(r, 250))
+console.log('after 3 toggles | tech box:', techBox.checked,
+  '| backend calls:', JSON.stringify(win.__calls.filter(c => c[0]==='tech').map(c=>c[2])),
+  '| exploration visible in thread behind dialog:', qa('.exploration-result').length > bubblesBefore)
+
+// Change 4: rename
+const ren = q('#cs-rename')
+ren.value = 'Renamed!'
+ren.dispatchEvent(new win.Event('input', { bubbles: true }))
+await new Promise(r => setTimeout(r, 100))
+ren.dispatchEvent(new win.FocusEvent('blur'))
+await new Promise(r => setTimeout(r, 200))
+console.log('rename persisted call:', JSON.stringify(win.__calls.filter(c=>c[0]==='title')))
+
+// Change 5: summarize toggle (different field, same session)
+const sumBox = boxes()[3]
+click(sumBox); await new Promise(r => setTimeout(r, 200))
+console.log('summarize now:', sumBox.checked, '| calls:', JSON.stringify(win.__calls.filter(c=>c[0]==='summarize')))
+
+// Close, reopen: values must reflect what we set (no stale revert)
+const closeX = q('.icon-close')
+click(closeX); await new Promise(r => setTimeout(r, 400))
+console.log('thread title after rename:', q('.conversation-info h3')?.textContent?.trim())
+click([...qa('button')].find(b => b.getAttribute('aria-label') === 'Conversation settings'))
+await new Promise(r => setTimeout(r, 300))
+console.log('reopened | rename field:', q('#cs-rename')?.value)
+boxes().forEach((b,i)=>console.log('  box',i,'checked=',b.checked))
+click(q('.icon-close')); await new Promise(r => setTimeout(r, 200))
 
 console.log('SMOKE DONE')

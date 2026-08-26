@@ -435,6 +435,23 @@
     loadSettingsSkills()
   }
 
+  // Live-sync settings changed in the dialog onto everything that renders them:
+  // the list-row object (mutated in place by the dialog), the open thread's
+  // activeConversation copy, and the tech/context detail flags.
+  function handleDialogSetting(key, value) {
+    const targetId = settingsTarget?.id
+    if (activeConversation && targetId === activeConversation.id) {
+      if (key in activeConversation) {
+        activeConversation[key] = value
+      }
+      if (key === 'tech_details') showTechDetails = value
+      if (key === 'context_details') showContextDetails = value
+    }
+    // Keep list rows consistent even when target came from the thread header
+    const row = conversations.find(c => c.id === targetId)
+    if (row && row !== settingsTarget && key in row) row[key] = value
+  }
+
   function openActiveConversationSettings() {
     settingsTarget = activeConversation
     showSettingsDialog = true
@@ -822,6 +839,7 @@
     {llmProviders}
     {dataSources}
     open={showSettingsDialog && !!settingsTarget}
+    onchange={handleDialogSetting}
     onclose={closeSettingsDialog}
     ondeleted={async (id) => {
       if (activeConversation?.id === id) {
