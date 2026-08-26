@@ -16,7 +16,7 @@ ENV PATH="/usr/local/go/bin:/root/go/bin:$PATH"
 
 WORKDIR /build
 COPY go.mod go.sum ./
-COPY main.go app.go ./
+COPY main.go app.go headless.go headless_handlers.go ./
 COPY pkg/ ./pkg/
 COPY frontend/dist/ ./frontend/dist/
 COPY frontend/wailsjs/ ./frontend/wailsjs/
