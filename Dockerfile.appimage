@@ -37,6 +37,12 @@ RUN wget -q -O /usr/local/bin/linuxdeploy \
 
 COPY scripts/AppDir /AppDir
 
+# Git cannot track empty directories — recreate the AppDir skeleton that
+# linuxdeploy requires (usr/bin, icon paths) at build time.
+RUN mkdir -p /AppDir/usr/bin \
+    /AppDir/usr/share/applications \
+    /AppDir/usr/share/icons/hicolor/256x256/apps
+
 RUN cp /build/yourql /AppDir/usr/bin/yourql && \
     chmod +x /AppDir/AppRun && \
     ln -sf usr/share/applications/yourql.desktop /AppDir/yourql.desktop && \
