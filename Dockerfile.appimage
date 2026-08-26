@@ -52,7 +52,7 @@ RUN cp /build/yourql /AppDir/usr/bin/yourql && \
         -fill white -font DejaVu-Sans-Bold -pointsize 110 -gravity center -annotate 0 'YQ' \
         /AppDir/usr/share/icons/hicolor/256x256/apps/yourql.png && \
     cd / && \
-    /opt/linuxdeploy/AppRun --appdir AppDir --plugin gtk --output appimage && \
+    DEPLOY_GTK_VERSION=3 /opt/linuxdeploy/AppRun --appdir AppDir --plugin gtk --output appimage && \
     ls -lh *.AppImage
 
 CMD ["bash"]
