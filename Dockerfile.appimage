@@ -30,7 +30,7 @@ RUN wget -q -O /usr/local/bin/linuxdeploy \
     chmod +x /usr/local/bin/linuxdeploy && \
     /usr/local/bin/linuxdeploy --appimage-extract 2>/dev/null && \
     mv squashfs-root /opt/linuxdeploy && \
-    chmod +x /opt/linuxdeploy/AppRun
+    chmod +x /opt/linuxdeploy/AppRun && \
     wget -q -O /usr/local/bin/linuxdeploy-plugin-gtk.sh \
     https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/master/linuxdeploy-plugin-gtk.sh && \
     chmod +x /usr/local/bin/linuxdeploy-plugin-gtk.sh
