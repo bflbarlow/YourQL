@@ -201,7 +201,7 @@ func (a *AgenticLoop) Run(ctx context.Context, input LoopInput, config LoopConfi
 			clarMsg := cfg.ResponseEmptyTruncated
 			if response.PromptTokens > 0 && response.CompletionTokens == 0 &&
 				contextWindow != nil && *contextWindow > 0 &&
-				response.PromptTokens >= (*contextWindow * 9 / 10) {
+				response.PromptTokens >= (*contextWindow*9/10) {
 				category = "context_overflow"
 				detail = fmt.Sprintf("prompt %d tokens vs %d context limit; 0 completion tokens", response.PromptTokens, *contextWindow)
 				clarMsg = cfg.ResponseContextOverflow

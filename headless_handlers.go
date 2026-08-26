@@ -246,7 +246,7 @@ func (s *headlessServer) handleGetQueries(w http.ResponseWriter, r *http.Request
 // match the GUI's input bounds in SettingsView.svelte so headless and GUI
 // expose the same contract.
 var timeoutBounds = map[string][2]int{
-	"pipeline_timeout_seconds":     {30, 3600},
+	"pipeline_timeout_seconds":      {30, 3600},
 	"summarization_timeout_seconds": {10, 600},
 }
 

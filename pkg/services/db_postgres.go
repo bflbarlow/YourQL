@@ -20,17 +20,17 @@ func init() {
 // PostgresDriver implements DBDriver for PostgreSQL.
 type PostgresDriver struct{}
 
-func (d *PostgresDriver) TypeKey() string      { return "postgresql" }
-func (d *PostgresDriver) OpenDriver() string   { return "pgx" }
-func (d *PostgresDriver) DisplayName() string  { return "PostgreSQL" }
-func (d *PostgresDriver) DefaultPort() int     { return 5432 }
+func (d *PostgresDriver) TypeKey() string     { return "postgresql" }
+func (d *PostgresDriver) OpenDriver() string  { return "pgx" }
+func (d *PostgresDriver) DisplayName() string { return "PostgreSQL" }
+func (d *PostgresDriver) DefaultPort() int    { return 5432 }
 func (d *PostgresDriver) SQLDialectHint() string {
 	return "PostgreSQL — double-quote \"identifier\" quoting, LIMIT/OFFSET, ILIKE, ::type casts"
 }
 
 // PostgresExtra holds PostgreSQL-specific connection parameters stored in the Extra JSON field.
 type PostgresExtra struct {
-	SSLMode    string `json:"sslmode,omitempty"`    // disable, require, verify-ca, verify-full
+	SSLMode    string `json:"sslmode,omitempty"`     // disable, require, verify-ca, verify-full
 	SearchPath string `json:"search_path,omitempty"` // e.g., "public,my_schema"
 }
 

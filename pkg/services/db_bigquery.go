@@ -23,18 +23,18 @@ func init() {
 // It also implements NativeQuerier since BigQuery doesn't use database/sql.
 type BigQueryDriver struct{}
 
-func (d *BigQueryDriver) TypeKey() string      { return "bigquery" }
-func (d *BigQueryDriver) OpenDriver() string   { return "bigquery" }
-func (d *BigQueryDriver) DisplayName() string  { return "BigQuery" }
-func (d *BigQueryDriver) DefaultPort() int     { return 443 }
+func (d *BigQueryDriver) TypeKey() string     { return "bigquery" }
+func (d *BigQueryDriver) OpenDriver() string  { return "bigquery" }
+func (d *BigQueryDriver) DisplayName() string { return "BigQuery" }
+func (d *BigQueryDriver) DefaultPort() int    { return 443 }
 func (d *BigQueryDriver) SQLDialectHint() string {
 	return "BigQuery — backtick `identifier` quoting, LIMIT, STRUCT/ARRAY types, STRING not VARCHAR, partition pruning"
 }
 
 // BigQueryExtra holds BigQuery-specific connection parameters.
 type BigQueryExtra struct {
-	ProjectID        string `json:"project_id"`
-	Dataset          string `json:"dataset,omitempty"`
+	ProjectID         string `json:"project_id"`
+	Dataset           string `json:"dataset,omitempty"`
 	ServiceAccountKey string `json:"service_account_key,omitempty"` // JSON key content
 }
 

@@ -245,22 +245,6 @@ export namespace main {
 	        this.contextWindow = source["contextWindow"];
 	    }
 	}
-	export class QueryResult {
-	    columns: string[];
-	    rows: any[][];
-	    total_rows: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new QueryResult(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.columns = source["columns"];
-	        this.rows = source["rows"];
-	        this.total_rows = source["total_rows"];
-	    }
-	}
 	export class SchemaColumnPreview {
 	    name: string;
 	    data_type: string;

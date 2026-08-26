@@ -41,10 +41,10 @@ func CreateDataSource(name, dbType, host string, port int, database, username, p
 	}
 
 	conn := &models.DataSource{
-		ID:       uint(id),
-		Name:     name,
-		Type:     dbType,
-		IsActive: isActive,
+		ID:        uint(id),
+		Name:      name,
+		Type:      dbType,
+		IsActive:  isActive,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}

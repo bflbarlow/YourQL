@@ -18,18 +18,60 @@
     }
   })
 
-  import { ListConversations, CreateConversation, GetConversationMessages, ProcessUserMessage, CancelProcessing, DeleteConversation, UpdateConversationTechDetails, ArchiveConversation, RestoreConversation, UpdateConversationSettings, ListLLMProviders, ListDataSources, UpdateConversationTitle, UpdateConversationMaxMessages, UpdateConversationMaxContextMessages, UpdateConversationPinned, DuplicateConversation, ClearConversationMessages, UpdateConversationContextDetails, UpdateConversationSummarize, UpdateConversationVizEnabled, UpdateConversationStreamingEnabled, ListSkills, GetConversationSkillIDs, SetConversationSkill, GetDiscussionDefaults, GetAppVersion, CheckForUpdate, DownloadUpdate, PerformUpgradeRestart, AddTagToConversation, RemoveTagFromConversation, GetTagsForConversation, ListAllTags } from '../wailsjs/go/main/App.js'
-  import { MessageSquare, Settings, X, Copy, Trash2, Pin, PinOff, Tag, Search, ChevronRight, ChevronLeft, Plus } from 'lucide-svelte'
-  import SettingsView from './SettingsView.svelte'
+  import {
+    ListConversations, CreateConversation, GetConversationMessages,
+    ProcessUserMessage, UpdateConversationPinned,
+    UpdateConversationSettings, ArchiveConversation, DeleteConversation,
+    RemoveTagFromConversation, GetTagsForConversation, ListSkills,
+    ListLLMProviders, ListDataSources, GetDiscussionDefaults,
+    GetAppVersion, CheckForUpdate, DownloadUpdate, PerformUpgradeRestart,
+    GetAppSetting, SetAppSetting
+  } from '../wailsjs/go/main/App.js'
+  import { createDefaultConversation } from './lib/api.js'
+  import { MessageSquare, Settings, X, Search, ChevronRight, ChevronLeft, Plus, Info, Pin, PinOff, Tag } from 'lucide-svelte'
+  import SettingsView from './components/settings/SettingsView.svelte'
   import ConversationView from './ConversationView.svelte'
+  import MinimalistView from './MinimalistView.svelte'
+  import ConversationSettingsDialog from './components/conversation/ConversationSettingsDialog.svelte'
+  import TagPopover from './components/conversation/TagPopover.svelte'
+  import Modal from './components/ui/Modal.svelte'
+  import ConfirmDialog from './components/ui/ConfirmDialog.svelte'
+  import ConfirmHost from './components/ui/ConfirmHost.svelte'
+  import IconBtn from './components/ui/IconBtn.svelte'
+  import EmptyState from './components/ui/EmptyState.svelte'
 
   let activeView = $state('discussions')
   let conversations = $state([])
   let llmProviders = $state([])
   let dataSources = $state([])
-  let allSkills = $state([])
-  let conversationSkillIDs = $state([])
   let sidebarCollapsed = $state(false)
+
+  // --- Minimalist mode state ---
+  let minimalist = $state(false)
+
+  function setMinimalist(enabled) {
+    minimalist = enabled
+    document.documentElement.setAttribute('data-minimalist', enabled ? 'true' : 'false')
+    SetAppSetting('minimalist_mode', enabled ? 'true' : 'false').catch(() => {})
+  }
+
+  async function loadMinimalistMode() {
+    try {
+      const val = await GetAppSetting('minimalist_mode')
+      minimalist = val === 'true'
+    } catch {
+      minimalist = false
+    }
+    document.documentElement.setAttribute('data-minimalist', minimalist ? 'true' : 'false')
+  }
+  loadMinimalistMode()
+
+  function handleKeydown(e) {
+    if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === 'M' || e.key === 'm')) {
+      e.preventDefault()
+      setMinimalist(!minimalist)
+    }
+  }
 
   // --- Version & auto-update state ---
   let appVersion = $state('loading...')
@@ -39,7 +81,6 @@
   let updateError = $state(null)
   let updateReady = $state(false)
 
-  // Fetch the running version from the backend (injected at build time).
   async function loadAppVersion() {
     try {
       appVersion = await GetAppVersion()
@@ -51,7 +92,6 @@
 
   let updateCheckedTimer = null
 
-  // --- Auto-update helpers ---
   async function handleCheckForUpdate() {
     updateChecking = true
     updateError = null
@@ -60,11 +100,8 @@
     if (updateCheckedTimer) clearTimeout(updateCheckedTimer)
     try {
       updateInfo = await CheckForUpdate()
-      // If we're already on latest, auto-reset to the check button after 5s
       if (updateInfo && !updateInfo.update_available) {
-        updateCheckedTimer = setTimeout(() => {
-          updateInfo = null
-        }, 5000)
+        updateCheckedTimer = setTimeout(() => { updateInfo = null }, 5000)
       }
     } catch (e) {
       updateError = e || 'Unable to reach update server'
@@ -105,7 +142,6 @@
     Object.fromEntries(dataSources.map(c => [c.id, c.name]))
   )
 
-  let status = $state("Ready")
   let error = $state(null)
 
   let showNewDiscussion = $state(false)
@@ -114,16 +150,15 @@
   let selectedDataSource = $state(null)
 
   async function openNewDiscussionModal() {
-    // Pre-fill with user's defaults
     try {
       const defaults = await GetDiscussionDefaults()
-      if (defaults && defaults.llm_provider_id) {
+      if (defaults?.llm_provider_id) {
         selectedLLMProvider = llmProviders.find(p => p.id === defaults.llm_provider_id) || null
       }
-      if (defaults && defaults.data_source_id) {
+      if (defaults?.data_source_id) {
         selectedDataSource = dataSources.find(ds => ds.id === defaults.data_source_id) || null
       }
-    } catch (e) {
+    } catch {
       // Ignore — defaults are a convenience, not a requirement
     }
     showNewDiscussion = true
@@ -140,8 +175,10 @@
   let errorConversationId = $state(null)
   let showTechDetails = $state(false)
   let showContextDetails = $state(false)
-  let selectedConversation = $state(null)
-  let showGearPopover = $state(false)
+
+  let showSettingsDialog = $state(false)
+  let settingsTarget = $state(null)   // conversation whose settings dialog is open
+  let settingsSkills = $state([])     // skills list for the dialog
 
   // Reset the message input when switching discussions.
   $effect(() => {
@@ -151,8 +188,8 @@
 
   $effect(() => {
     activeView
-    showGearPopover = false
-    selectedConversation = null
+    showSettingsDialog = false
+    settingsTarget = null
   })
 
   let deleteTargetId = $state(null)
@@ -166,14 +203,14 @@
   let filterDataSource = $state('')
   let filterLLM = $state('')
 
-  // Tag management in gear popover
-  let convTags = $state([])
-  let tagInput = $state('')
-  let allTags = $state([])
-
-  // Inline row-level tag popover (add/remove tags without opening full settings)
+  // Inline row-level tag popover
   let rowTagPopoverForId = $state(null)
-  let rowTagInput = $state('')
+
+  function clearFilters() {
+    searchQuery = ''
+    filterDataSource = ''
+    filterLLM = ''
+  }
 
   let filteredConversations = $derived(
     conversations.filter(conv => {
@@ -188,7 +225,6 @@
         }
       }
       if (filterDataSource && conv.data_source_id !== +filterDataSource) {
-        // Pinned conversations always appear regardless of filter
         if (!conv.pinned) return false
       }
       if (filterLLM && conv.llm_provider_id !== +filterLLM) {
@@ -199,7 +235,6 @@
   )
 
   async function loadData() {
-    status = "Loading..."
     error = null
     try {
       const convRes = await ListConversations()
@@ -210,15 +245,8 @@
 
       const dbRes = await ListDataSources()
       dataSources = dbRes || []
-
-      try {
-        allSkills = await ListSkills() || []
-      } catch (_) {}
-
-      status = "Loaded successfully"
     } catch (e) {
       error = e.toString()
-      status = "Error loading data"
     }
   }
 
@@ -234,10 +262,11 @@
     createError = null
 
     try {
-      const llmProviderID = selectedLLMProvider ? selectedLLMProvider.id : null
-      const dataSourceID = selectedDataSource ? selectedDataSource.id : null
-
-      const conversation = await CreateConversation(newDiscussionTitle.trim(), llmProviderID, dataSourceID)
+      const conversation = await CreateConversation(
+        newDiscussionTitle.trim(),
+        selectedLLMProvider ? selectedLLMProvider.id : null,
+        selectedDataSource ? selectedDataSource.id : null
+      )
 
       showNewDiscussion = false
       newDiscussionTitle = ''
@@ -291,12 +320,11 @@
         activeView = 'discussions'
         conversationMessages = []
       }
+      cancelDelete()
     } catch (e) {
       error = 'Failed to delete: ' + e.toString()
     } finally {
       deleting = false
-      deleteTargetId = null
-      deleteTargetTitle = ''
     }
   }
 
@@ -328,18 +356,15 @@
       messageError = e.toString()
       errorConversationId = activeConversation.id
       // Remove optimistic message on error, then re-fetch from DB
-      // (Go may have already persisted the user message + an error assistant
-      // message before the error propagated — we need to pick those up)
       conversationMessages = conversationMessages.filter(m => m.id !== tempId)
       try {
         conversationMessages = await GetConversationMessages(activeConversation.id)
-      } catch (_) {
-        // DB fetch failed too — keep the empty filtered array
+      } catch {
+        // DB fetch failed too — keep the filtered array
       }
     } finally {
       processingMessage = ''
       processingConversationId = null
-      // Refresh the conversation list so the active conversation floats to the top
       loadData()
     }
   }
@@ -358,133 +383,24 @@
       if (llmProviderID !== null) activeConversation.llm_provider_id = llmProviderID
       if (dataSourceID !== null) activeConversation.data_source_id = dataSourceID
       activeConversation.updated_at = new Date().toISOString()
-      const convRes = await ListConversations()
-      conversations = (convRes || []).filter(c => showArchived || c.status !== 'archived')
+      await loadData()
     } catch (e) {
       console.error('Failed to update conversation settings:', e)
     }
   }
 
   async function handleArchiveConversation() {
-    if (!selectedConversation) return
+    if (!settingsTarget && !activeConversation) return
     try {
-      await ArchiveConversation(selectedConversation.id)
+      const targetId = settingsTarget?.id ?? activeConversation.id
+      await ArchiveConversation(targetId)
       backToConversations()
-      const convRes = await ListConversations()
-      conversations = (convRes || []).filter(c => showArchived || c.status !== 'archived')
     } catch (e) {
       console.error('Failed to archive conversation:', e)
     }
   }
 
-  // ==================== New conversation settings handlers ====================
-  async function handleRenameConversation() {
-    if (!selectedConversation || !selectedConversation.title?.trim()) return
-    try {
-      const updated = await UpdateConversationTitle(selectedConversation.id, selectedConversation.title.trim())
-      if (activeConversation && activeConversation.id === selectedConversation.id) {
-        activeConversation.title = updated.title
-      }
-      await loadData()
-    } catch (e) {
-      console.error('Failed to rename conversation:', e)
-    }
-  }
-
-  async function handleSetMaxMessages(maxMessages) {
-    if (!selectedConversation) return
-    try {
-      await UpdateConversationMaxMessages(selectedConversation.id, maxMessages)
-      if (activeConversation && activeConversation.id === selectedConversation.id) {
-        activeConversation.max_messages = maxMessages
-      }
-    } catch (e) {
-      console.error('Failed to set max messages:', e)
-    }
-  }
-
-  async function handleSetMaxContextMessages(maxContextMessages) {
-    if (!selectedConversation) return
-    try {
-      await UpdateConversationMaxContextMessages(selectedConversation.id, maxContextMessages)
-      if (activeConversation && activeConversation.id === selectedConversation.id) {
-        activeConversation.max_context_messages = maxContextMessages
-      }
-    } catch (e) {
-      console.error('Failed to set max context messages:', e)
-    }
-  }
-
-  async function handleSetPinned(pinned) {
-    if (!selectedConversation) return
-    try {
-      await UpdateConversationPinned(selectedConversation.id, pinned)
-    } catch (e) {
-      console.error('Failed to set pinned:', e)
-    }
-  }
-
-  // Tag management
-  async function loadConversationTags(id) {
-    try {
-      convTags = await GetTagsForConversation(id) || []
-      allTags = await ListAllTags() || []
-    } catch (e) {
-      console.error('Failed to load tags:', e)
-    }
-  }
-
-  let tagSuggestions = $derived(
-    (allTags || []).filter(t =>
-      t.toLowerCase().includes((tagInput || '').toLowerCase()) &&
-      !(convTags || []).includes(t)
-    ).slice(0, 8)
-  )
-
-  async function handleAddTag(name) {
-    if (!selectedConversation || !name) return
-    try {
-      await AddTagToConversation(selectedConversation.id, name)
-      convTags = await GetTagsForConversation(selectedConversation.id) || []
-      allTags = await ListAllTags() || []
-      tagInput = ''
-      selectedConversation.tags = convTags
-      loadData()
-    } catch (e) {
-      console.error('Failed to add tag:', e)
-    }
-  }
-
-  async function handleRemoveTag(name) {
-    if (!selectedConversation) return
-    try {
-      await RemoveTagFromConversation(selectedConversation.id, name)
-      convTags = await GetTagsForConversation(selectedConversation.id) || []
-      allTags = await ListAllTags() || []
-      selectedConversation.tags = convTags
-      loadData()
-    } catch (e) {
-      console.error('Failed to remove tag:', e)
-    }
-  }
-
-  async function handleTagKeydown(e) {
-    if (e.key === 'Enter') {
-      e.preventDefault()
-      const val = tagInput.trim()
-      if (!val) return
-      // If exact match in suggestions, use it; otherwise create new tag
-      const match = tagSuggestions.find(t => t.toLowerCase() === val.toLowerCase())
-      if (match) {
-        await handleAddTag(match)
-      } else {
-        await handleAddTag(val)
-      }
-    }
-  }
-
-  // --- Inline row-level pin & tag controls (no need to open Settings) ---
-
+  // ── Row actions ──
   async function handleQuickTogglePin(conv, e) {
     e.stopPropagation()
     try {
@@ -497,46 +413,9 @@
     }
   }
 
-  async function openRowTagPopover(conv, e) {
+  function toggleRowTagPopover(conv, e) {
     e.stopPropagation()
-    if (rowTagPopoverForId === conv.id) {
-      rowTagPopoverForId = null
-      return
-    }
-    rowTagPopoverForId = conv.id
-    rowTagInput = ''
-    try {
-      allTags = await ListAllTags() || []
-    } catch (err) {
-      console.error('Failed to load tags:', err)
-    }
-  }
-
-  function closeRowTagPopover() {
-    rowTagPopoverForId = null
-    rowTagInput = ''
-  }
-
-  let rowTagSuggestions = $derived(
-    (allTags || []).filter(t => {
-      const conv = conversations.find(c => c.id === rowTagPopoverForId)
-      const existing = (conv?.tags) || []
-      return t.toLowerCase().includes((rowTagInput || '').toLowerCase()) && !existing.includes(t)
-    }).slice(0, 8)
-  )
-
-  async function handleRowAddTag(conv, name) {
-    const val = (name || '').trim()
-    if (!val) return
-    try {
-      await AddTagToConversation(conv.id, val)
-      conv.tags = await GetTagsForConversation(conv.id) || []
-      conversations = [...conversations]
-      allTags = await ListAllTags() || []
-      rowTagInput = ''
-    } catch (err) {
-      console.error('Failed to add tag:', err)
-    }
+    rowTagPopoverForId = rowTagPopoverForId === conv.id ? null : conv.id
   }
 
   async function handleRowRemoveTag(conv, name, e) {
@@ -550,140 +429,60 @@
     }
   }
 
-  function handleRowTagKeydown(conv, e) {
-    if (e.key === 'Enter') {
-      e.preventDefault()
-      const val = rowTagInput.trim()
-      if (!val) return
-      const match = rowTagSuggestions.find(t => t.toLowerCase() === val.toLowerCase())
-      handleRowAddTag(conv, match || val)
-    } else if (e.key === 'Escape') {
-      closeRowTagPopover()
+  function openConversationSettings(conv) {
+    settingsTarget = conv
+    showSettingsDialog = true
+    loadSettingsSkills()
+  }
+
+  function openActiveConversationSettings() {
+    settingsTarget = activeConversation
+    showSettingsDialog = true
+    loadSettingsSkills()
+  }
+
+  async function loadSettingsSkills() {
+    try {
+      settingsSkills = await ListSkills() || []
+    } catch {
+      settingsSkills = []
     }
   }
 
-  async function handleToggleTechDetails(id) {
-    try {
-      await UpdateConversationTechDetails(id, selectedConversation.tech_details)
-      if (activeConversation && activeConversation.id === id) {
-        activeConversation.tech_details = selectedConversation.tech_details
-        showTechDetails = selectedConversation.tech_details
-      }
-    } catch (e) {
-      console.error('Failed to toggle tech details:', e)
-    }
-  }
-
-  async function handleToggleContextDetails(id) {
-    try {
-      await UpdateConversationContextDetails(id, selectedConversation.context_details)
-      if (activeConversation && activeConversation.id === id) {
-        activeConversation.context_details = selectedConversation.context_details
-        showContextDetails = selectedConversation.context_details
-      }
-    } catch (e) {
-      console.error('Failed to toggle context details:', e)
-    }
-  }
-
-  async function handleSetSummarize(id, summarize) {
-    try {
-      await UpdateConversationSummarize(id, summarize)
-      if (activeConversation && activeConversation.id === id) {
-        activeConversation.summarize = summarize
-      }
-      if (selectedConversation && selectedConversation.id === id) {
-        selectedConversation.summarize = summarize
-      }
-    } catch (e) {
-      console.error('Failed to set summarize:', e)
-    }
-  }
-
-  async function handleToggleVizEnabled(id, vizEnabled) {
-    try {
-      await UpdateConversationVizEnabled(id, vizEnabled)
-      if (activeConversation && activeConversation.id === id) {
-        activeConversation.viz_enabled = vizEnabled
-      }
-      if (selectedConversation && selectedConversation.id === id) {
-        selectedConversation.viz_enabled = vizEnabled
-      }
-    } catch (e) {
-      console.error('Failed to toggle viz enabled:', e)
-    }
-  }
-
-  async function handleToggleStreamingEnabled(id, enabled) {
-    try {
-      await UpdateConversationStreamingEnabled(id, enabled)
-      if (activeConversation && activeConversation.id === id) {
-        activeConversation.streaming_enabled = enabled
-      }
-      if (selectedConversation && selectedConversation.id === id) {
-        selectedConversation.streaming_enabled = enabled
-      }
-    } catch (e) {
-      console.error('Failed to toggle streaming:', e)
-    }
-  }
-
-  async function handleToggleConversationSkill(conversationId, skillId, enabled) {
-    try {
-      await SetConversationSkill(conversationId, skillId, enabled)
-      if (enabled) {
-        conversationSkillIDs = [...conversationSkillIDs, skillId]
-      } else {
-        conversationSkillIDs = conversationSkillIDs.filter(id => id !== skillId)
-      }
-    } catch (e) {
-      console.error('Failed to toggle conversation skill:', e)
-    }
-  }
-
-  async function loadConversationSkills(conversationId) {
-    try {
-      conversationSkillIDs = await GetConversationSkillIDs(conversationId) || []
-    } catch (e) {
-      conversationSkillIDs = []
-    }
-  }
-
-  async function handleDuplicateConversation() {
-    if (!selectedConversation) return
-    try {
-      const duplicated = await DuplicateConversation(selectedConversation.id)
-      await loadData()
-      // Open the duplicated conversation
-      activeConversation = duplicated
-      activeView = 'conversation'
-      conversationMessages = await GetConversationMessages(duplicated.id)
-      showGearPopover = false
-      selectedConversation = null
-    } catch (e) {
-      console.error('Failed to duplicate conversation:', e)
-    }
-  }
-
-  async function handleClearMessages() {
-    if (!selectedConversation) return
-    if (!confirm('Clear all messages in this conversation? The conversation itself will remain.')) return
-    try {
-      await ClearConversationMessages(selectedConversation.id)
-      if (activeConversation && activeConversation.id === selectedConversation.id) {
-        conversationMessages = []
-      }
-      showGearPopover = false
-      selectedConversation = null
-      await loadData()
-    } catch (e) {
-      console.error('Failed to clear messages:', e)
+  function closeSettingsDialog(changed, duplicated) {
+    showSettingsDialog = false
+    settingsTarget = null
+    loadData()
+    if (duplicated) {
+      openConversation(duplicated)
     }
   }
 </script>
 
+<svelte:window onkeydown={handleKeydown} />
+
+{#if minimalist}
+  <MinimalistView
+    initialView={activeView === 'settings' ? 'settings' : activeView === 'about' ? 'about' : activeView === 'discussions' ? 'discussions' : 'discussion'}
+    conversations={filteredConversations}
+    activeConversation={activeConversation}
+    conversationMessages={conversationMessages}
+    {llmProviders}
+    {dataSources}
+    processingActive={!!processingConversationId}
+    onExit={() => setMinimalist(false)}
+    onConversationChange={async (conv) => { await openConversation(conv); loadData() }}
+    onMessageSent={async (convId) => {
+      if (convId === activeConversation?.id) {
+        conversationMessages = await GetConversationMessages(convId)
+        loadData()
+      }
+    }}
+  />
+  <ConfirmHost />
+{:else}
 <div class="app-layout">
-  <aside class="sidebar {sidebarCollapsed ? 'collapsed' : ''}">
+  <aside class="sidebar" class:collapsed={sidebarCollapsed}>
     <div class="sidebar-header">
       <button class="sidebar-toggle" onclick={() => sidebarCollapsed = !sidebarCollapsed} title="{sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}">
         {#if sidebarCollapsed}
@@ -725,7 +524,7 @@
         onclick={() => activeView = 'about'}
         title="About"
       >
-        <span class="nav-icon">i️</span>
+        <span class="nav-icon"><Info size={18} /></span>
         {#if !sidebarCollapsed}
           <span>About</span>
         {/if}
@@ -735,16 +534,16 @@
     <div class="sidebar-footer">
       {#if sidebarCollapsed}
         <button
-          class="btn-new-discussion btn-new-discussion-icon"
-          onclick={openNewDiscussionModal}
+          class="btn-minimal-mode btn-minimal-mode-icon"
+          onclick={() => setMinimalist(true)}
           type="button"
-          title="New Discussion"
+          title="Minimal Mode"
         >
-          <Plus size={16} />
+          ◐
         </button>
       {:else}
-        <button class="btn-new-discussion" onclick={openNewDiscussionModal} type="button">
-          <Plus size={14} /> New Discussion
+        <button class="btn-minimal-mode" onclick={() => setMinimalist(true)} type="button">
+          ◐ Minimal Mode
         </button>
       {/if}
     </div>
@@ -766,7 +565,7 @@
               <input type="checkbox" bind:checked={showArchived} onchange={() => loadData()} />
               Show archived
             </label>
-            <button class="btn btn-primary" onclick={openNewDiscussionModal}>+ New Discussion</button>
+            <button class="btn btn-primary" onclick={openNewDiscussionModal}><Plus size={14} style="vertical-align: -2px;" /> New Discussion</button>
           </div>
         </div>
         <div class="discussion-filters">
@@ -807,24 +606,30 @@
               {#if filterLLM}
                 <span class="filter-pill">{llmNameByID[+filterLLM]} <button onclick={() => filterLLM = ''} title="Remove filter"><X size={11} /></button></span>
               {/if}
-              <button class="btn-clear-filters" onclick={() => { searchQuery = ''; filterDataSource = ''; filterLLM = '' }}>Clear all</button>
+              <button class="btn-clear-filters" onclick={clearFilters}>Clear all</button>
             </div>
           {/if}
         </div>
         <div class="view-content">
           {#if filteredConversations.length === 0}
-            <div class="empty-state">
-              {#if searchQuery || filterDataSource || filterLLM}
-                <p>No discussions match your filters.</p>
-                <p class="hint"><a href="#" onclick={(e) => { e.preventDefault(); searchQuery = ''; filterDataSource = ''; filterLLM = '' }}>Clear filters</a></p>
-              {:else}
-                <p>No discussions found</p>
-                <p class="hint">Create a new discussion to start querying your data</p>
-              {/if}
-            </div>
+            {#if searchQuery || filterDataSource || filterLLM}
+              <EmptyState
+                title="No discussions match your filters."
+                hint="Try broadening your search or removing filters."
+                actionLabel="Clear filters"
+                onaction={clearFilters}
+              />
+            {:else}
+              <EmptyState
+                title="No discussions found"
+                hint="Create a new discussion to start querying your data."
+                actionLabel="+ New Discussion"
+                onaction={openNewDiscussionModal}
+              />
+            {/if}
           {:else}
             <div class="conversations-list">
-              {#each filteredConversations as conv}
+              {#each filteredConversations as conv (conv.id)}
                 <div class="conversation-row" class:archived={conv.status === 'archived'} class:pinned={conv.pinned}>
                   <div
                     class="conversation-item"
@@ -834,7 +639,7 @@
                     onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openConversation(conv) } }}
                   >
                     <div class="conversation-title">
-                      {#if conv.pinned}<span class="pin-indicator" title="Pinned">📌</span>{/if}
+                      {#if conv.pinned}<Pin size={13} class="pin-indicator" />{/if}
                       {conv.title || 'Untitled'}
                     </div>
                     <div class="conversation-meta">
@@ -858,69 +663,27 @@
                     </div>
                   </div>
                   <div class="conversation-row-actions">
-                    <button
-                      class="row-action-btn pin-toggle-btn"
-                      class:active={conv.pinned}
+                    <IconBtn
+                      size="sm"
+                      label={conv.pinned ? 'Unpin' : 'Pin to top'}
+                      active={conv.pinned}
                       onclick={(e) => handleQuickTogglePin(conv, e)}
-                      title={conv.pinned ? 'Unpin' : 'Pin to top'}
-                      type="button"
                     >
                       {#if conv.pinned}<PinOff size={14} />{:else}<Pin size={14} />{/if}
-                    </button>
+                    </IconBtn>
                     <div class="row-tag-popover-wrapper">
-                      <button
-                        class="row-action-btn"
-                        onclick={(e) => openRowTagPopover(conv, e)}
-                        title="Add or remove tags"
-                        type="button"
-                      >
+                      <IconBtn size="sm" label="Add or remove tags" onclick={(e) => toggleRowTagPopover(conv, e)}>
                         <Tag size={14} />
-                      </button>
-                      {#if rowTagPopoverForId === conv.id}
-                        <div class="row-tag-popover-overlay" onclick={closeRowTagPopover}></div>
-                        <div class="row-tag-popover" onclick={(e) => e.stopPropagation()}>
-                          <div class="row-tag-popover-title">Tags</div>
-                          <div class="tag-chips">
-                            {#each (conv.tags || []) as tag}
-                              <span class="tag-chip">
-                                {tag}
-                                <button class="tag-remove" onclick={(e) => handleRowRemoveTag(conv, tag, e)} title="Remove tag">&times;</button>
-                              </span>
-                            {/each}
-                            {#if !(conv.tags && conv.tags.length)}
-                              <span class="no-tags-hint">No tags yet</span>
-                            {/if}
-                          </div>
-                          <div class="tag-input-wrapper">
-                            <input
-                              type="text"
-                              class="tag-input"
-                              placeholder="Add a tag…"
-                              bind:value={rowTagInput}
-                              onkeydown={(e) => handleRowTagKeydown(conv, e)}
-                              autofocus
-                            />
-                            {#if rowTagSuggestions.length > 0}
-                              <div class="tag-suggestions">
-                                {#each rowTagSuggestions as suggestion}
-                                  <button class="tag-suggestion" onclick={() => handleRowAddTag(conv, suggestion)}>
-                                    {suggestion}
-                                  </button>
-                                {/each}
-                              </div>
-                            {/if}
-                          </div>
-                        </div>
-                      {/if}
+                      </IconBtn>
+                      <TagPopover
+                        conversation={conv}
+                        open={rowTagPopoverForId === conv.id}
+                        onclose={() => rowTagPopoverForId = null}
+                      />
                     </div>
-                    <button
-                      class="row-action-btn"
-                      onclick={() => { selectedConversation = conv; showGearPopover = true; loadConversationTags(conv.id) }}
-                      title="Conversation settings"
-                      type="button"
-                    >
+                    <IconBtn size="sm" label="Conversation settings" onclick={() => openConversationSettings(conv)}>
                       <Settings size={14} />
-                    </button>
+                    </IconBtn>
                   </div>
                 </div>
               {/each}
@@ -940,19 +703,18 @@
         showTechDetails={showTechDetails}
         showContextDetails={showContextDetails}
         maxMessages={activeConversation?.max_messages || 0}
-        onMaxMessagesChange={handleSetMaxMessages}
         onSendMessage={handleSendMessage}
         onBack={backToConversations}
         onMessageChange={(val) => userMessage = val}
-        onArchiveConversation={handleArchiveConversation}
-        onUpdateConversationSettings={handleUpdateConversationSettings}
-        onGearClick={async () => { selectedConversation = activeConversation; showGearPopover = true; allSkills = await ListSkills() || []; loadConversationSkills(activeConversation.id) }}
+        onGearClick={openActiveConversationSettings}
       />
     {:else if activeView === 'settings'}
       <SettingsView
         {llmProviders}
         {dataSources}
         onUpdate={loadData}
+        {minimalist}
+        onMinimalistChange={setMinimalist}
       />
     {:else if activeView === 'about'}
       <div class="about-view">
@@ -1053,333 +815,82 @@
     {/if}
   </main>
 
-  {#if showGearPopover && selectedConversation}
-    <div class="gear-popover-overlay" onclick={() => { showGearPopover = false; selectedConversation = null }}></div>
-    <div class="gear-popover gear-popover-wide" onclick={(e) => e.stopPropagation()}>
-      <div class="gear-popover-header">
-        <span>Settings for "{selectedConversation.title}"</span>
-        <button class="gear-popover-close" onclick={() => { showGearPopover = false; selectedConversation = null }}><X size={16} /></button>
-      </div>
+  <!-- Conversation Settings dialog -->
+  <ConversationSettingsDialog
+    conversation={settingsTarget}
+    allSkills={settingsSkills}
+    {llmProviders}
+    {dataSources}
+    open={showSettingsDialog && !!settingsTarget}
+    onclose={closeSettingsDialog}
+    ondeleted={async (id) => {
+      if (activeConversation?.id === id) {
+        activeConversation = null
+        activeView = 'discussions'
+        conversationMessages = []
+      }
+      await loadData()
+    }}
+  />
 
-      <!-- LLM Provider -->
-      <div class="gear-popover-section">
-        <label>LLM Provider</label>
-        <select
-          value={selectedConversation.llm_provider_id || ''}
-          onchange={(e) => {
-            const val = e.target.value ? parseInt(e.target.value) : null
-            handleUpdateConversationSettings(val, selectedConversation.data_source_id || null)
-          }}
-        >
-          <option value="">(none)</option>
-          {#each llmProviders as provider}
-            <option value="{provider.id}">{provider.name}</option>
-          {/each}
-        </select>
-      </div>
+  <!-- New Discussion -->
+  <Modal open={showNewDiscussion} title="New Discussion" onclose={() => showNewDiscussion = false}>
+    <div class="form-group">
+      <label>Title</label>
+      <input
+        type="text"
+        bind:value={newDiscussionTitle}
+        placeholder="Enter discussion title"
+        onkeydown={(e) => e.key === 'Enter' && handleCreateDiscussion()}
+      />
+    </div>
 
-      <!-- DB Connection -->
-      <div class="gear-popover-section">
-        <label>DB Connection</label>
-        <select
-          value={selectedConversation.data_source_id || ''}
-          onchange={(e) => {
-            const val = e.target.value ? parseInt(e.target.value) : null
-            handleUpdateConversationSettings(selectedConversation.llm_provider_id || null, val)
-          }}
-        >
-          <option value="">(none)</option>
-          {#each dataSources as conn}
-            <option value="{conn.id}">{conn.name}</option>
-          {/each}
-        </select>
-      </div>
-
-      <!-- Rename -->
-      <div class="gear-popover-section">
-        <label>Rename</label>
-        <input
-          type="text"
-          value={selectedConversation.title || ''}
-          placeholder="Enter new name..."
-          oninput={(e) => {
-            selectedConversation.title = e.target.value
-          }}
-          onkeydown={(e) => {
-            if (e.key === 'Enter') {
-              handleRenameConversation()
-              e.target.blur()
-            }
-          }}
-          onblur={() => {
-            handleRenameConversation()
-          }}
-        />
-      </div>
-
-      <!-- Message Limit -->
-      <div class="gear-popover-section">
-        <label>Visible Messages</label>
-        <div class="message-limit-group">
-          <button
-            class="msg-limit-btn {selectedConversation.max_messages === 0 ? 'active' : ''}"
-            onclick={() => handleSetMaxMessages(0)}
-          >Show All</button>
-          <input
-            type="number"
-            value={selectedConversation.max_messages || ''}
-            placeholder="e.g. 50"
-            min="1"
-            max="500"
-            oninput={(e) => {
-              const val = parseInt(e.target.value)
-              if (val >= 1 && val <= 500) {
-                selectedConversation.max_messages = val
-              }
-            }}
-            onblur={() => handleSetMaxMessages(selectedConversation.max_messages || 0)}
-          />
-        </div>
-      </div>
-
-      <!-- Context Messages -->
-      <div class="gear-popover-section">
-        <label>Messages in LLM Context</label>
-        <div class="message-limit-group">
-          <button
-            class="msg-limit-btn {selectedConversation.max_context_messages === 15 ? 'active' : ''}"
-            onclick={() => handleSetMaxContextMessages(15)}
-          >Max 15</button>
-          <input
-            type="number"
-            value={selectedConversation.max_context_messages || ''}
-            placeholder="e.g. 5"
-            min="1"
-            max="15"
-            oninput={(e) => {
-              const val = parseInt(e.target.value)
-              if (val >= 1 && val <= 15) {
-                selectedConversation.max_context_messages = val
-              }
-            }}
-            onblur={() => handleSetMaxContextMessages(selectedConversation.max_context_messages || 0)}
-          />
-        </div>
-        <div style="color: var(--text-tertiary); font-size: var(--font-xs); margin-top: var(--space-2xs);">Default: 5 messages. Hard cap: 15. Large context windows can cause empty responses.</div>
-      </div>
-
-      <!-- Pin -->
-      <div class="gear-popover-section">
-        <label>
-          <input type="checkbox" bind:checked={selectedConversation.pinned} onchange={() => handleSetPinned(selectedConversation.pinned)} />
-          Pin to top of list
-        </label>
-      </div>
-
-      <!-- Tech Details -->
-      <div class="gear-popover-section">
-        <label>
-          <input type="checkbox" bind:checked={selectedConversation.tech_details} onchange={() => handleToggleTechDetails(selectedConversation.id)} />
-          SHOW TECHNICAL DETAILS
-        </label>
-      </div>
-
-      <!-- Context Details -->
-      <div class="gear-popover-section">
-        <label>
-          <input type="checkbox" bind:checked={selectedConversation.context_details} onchange={() => handleToggleContextDetails(selectedConversation.id)} />
-          Show context &amp; token details
-        </label>
-      </div>
-
-      <!-- Summarize -->
-      <div class="gear-popover-section">
-        <label>
-          <input type="checkbox" checked={selectedConversation.summarize} onchange={(e) => handleSetSummarize(selectedConversation.id, e.target.checked)} />
-          Summarize results
-        </label>
-        <div style="color: var(--text-tertiary); font-size: var(--font-xs); margin-top: var(--space-2xs);">
-          LLM summarizes query results as a plain-English answer
-        </div>
-      </div>
-
-      <!-- Data Visualization -->
-      <div class="gear-popover-section">
-        <label>
-          <input type="checkbox" checked={selectedConversation.viz_enabled !== false} onchange={(e) => handleToggleVizEnabled(selectedConversation.id, e.target.checked)} />
-          Data visualization
-        </label>
-        <div style="color: var(--text-tertiary); font-size: var(--font-xs); margin-top: var(--space-2xs);">
-          LLM generates charts (bar, line, pie, scatter) when appropriate
-        </div>
-      </div>
-
-      <!-- Streaming -->
-      <div class="gear-popover-section">
-        <label>
-          <input type="checkbox" checked={selectedConversation.streaming_enabled === true} onchange={(e) => handleToggleStreamingEnabled(selectedConversation.id, e.target.checked)} />
-          Stream LLM output
-        </label>
-        <div style="color: var(--text-tertiary); font-size: var(--font-xs); margin-top: var(--space-2xs);">
-          Show model output character-by-character in real time
-        </div>
-      </div>
-
-      <!-- Skills -->
-      <div class="gear-popover-section">
-        <div class="gear-popover-section-title">Skills</div>
-        {#each allSkills as skill (skill.id)}
-          {@const enabled = conversationSkillIDs.includes(skill.id)}
-          <label class="skill-toggle">
-            <input type="checkbox"
-                   checked={enabled}
-                   disabled={!skill.is_active}
-                   onchange={(e) => handleToggleConversationSkill(selectedConversation.id, skill.id, e.target.checked)} />
-            {skill.name}
-          </label>
+    <div class="form-group">
+      <label>LLM Provider</label>
+      <select bind:value={selectedLLMProvider}>
+        <option value={null}>Default</option>
+        {#each llmProviders as provider}
+          <option value={provider}>{provider.name}</option>
         {/each}
-        {#if allSkills.length === 0}
-          <div style="color: var(--text-tertiary); font-size: var(--font-xs);">No skills configured. Add skills in Settings.</div>
-        {/if}
-      </div>
-
-      <div class="gear-popover-divider"></div>
-
-      <!-- Tags -->
-      <div class="gear-popover-section">
-        <div class="gear-popover-section-title">Tags</div>
-        <div class="tag-chips">
-          {#each convTags as tag}
-            <span class="tag-chip">
-              {tag}
-              <button class="tag-remove" onclick={() => handleRemoveTag(tag)} title="Remove tag">&times;</button>
-            </span>
-          {/each}
-        </div>
-        <div class="tag-input-wrapper">
-          <input
-            type="text"
-            class="tag-input"
-            placeholder="Add a tag…"
-            bind:value={tagInput}
-            onkeydown={handleTagKeydown}
-          />
-          {#if tagSuggestions.length > 0}
-            <div class="tag-suggestions">
-              {#each tagSuggestions as suggestion}
-                <button class="tag-suggestion" onclick={() => handleAddTag(suggestion)}>
-                  {suggestion}
-                </button>
-              {/each}
-            </div>
-          {/if}
-        </div>
-      </div>
-
-      <div class="gear-popover-divider"></div>
-
-      <!-- Action buttons -->
-      <div class="gear-popover-actions">
-        <button class="gear-action-btn duplicate" onclick={() => handleDuplicateConversation()} title="Duplicate">
-          <Copy size={14} /> Duplicate
-        </button>
-        <button class="gear-action-btn clear" onclick={() => handleClearMessages()} title="Clear messages">
-          <Trash2 size={14} /> Clear
-        </button>
-        {#if selectedConversation.status === 'archived'}
-          <button class="gear-action-btn restore" onclick={() => {
-            RestoreConversation(selectedConversation.id).then(() => {
-              showGearPopover = false
-              selectedConversation = null
-              loadData()
-            }).catch(e => console.error('Failed to restore:', e))
-          }}>Restore</button>
-        {/if}
-        <button class="gear-action-btn archive" onclick={() => {
-          handleArchiveConversation()
-          showGearPopover = false
-          selectedConversation = null
-        }}>Archive</button>
-        <button class="gear-action-btn delete" onclick={() => {
-          requestDeleteConversation(selectedConversation.id, selectedConversation.title || 'Untitled')
-          showGearPopover = false
-        }}>Delete</button>
-      </div>
+      </select>
     </div>
-  {/if}
 
-  {#if showNewDiscussion}
-    <div class="modal-overlay" onclick={() => showNewDiscussion = false}>
-      <div class="modal" onclick={(e) => e.stopPropagation()}>
-        <div class="modal-header">
-          <h3>New Discussion</h3>
-          <button class="modal-close" onclick={() => showNewDiscussion = false}><X size={16} /></button>
-        </div>
-        <div class="modal-body">
-          <div class="form-group">
-            <label>Title</label>
-            <input
-              type="text"
-              bind:value={newDiscussionTitle}
-              placeholder="Enter discussion title"
-              onkeydown={(e) => e.key === 'Enter' && handleCreateDiscussion()}
-            />
-          </div>
-
-          <div class="form-group">
-            <label>LLM Provider</label>
-            <select bind:value={selectedLLMProvider}>
-              <option value={null}>Default</option>
-              {#each llmProviders as provider}
-                <option value={provider}>{provider.name}</option>
-              {/each}
-            </select>
-          </div>
-
-          <div class="form-group">
-            <label>Data Source</label>
-            <select bind:value={selectedDataSource}>
-              <option value={null}>Default</option>
-              {#each dataSources as conn}
-                <option value={conn}>{conn.name} ({conn.type})</option>
-              {/each}
-            </select>
-          </div>
-
-          {#if createError}
-            <div class="error-message">{createError}</div>
-          {/if}
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-secondary" onclick={() => showNewDiscussion = false}>Cancel</button>
-          <button class="btn btn-primary" onclick={handleCreateDiscussion} disabled={creating}>
-            {#if creating}Creating...{:else}Create Discussion{/if}
-          </button>
-        </div>
-      </div>
+    <div class="form-group">
+      <label>Data Source</label>
+      <select bind:value={selectedDataSource}>
+        <option value={null}>Default</option>
+        {#each dataSources as conn}
+          <option value={conn}>{conn.name} ({conn.type})</option>
+        {/each}
+      </select>
     </div>
-  {/if}
 
-  {#if deleteTargetId}
-    <div class="modal-overlay" onclick={cancelDelete}>
-      <div class="modal delete-confirm" onclick={(e) => e.stopPropagation()}>
-        <div class="modal-header">
-          <h3>Delete Discussion</h3>
-        </div>
-        <div class="modal-body">
-          <p>Are you sure you want to delete "<strong>{deleteTargetTitle}</strong>"?</p>
-          <p class="hint">This will soft-delete the discussion. It can be recovered later.</p>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-secondary" onclick={cancelDelete} disabled={deleting}>Cancel</button>
-          <button class="btn btn-danger" onclick={confirmDeleteConversation} disabled={deleting}>
-            {#if deleting}Deleting...{:else}Delete{/if}
-          </button>
-        </div>
-      </div>
-    </div>
-  {/if}
+    {#if createError}
+      <div class="error-message">{createError}</div>
+    {/if}
+
+    {#snippet footer()}
+      <button class="btn btn-secondary" onclick={() => showNewDiscussion = false}>Cancel</button>
+      <button class="btn btn-primary" onclick={handleCreateDiscussion} disabled={creating}>
+        {creating ? 'Creating...' : 'Create Discussion'}
+      </button>
+    {/snippet}
+  </Modal>
+
+  <!-- Delete confirmation -->
+  <ConfirmDialog
+    open={!!deleteTargetId}
+    title="Delete Discussion"
+    body={'Are you sure you want to delete "' + deleteTargetTitle + '"?<br/><span class="delete-hint">This will soft-delete the discussion. It can be recovered later.</span>'}
+    confirmLabel="Delete"
+    danger={true}
+    busy={deleting}
+    onconfirm={confirmDeleteConversation}
+    onclose={cancelDelete}
+  />
 </div>
+<ConfirmHost />
+{/if}
 
 <style>
   :global(body) {
@@ -1412,7 +923,8 @@
   .sidebar.collapsed {
     width: var(--sidebar-collapsed);
     min-width: var(--sidebar-collapsed);
-    padding: var(--space-4xl) 0;  }
+    padding: var(--space-4xl) 0;
+  }
 
   .sidebar-header {
     padding: 0 var(--space-4xl) var(--space-6xl);
@@ -1432,12 +944,12 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: var(--font-xl);
     color: var(--text-secondary);
     transition: all 0.2s ease;
     flex-shrink: 0;
+    padding: 0;
   }
-  
+
   .sidebar-toggle:hover {
     background: var(--color-accent-light);
     color: var(--color-accent);
@@ -1457,15 +969,6 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-  }
-
-  .sidebar.collapsed .sidebar-header h1 {
-    display: none;
-  }
-
-  .sidebar-nav {
-    flex: 1;
-    padding: var(--space-4xl) var(--space-lg);
   }
 
   .nav-item {
@@ -1491,13 +994,14 @@
   }
 
   .nav-item.active {
-    background: rgba(2, 136, 209, 0.15);
+    background: var(--color-accent-light);
     color: var(--color-accent);
     font-weight: 600;
   }
 
   .nav-icon {
-    font-size: var(--font-2xl);
+    display: flex;
+    align-items: center;
     flex-shrink: 0;
   }
 
@@ -1516,30 +1020,26 @@
     border-top: 1px solid var(--border-primary);
   }
 
-  .btn-new-discussion {
+  .btn-minimal-mode {
     width: 100%;
-    padding: var(--space-lg) 0;    border: none;
+    padding: var(--space-lg) 0;
+    border: none;
     border-radius: var(--radius-md);
-    background: var(--color-accent);
-    color: #ffffff;
+    background: var(--color-accent-light);
+    color: var(--color-accent);
     font-size: var(--font-md);
     font-weight: 500;
     cursor: pointer;
     transition: background 0.2s ease;
   }
-
-  .btn-new-discussion:hover {
-    background: var(--color-accent);
+  .btn-minimal-mode:hover {
+    background: var(--color-accent-hover);
+    color: #ffffff;
   }
-
-  .btn-new-discussion-icon {
-    width: 100%;
-    padding: var(--space-xl) 0;    font-size: var(--font-3xl);
+  .btn-minimal-mode-icon {
+    padding: var(--space-xl) 0;
+    font-size: var(--font-3xl);
     font-weight: 400;
-  }
-
-  .sidebar.collapsed .sidebar-footer {
-    padding: var(--space-2xl) var(--space-md);
   }
 
   .main-content {
@@ -1547,7 +1047,6 @@
     background: var(--bg-primary);
     overflow-y: auto;
     position: relative;
-    transition: width 0.2s ease;
   }
 
   .error-banner {
@@ -1595,30 +1094,12 @@
     cursor: pointer;
   }
 
-  .archived-toggle input {
-    cursor: pointer;
-  }
+  .archived-toggle input { cursor: pointer; }
 
   .view-content {
     flex: 1;
     padding: var(--space-6xl) var(--space-7xl);
     overflow-y: auto;
-  }
-
-  .empty-state {
-    text-align: center;
-    padding: 5rem var(--space-4xl);
-    color: var(--text-tertiary);
-  }
-
-  .empty-state p {
-    margin: 0 0 var(--space-lg);
-    font-size: var(--font-2xl);
-  }
-
-  .empty-state .hint {
-    font-size: var(--font-md);
-    color: var(--text-tertiary);
   }
 
   .conversations-list {
@@ -1654,13 +1135,12 @@
     flex: 1;
     text-align: left;
     cursor: pointer;
-    transition: all 0.2s ease;
+    transition: background 0.15s ease, border-color 0.15s ease;
   }
 
   .conversation-item:hover {
-    background: rgba(2, 136, 209, 0.05);
-    border-color: rgba(2, 136, 209, 0.3);
-    transform: translateX(0.3125rem);
+    background: var(--color-accent-light);
+    border-color: var(--color-accent-border);
   }
 
   .conversation-item:focus-visible {
@@ -1677,12 +1157,10 @@
 
   .conversation-meta {
     display: flex;
+    align-items: center;
+    flex-wrap: wrap;
     gap: var(--space-lg);
     font-size: var(--font-sm);
-    color: var(--text-tertiary);
-  }
-
-  .conversation-date {
     color: var(--text-tertiary);
   }
 
@@ -1725,7 +1203,7 @@
     padding: var(--space-sm) var(--space-2xl) var(--space-sm) calc(var(--space-md) * 2 + 15px);
     border: 1px solid var(--border-primary);
     border-radius: var(--radius-lg);
-    background: var(--bg-primary);
+    background: var(--bg-input);
     color: var(--text-primary);
     font-size: var(--font-sm);
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
@@ -1755,7 +1233,7 @@
     padding: var(--space-sm) var(--space-md);
     border: 1px solid var(--border-primary);
     border-radius: var(--radius-lg);
-    background: var(--bg-primary);
+    background: var(--bg-input);
     color: var(--text-primary);
     font-size: var(--font-xs);
     max-width: 11rem;
@@ -1797,9 +1275,7 @@
     padding: 0;
     opacity: 0.7;
   }
-  .filter-pill button:hover {
-    opacity: 1;
-  }
+  .filter-pill button:hover { opacity: 1; }
   .btn-clear-filters {
     font-size: var(--font-xs);
     padding: var(--space-2xs) var(--space-sm);
@@ -1810,83 +1286,27 @@
     cursor: pointer;
     margin-left: auto;
   }
-  .btn-clear-filters:hover {
-    color: var(--text-primary);
-  }
+  .btn-clear-filters:hover { color: var(--text-primary); }
 
   /* Pin indicator */
-  .pin-indicator {
-    font-size: var(--font-sm);
+  .conversation-title :global(.pin-indicator) {
     margin-right: var(--space-2xs);
+    vertical-align: -2px;
+    color: var(--color-accent);
   }
   .conversation-row.pinned .conversation-item {
     border-left: 3px solid var(--color-accent);
     background: var(--color-accent-light);
   }
 
-  /* Row action buttons (pin / tag / settings) */
+  /* Row action buttons */
   .conversation-row-actions {
     display: flex;
     align-items: stretch;
     gap: var(--space-xs);
     flex-shrink: 0;
   }
-  .row-action-btn {
-    background: var(--bg-tertiary);
-    border: 1px solid var(--border-primary);
-    border-radius: var(--radius-md);
-    color: var(--text-tertiary);
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 2.25rem;
-    height: 2.25rem;
-    transition: all 0.15s ease;
-  }
-  .row-action-btn:hover {
-    background: var(--color-accent-light);
-    color: var(--color-accent);
-    border-color: var(--color-accent);
-  }
-  .pin-toggle-btn.active {
-    background: var(--color-accent-light);
-    color: var(--color-accent);
-    border-color: var(--color-accent);
-  }
-  .row-tag-popover-wrapper {
-    position: relative;
-  }
-  .row-tag-popover-overlay {
-    position: fixed;
-    top: 0; left: 0; right: 0; bottom: 0;
-    z-index: 999;
-  }
-  .row-tag-popover {
-    position: absolute;
-    top: calc(100% + var(--space-sm));
-    right: 0;
-    width: 15rem;
-    background: var(--bg-primary);
-    border: 1px solid var(--border-primary);
-    border-radius: var(--radius-md);
-    box-shadow: var(--shadow-lg, 0 4px 16px rgba(0,0,0,0.15));
-    padding: var(--space-md);
-    z-index: 1000;
-  }
-  .row-tag-popover-title {
-    font-size: var(--font-xs);
-    font-weight: 600;
-    color: var(--text-tertiary);
-    text-transform: uppercase;
-    letter-spacing: 0.03em;
-    margin-bottom: var(--space-sm);
-  }
-  .no-tags-hint {
-    color: var(--text-tertiary);
-    font-size: var(--font-xs);
-    font-style: italic;
-  }
+  .row-tag-popover-wrapper { position: relative; }
 
   /* Tag chips */
   .tag-chip-row {
@@ -1910,189 +1330,10 @@
     opacity: 0;
     transition: opacity 0.15s ease;
   }
-  .tag-chip-row:hover .tag-chip-remove {
-    opacity: 0.7;
-  }
-  .tag-chip-remove:hover {
-    opacity: 1 !important;
-  }
-  .tag-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-2xs);
-    background: var(--color-accent-light);
-    color: var(--color-accent);
-    padding: var(--space-2xs) var(--space-sm);
-    border-radius: var(--radius-sm);
-    font-size: var(--font-xs);
-    margin-right: var(--space-xs);
-    margin-bottom: var(--space-xs);
-  }
-  .tag-remove {
-    background: none;
-    border: none;
-    color: var(--color-accent);
-    cursor: pointer;
-    padding: 0;
-    font-size: var(--font-md);
-    line-height: 1;
-    opacity: 0.6;
-  }
-  .tag-remove:hover {
-    opacity: 1;
-  }
-  .tag-input-wrapper {
-    position: relative;
-    margin-top: var(--space-sm);
-  }
-  .tag-input {
-    width: 100%;
-    padding: var(--space-sm) var(--space-md);
-    border: 1px solid var(--border-primary);
-    border-radius: var(--radius-md);
-    background: var(--bg-primary);
-    color: var(--text-primary);
-    font-size: var(--font-sm);
-    box-sizing: border-box;
-  }
-  .tag-input:focus {
-    outline: none;
-    border-color: var(--color-accent);
-  }
-  .tag-suggestions {
-    position: absolute;
-    top: 100%;
-    left: 0;
-    right: 0;
-    background: var(--bg-primary);
-    border: 1px solid var(--border-primary);
-    border-top: none;
-    border-radius: 0 0 var(--radius-md) var(--radius-md);
-    z-index: 10;
-    max-height: 200px;
-    overflow-y: auto;
-  }
-  .tag-suggestion {
-    display: block;
-    width: 100%;
-    text-align: left;
-    padding: var(--space-sm) var(--space-md);
-    background: none;
-    border: none;
-    color: var(--text-primary);
-    font-size: var(--font-sm);
-    cursor: pointer;
-  }
-  .tag-suggestion:hover {
-    background: var(--bg-surface);
-  }
+  .tag-chip-row:hover .tag-chip-remove { opacity: 0.7; }
+  .tag-chip-remove:hover { opacity: 1 !important; }
 
-  .modal-overlay {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: rgba(0, 0, 0, 0.5);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
-  }
-
-  .modal {
-    background: var(--bg-primary);
-    border-radius: var(--radius-md);
-    width: var(--modal-width);
-    max-width: 90vw;
-    max-height: 90vh;
-    overflow-y: auto;
-    border: 2px solid var(--color-accent);
-  }
-
-  .modal-header {
-    padding: var(--space-4xl) var(--space-6xl);
-    border-bottom: 1px solid var(--border-primary);
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-  }
-
-  .modal-header h3 {
-    margin: 0;
-    font-size: var(--font-3xl);
-    font-weight: 600;
-    color: var(--text-primary);
-  }
-
-  .modal-close {
-    background: none;
-    border: none;
-    font-size: var(--font-4xl);
-    color: var(--text-tertiary);
-    cursor: pointer;
-    padding: 0;
-    width: var(--space-6xl);
-    height: var(--space-6xl);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: var(--radius-md);
-  }
-
-  .modal-close:hover {
-    background: var(--bg-secondary);
-    color: var(--text-primary);
-  }
-
-  .modal-body {
-    padding: var(--space-6xl);
-  }
-
-  .modal-footer {
-    padding: var(--space-4xl) var(--space-6xl);
-    border-top: 1px solid var(--border-primary);
-    display: flex;
-    justify-content: flex-end;
-    gap: var(--space-lg);
-  }
-
-  .form-group {
-    margin-bottom: var(--space-4xl);
-  }
-
-  .form-group label {
-    display: block;
-    margin-bottom: var(--space-md);
-    font-size: var(--font-md);
-    font-weight: 500;
-    color: var(--text-secondary);
-  }
-
-  .form-group input,
-  .form-group select {
-    width: 100%;
-    padding: var(--space-lg) var(--space-xl);
-    border: 1px solid var(--border-primary);
-    border-radius: var(--radius-md);
-    font-size: var(--font-md);
-    color: var(--text-primary);
-    background: var(--bg-primary);
-    transition: border-color 0.2s ease;
-    box-sizing: border-box;
-  }
-
-  .form-group input:focus,
-  .form-group select:focus {
-    outline: none;
-    border-color: var(--color-accent);
-    border: 2px solid var(--color-accent);
-  }
-
-  .form-group input::placeholder {
-    color: var(--text-tertiary);
-  }
-
+  /* Buttons (shared with modal content) */
   .btn {
     padding: var(--space-lg) var(--space-4xl);
     border: none;
@@ -2101,86 +1342,49 @@
     font-weight: 500;
     cursor: pointer;
     transition: all 0.2s ease;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+    justify-content: center;
   }
-
-  .btn:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-
+  .btn:disabled { opacity: 0.6; cursor: not-allowed; }
   .btn-primary {
     background: var(--color-accent);
     color: #ffffff;
   }
-
-  .btn-primary:hover:not(:disabled) {
-    background: var(--color-accent);
-  }
-
+  .btn-primary:hover:not(:disabled) { background: var(--color-accent-hover); }
   .btn-secondary {
     background: var(--bg-secondary);
     color: var(--text-secondary);
   }
+  .btn-secondary:hover { background: var(--border-primary); }
 
-  .btn-secondary:hover {
-    background: var(--border-primary);
-  }
-
-  .btn-danger {
-    padding: var(--space-lg) var(--space-4xl);
-    border: none;
-    border-radius: var(--radius-md);
+  .form-group { margin-bottom: var(--space-4xl); }
+  .form-group label {
+    display: block;
+    margin-bottom: var(--space-md);
     font-size: var(--font-md);
     font-weight: 500;
-    cursor: pointer;
-    transition: all 0.2s;
-    background: var(--color-danger);
-    color: white;
-  }
-
-  .btn-danger:hover:not(:disabled) {
-    background: var(--color-danger-hover);
-  }
-
-  .btn-danger:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-
-  .delete-discussion-btn {
-    flex-shrink: 0;
-    width: 1.75rem;
-    height: 1.75rem;
-    border: none;
-    background: transparent;
-    color: var(--text-tertiary);
-    font-size: var(--font-xl);
-    cursor: pointer;
-    border-radius: var(--radius-md);
-    transition: all 0.15s;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .delete-discussion-btn:hover {
-    background: var(--color-accent-light);
-    color: var(--color-danger);
-  }
-
-  .delete-confirm {
-    max-width: 25rem;
-  }
-
-  .delete-confirm .modal-body p {
-    margin: 0 0 var(--space-md);
     color: var(--text-secondary);
   }
-
-  .delete-confirm .hint {
-    font-size: var(--font-base);
-    color: var(--text-tertiary);
+  .form-group input,
+  .form-group select {
+    width: 100%;
+    padding: var(--space-lg) var(--space-xl);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-md);
+    font-size: var(--font-md);
+    color: var(--text-primary);
+    background: var(--bg-input);
+    transition: border-color 0.2s ease;
+    box-sizing: border-box;
   }
+  .form-group input:focus,
+  .form-group select:focus {
+    outline: none;
+    border-color: var(--color-accent);
+  }
+  .form-group input::placeholder { color: var(--text-tertiary); }
 
   .error-message {
     background: rgba(239, 83, 80, 0.1);
@@ -2192,250 +1396,6 @@
     margin-top: var(--space-3xl);
   }
 
-  .gear-popover-overlay {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: rgba(0, 0, 0, 0.5);
-    z-index: 19999;
-  }
-
-  .gear-popover {
-    position: fixed;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    width: var(--gear-popover-width);
-    background: var(--bg-primary);
-    border: 2px solid var(--color-accent);
-    border-radius: var(--radius-md);
-    z-index: 20000;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
-
-  .gear-popover-wide {
-    width: var(--gear-popover-wide);
-  }
-
-  .gear-popover-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: var(--space-lg) 18px;
-    border-bottom: 1px solid var(--border-secondary);
-    font-weight: 600;
-    font-size: var(--font-md);
-    color: var(--text-primary);
-  }
-
-  .gear-popover-close {
-    background: none;
-    border: none;
-    font-size: var(--font-xl);
-    color: var(--text-tertiary);
-    cursor: pointer;
-    padding: 0 var(--space-xs);
-  }
-
-  .gear-popover-close:hover {
-    color: var(--text-primary);
-  }
-
-  .gear-popover-section {
-    padding: var(--space-md) 18px;
-  }
-
-  .gear-popover-section label {
-    display: block;
-    font-size: var(--font-xs);
-    font-weight: 600;
-    color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    margin-bottom: var(--space-xs);
-  }
-
-  .gear-popover-section select {
-    width: 100%;
-    padding: var(--space-md) var(--space-xl);
-    border: 1px solid var(--border-primary);
-    border-radius: var(--radius-md);
-    font-size: var(--font-md);
-    color: var(--text-primary);
-    background: var(--bg-tertiary);
-    cursor: pointer;
-    box-sizing: border-box;
-  }
-
-  .gear-popover-section select:focus {
-    outline: none;
-    border-color: var(--color-accent);
-  }
-
-  .gear-popover-section input[type="text"] {
-    width: 100%;
-    padding: var(--space-md) var(--space-xl);
-    border: 1px solid var(--border-primary);
-    border-radius: var(--radius-md);
-    font-size: var(--font-md);
-    color: var(--text-primary);
-    background: var(--bg-tertiary);
-    box-sizing: border-box;
-    transition: border-color 0.2s ease;
-  }
-
-  .gear-popover-section input[type="text"]:focus {
-    outline: none;
-    border-color: var(--color-accent);
-  }
-
-  .message-limit-group {
-    display: flex;
-    gap: var(--space-md);
-    align-items: center;
-  }
-
-  .msg-limit-btn {
-    padding: var(--space-md) var(--space-2xl);
-    border: 1px solid var(--border-primary);
-    border-radius: var(--radius-md);
-    background: var(--bg-tertiary);
-    color: var(--text-secondary);
-    font-size: var(--font-base);
-    cursor: pointer;
-    transition: all 0.2s ease;
-    white-space: nowrap;
-  }
-
-  .msg-limit-btn:hover {
-    background: var(--border-primary);
-  }
-
-  .msg-limit-btn.active {
-    background: var(--color-accent);
-    color: #ffffff;
-    border-color: var(--color-accent);
-  }
-
-  .message-limit-group input[type="number"] {
-    flex: 1;
-    padding: var(--space-sm) var(--space-lg);
-    border: 1px solid var(--border-primary);
-    border-radius: var(--radius-md);
-    font-size: var(--font-md);
-    color: var(--text-primary);
-    background: var(--bg-tertiary);
-    box-sizing: border-box;
-  }
-
-  .message-limit-group input[type="number"]:focus {
-    outline: none;
-    border-color: var(--color-accent);
-  }
-
-  .gear-popover-section label {
-    display: flex;
-    align-items: center;
-    gap: var(--space-md);
-    font-size: var(--font-base);
-    color: var(--text-secondary);
-    cursor: pointer;
-  }
-
-  .gear-popover-section label input[type="checkbox"] {
-    width: var(--space-3xl);
-    height: var(--space-3xl);
-    accent-color: var(--color-accent);
-  }
-
-  .gear-popover-divider {
-    height: 1px;
-    background: var(--border-secondary);
-    margin: 0 18px;
-  }
-
-  /* Skill toggles in gear popover */
-  .gear-popover-section-title {
-    font-weight: 600;
-    font-size: var(--font-sm);
-    margin-bottom: var(--space-sm);
-    color: var(--text-secondary);
-  }
-  .skill-toggle {
-    display: flex !important;
-    align-items: center;
-    gap: var(--space-sm);
-    padding: var(--space-xs) 0;
-    font-size: var(--font-sm) !important;
-    font-weight: 400 !important;
-    text-transform: none !important;
-    letter-spacing: normal !important;
-    color: var(--text-secondary) !important;
-    cursor: pointer;
-    margin-bottom: 0 !important;
-  }
-  .skill-toggle input[type="checkbox"] {
-    accent-color: var(--color-accent);
-  }
-
-  .gear-popover-actions {
-    display: flex;
-    gap: var(--space-md);
-    padding: var(--space-lg) 18px;
-    border-top: 1px solid var(--border-secondary);
-    flex-wrap: wrap;
-  }
-
-  .gear-action-btn {
-    flex: 1;
-    min-width: 5rem;
-    padding: var(--space-md) var(--space-xl);
-    border-radius: var(--radius-md);
-    font-size: var(--font-base);
-    font-weight: 500;
-    cursor: pointer;
-    border: 1px solid var(--border-primary);
-    transition: all 0.2s ease;
-  }
-
-  .gear-action-btn.archive {
-    background: var(--bg-primary);
-    color: var(--color-danger);
-    border-color: var(--color-danger);
-  }
-
-  .gear-action-btn.archive:hover {
-    background: var(--color-danger);
-    color: #ffffff;
-  }
-
-  .gear-action-btn.restore {
-    background: var(--bg-primary);
-    color: var(--color-success);
-    border-color: var(--color-success);
-  }
-
-  .gear-action-btn.restore:hover {
-    background: var(--color-success);
-    color: #ffffff;
-  }
-
-  .gear-action-btn.delete {
-    background: var(--bg-primary);
-    color: var(--color-danger);
-    border-color: var(--color-danger);
-    font-weight: 600;
-  }
-
-  .gear-action-btn.delete:hover {
-    background: var(--color-danger-hover);
-    color: #ffffff;
-  }
-
   /* About View */
   .about-view {
     flex: 1;
@@ -2443,120 +1403,58 @@
     overflow-y: auto;
     background: var(--bg-primary);
   }
-
   .about-content {
     max-width: var(--content-max-width);
     margin: 0 auto;
   }
-
   .about-content h2 {
     font-size: 2.5rem;
     font-weight: 700;
     color: var(--text-primary);
     margin-bottom: 0.5rem;
   }
-
   .about-content .version {
     font-size: 1rem;
     color: var(--text-secondary);
     margin-bottom: 1.5rem;
   }
-
   .about-content .description {
     font-size: 1.125rem;
     color: var(--text-secondary);
     margin-bottom: 2.5rem;
     line-height: 1.6;
   }
-
-  /* Update section */
   .update-section {
     margin-bottom: 2rem;
     padding: var(--space-4xl) var(--space-5xl);
     background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
+    border: 1px solid var(--border-primary);
     border-radius: var(--radius-md);
   }
-
-  .update-status {
-    font-size: 0.9rem;
-    color: var(--text-secondary);
-  }
-
-  .update-uptodate {
-    color: var(--color-success);
-  }
-
-  .update-dev-note {
-    font-size: 0.875rem;
-    color: var(--text-secondary);
-    font-style: italic;
-  }
-
-  .update-error {
-    font-size: 0.875rem;
-    color: var(--color-danger);
-  }
-
+  .update-status { font-size: 0.9rem; color: var(--text-secondary); }
+  .update-uptodate { color: var(--color-success); }
+  .update-dev-note { font-size: 0.875rem; color: var(--text-secondary); font-style: italic; }
+  .update-error { font-size: 0.875rem; color: var(--color-danger); margin-right: 0.75rem; }
   .update-checked {
-    font-size: 0.8rem;
-    color: var(--text-secondary);
-    margin-left: 0.5rem;
-    font-style: italic;
+    font-size: 0.8rem; color: var(--text-secondary);
+    margin-left: 0.5rem; font-style: italic;
   }
-
-  .update-available {
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-  }
-
-  .update-available p {
-    margin: 0;
-    font-size: 0.95rem;
-    color: var(--text-primary);
-  }
-
-  .update-available p strong {
-    color: var(--color-warning, #f0a020);
-  }
-
-  .update-ready {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    flex-wrap: wrap;
-  }
-
-  .update-notes {
-    font-size: 0.85rem;
-    color: var(--text-secondary);
-  }
-
-  .update-notes summary {
-    cursor: pointer;
-    color: var(--color-primary);
-    font-weight: 500;
-  }
-
+  .update-available { display: flex; flex-direction: column; gap: 0.75rem; }
+  .update-available p { margin: 0; font-size: 0.95rem; color: var(--text-primary); }
+  .update-available p strong { color: var(--color-warning); }
+  .update-ready { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+  .update-notes { font-size: 0.85rem; color: var(--text-secondary); }
+  .update-notes summary { cursor: pointer; color: var(--color-primary); font-weight: 500; }
   .update-notes pre {
-    margin-top: 0.5rem;
-    padding: 0.75rem;
-    background: var(--bg-primary);
-    border: 1px solid var(--border-color);
+    margin-top: 0.5rem; padding: 0.75rem;
+    background: var(--code-bg); color: var(--code-fg);
+    border: 1px solid var(--border-primary);
     border-radius: var(--radius-sm);
-    font-size: 0.8rem;
-    line-height: 1.5;
+    font-size: 0.8rem; line-height: 1.5;
     white-space: pre-wrap;
-    max-height: 12rem;
-    overflow-y: auto;
-    color: var(--text-primary);
+    max-height: 12rem; overflow-y: auto;
   }
-
-  .about-section {
-    margin-bottom: 2.5rem;
-  }
-
+  .about-section { margin-bottom: 2.5rem; }
   .about-disclaimer {
     margin-bottom: 2.5rem;
     padding: var(--space-4xl) var(--space-5xl);
@@ -2564,57 +1462,33 @@
     border: 1px solid rgba(239, 83, 80, 0.25);
     border-radius: var(--radius-md);
   }
-
   .about-disclaimer h3 {
-    font-size: 1.1rem;
-    font-weight: 600;
-    color: var(--color-danger);
-    margin-bottom: 0.75rem;
+    font-size: 1.1rem; font-weight: 600;
+    color: var(--color-danger); margin-bottom: 0.75rem;
   }
-
   .about-disclaimer p {
-    font-size: 0.95rem;
-    color: var(--text-secondary);
-    line-height: 1.6;
-    margin-bottom: 0.5rem;
+    font-size: 0.95rem; color: var(--text-secondary);
+    line-height: 1.6; margin-bottom: 0.5rem;
   }
-
   .about-section h3 {
-    font-size: 1.25rem;
-    font-weight: 600;
-    color: var(--text-primary);
-    margin-bottom: 1rem;
+    font-size: 1.25rem; font-weight: 600;
+    color: var(--text-primary); margin-bottom: 1rem;
   }
-
   .about-section p {
-    font-size: 1rem;
-    color: var(--text-secondary);
-    line-height: 1.6;
-    margin-bottom: 0.75rem;
+    font-size: 1rem; color: var(--text-secondary);
+    line-height: 1.6; margin-bottom: 0.75rem;
   }
-
-  .about-section ul {
-    margin-left: 1.5rem;
-    margin-bottom: 1rem;
-  }
-
+  .about-section ul { margin-left: 1.5rem; margin-bottom: 1rem; }
   .about-section li {
-    font-size: 1rem;
-    color: var(--text-secondary);
-    line-height: 1.6;
-    margin-bottom: 0.5rem;
+    font-size: 1rem; color: var(--text-secondary);
+    line-height: 1.6; margin-bottom: 0.5rem;
   }
-
-  .about-section li strong {
-    color: var(--text-primary);
-    font-weight: 600;
-  }
+  .about-section li strong { color: var(--text-primary); font-weight: 600; }
 
   @media print {
     .sidebar, .sidebar-footer, .sidebar-nav, .sidebar-header,
     .view-header, .view-header-actions,
-    .modal-overlay, .gear-popover-overlay, .gear-popover,
-    .error-banner { display: none !important; }
+    :global(.overlay), .error-banner { display: none !important; }
     .main-content { width: 100% !important; }
     .app-layout { display: block !important; }
   }

@@ -214,7 +214,7 @@ The loop gives the LLM three (optionally five) tools:
 `is_exploration: false` call, the loop closes the database session for that
 request — further `query_database` calls are rejected, and only
 `respond_to_user` / `render_chart` remain available. This guarantees one
-answer bubble per user question (see `FINAL_MESSAGE.md` for the full design).
+answer bubble per user question (see `architecture/FINAL_MESSAGE.md` for the full design).
 
 **Be conservative when modifying the loop's tool-response parsing and
 fallback text-response handling** (`pkg/engine/loop.go`, the plain-text-as-
@@ -290,9 +290,9 @@ mocks, not to add abstraction for its own sake.
 
 The canonical architecture documents:
 
-- [`FUNCTIONALITY_SILO_DEFINITIONS.md`](FUNCTIONALITY_SILO_DEFINITIONS.md) — what each section is, how they connect, and what black-boxing each requires.
-- [`FUNCTIONALITY_SILO_TARGET.md`](FUNCTIONALITY_SILO_TARGET.md) — the end-state architecture (interfaces, package layout, wiring).
-- [`FUNCTIONALITY_SILO_PLAN.md`](FUNCTIONALITY_SILO_PLAN.md) — the step-by-step extraction plan and risk register.
+- [`architecture/FUNCTIONALITY_SILO_DEFINITIONS.md`](architecture/FUNCTIONALITY_SILO_DEFINITIONS.md) — what each section is, how they connect, and what black-boxing each requires.
+- [`architecture/FUNCTIONALITY_SILO_TARGET.md`](architecture/FUNCTIONALITY_SILO_TARGET.md) — the end-state architecture (interfaces, package layout, wiring).
+- [`architecture/FUNCTIONALITY_SILO_PLAN.md`](architecture/FUNCTIONALITY_SILO_PLAN.md) — the step-by-step extraction plan and risk register.
 - [`AGENT_LOOP_DETAILS.md`](AGENT_LOOP_DETAILS.md) — every path, tool, limit, and prompt in the loop.
 
 **The core boundary — `pkg/engine/` is a black box.** The engine package
@@ -764,7 +764,7 @@ response, err := client.ChatCompletion(ctx, messages)
 None of these ever result in a write to a data source — every `query_database`
 call, exploration or final, is restricted to `SELECT`-only statements (see
 §0's Data Source Read-Only Invariant). See §1.3 for the one-shot finality rule
-and `FINAL_MESSAGE.md` for the full design rationale.
+and `architecture/FINAL_MESSAGE.md` for the full design rationale.
 
 ---
 

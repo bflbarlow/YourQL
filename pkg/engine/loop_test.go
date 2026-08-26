@@ -55,11 +55,11 @@ func (m *mockQueryExec) Execute(sql string, isExploration bool) (*QueryResult, e
 }
 
 type mockOutput struct {
-	finalCalls      []FinalResponse
-	sqlWarnings      []string
-	clarifications   []Clarification
-	techDetails      []TechDetail
-	queryID          uint
+	finalCalls     []FinalResponse
+	sqlWarnings    []string
+	clarifications []Clarification
+	techDetails    []TechDetail
+	queryID        uint
 }
 
 func (m *mockOutput) CreateQueryRecord(conversationID uint, userMessage string, providerID *uint) (uint, error) {

@@ -23,9 +23,9 @@ import (
 
 // tableInfo holds metadata about the tables we export.
 type tableInfo struct {
-	Name       string   // SQL table name (used in queries)
-	Sheet      string   // Excel sheet name / CSV filename prefix
-	Credential bool     // true if this table contains credential columns we may strip
+	Name       string // SQL table name (used in queries)
+	Sheet      string // Excel sheet name / CSV filename prefix
+	Credential bool   // true if this table contains credential columns we may strip
 }
 
 // exportTables defines every table in ~/.yourql/yourql.db that we export,

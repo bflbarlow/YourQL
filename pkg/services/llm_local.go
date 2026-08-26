@@ -96,6 +96,14 @@ func (c *LocalClient) ChatCompletionWithPayload(ctx context.Context, messages []
 				return reply, string(jsonData), string(body), nil
 			}
 		}
+		// Fallback: the response did not parse as choices[0].message.content.
+		// Surface the raw body so parseFallbackResponse can extract text from
+		// it — matching the streaming path's raw-output fallback.
+		raw := strings.TrimSpace(string(body))
+		if raw != "" {
+			log.Printf("[Local] Response didn't parse as OpenAI content — surfacing raw body (%d bytes)", len(raw))
+			return raw, string(jsonData), string(body), nil
+		}
 		return "", string(jsonData), string(body), nil
 	}
 

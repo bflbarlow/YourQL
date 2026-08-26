@@ -18,10 +18,10 @@ import (
 // headlessServer holds state shared by all headless HTTP handlers.
 type headlessServer struct {
 	mu       sync.Mutex
-	inflight map[uint]bool                    // conversation ID → actively processing?
-	cancels  map[uint]context.CancelFunc      // conversation ID → cancel func
-	start    time.Time                         // process start time (for uptime)
-	dbPath   string                            // resolved database path
+	inflight map[uint]bool               // conversation ID → actively processing?
+	cancels  map[uint]context.CancelFunc // conversation ID → cancel func
+	start    time.Time                   // process start time (for uptime)
+	dbPath   string                      // resolved database path
 }
 
 func newHeadlessServer(dbPath string) *headlessServer {
@@ -242,18 +242,18 @@ func (s *headlessServer) processMessage(
 // --- conversation patch ---
 
 type conversationPatch struct {
-	Title            *string `json:"title"`
-	Status           *string `json:"status"`
-	LLMProviderID    *uint   `json:"llm_provider_id"`
-	DataSourceID     *uint   `json:"data_source_id"`
-	MaxMessages      *int    `json:"max_messages"`
-	MaxContextMessages *int  `json:"max_context_messages"`
-	Pinned           *bool   `json:"pinned"`
-	TechDetails      *bool   `json:"tech_details"`
-	ContextDetails   *bool   `json:"context_details"`
-	Summarize        *bool   `json:"summarize"`
-	VizEnabled       *bool   `json:"viz_enabled"`
-	StreamingEnabled *bool   `json:"streaming_enabled"`
+	Title              *string `json:"title"`
+	Status             *string `json:"status"`
+	LLMProviderID      *uint   `json:"llm_provider_id"`
+	DataSourceID       *uint   `json:"data_source_id"`
+	MaxMessages        *int    `json:"max_messages"`
+	MaxContextMessages *int    `json:"max_context_messages"`
+	Pinned             *bool   `json:"pinned"`
+	TechDetails        *bool   `json:"tech_details"`
+	ContextDetails     *bool   `json:"context_details"`
+	Summarize          *bool   `json:"summarize"`
+	VizEnabled         *bool   `json:"viz_enabled"`
+	StreamingEnabled   *bool   `json:"streaming_enabled"`
 }
 
 // applyPatch calls the appropriate UpdateConversation* service functions

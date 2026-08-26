@@ -53,10 +53,10 @@ func filePathStr(conn *models.DataSource) string {
 
 type CSVFileDriver struct{}
 
-func (d *CSVFileDriver) TypeKey() string    { return "csv_file" }
-func (d *CSVFileDriver) OpenDriver() string { return "sqlite" }
+func (d *CSVFileDriver) TypeKey() string     { return "csv_file" }
+func (d *CSVFileDriver) OpenDriver() string  { return "sqlite" }
 func (d *CSVFileDriver) DisplayName() string { return "CSV File" }
-func (d *CSVFileDriver) DefaultPort() int   { return 0 }
+func (d *CSVFileDriver) DefaultPort() int    { return 0 }
 func (d *CSVFileDriver) SQLDialectHint() string {
 	return "SQLite — data loaded from CSV file. The table is named 'data'."
 }
@@ -79,10 +79,10 @@ func (d *CSVFileDriver) QueryRowsNative(conn *models.DataSource, query string) (
 
 type ExcelFileDriver struct{}
 
-func (d *ExcelFileDriver) TypeKey() string    { return "excel_file" }
-func (d *ExcelFileDriver) OpenDriver() string { return "sqlite" }
+func (d *ExcelFileDriver) TypeKey() string     { return "excel_file" }
+func (d *ExcelFileDriver) OpenDriver() string  { return "sqlite" }
 func (d *ExcelFileDriver) DisplayName() string { return "Excel File" }
-func (d *ExcelFileDriver) DefaultPort() int   { return 0 }
+func (d *ExcelFileDriver) DefaultPort() int    { return 0 }
 func (d *ExcelFileDriver) SQLDialectHint() string {
 	return "SQLite — data loaded from Excel file. Each sheet becomes a separate table named after the sheet."
 }

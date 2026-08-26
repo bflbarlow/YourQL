@@ -1,10 +1,18 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { Chart, registerables, Colors } from 'chart.js';
+  import { onThemeChange } from './lib/theme.js';
 
   // Register once at module level (Colors plugin auto-assigns dataset colors)
   Chart.register(...registerables, Colors);
-  Chart.defaults.borderColor = '#e9ecef';
+
+  // Theme-aware Chart.js defaults — initialized from the current OS/app theme,
+  // then updated on theme-change events.
+  const startIsDark = typeof window !== 'undefined' && window.matchMedia
+    ? document.documentElement.getAttribute('data-theme') === 'dark'
+    : false;
+  Chart.defaults.color = startIsDark ? '#b0b0c0' : '#666666';
+  Chart.defaults.borderColor = startIsDark ? '#2e2e50' : '#e9ecef';
   Chart.defaults.font.family = 'system-ui, -apple-system, sans-serif';
   Chart.defaults.font.size = 12;
 
@@ -66,12 +74,11 @@
   });
 
   onMount(() => {
-    const handler = (e) => {
-      applyChartTheme(e.detail.theme === 'dark');
+    const unsubscribe = onThemeChange((resolved) => {
+      applyChartTheme(resolved === 'dark');
       themeTick++;
-    };
-    window.addEventListener('theme-change', handler);
-    return () => window.removeEventListener('theme-change', handler);
+    });
+    return unsubscribe;
   });
 
   onDestroy(() => {

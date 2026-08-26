@@ -82,10 +82,6 @@ export function DuplicateConversation(arg1) {
   return window['go']['main']['App']['DuplicateConversation'](arg1);
 }
 
-export function ExecuteQuery(arg1, arg2) {
-  return window['go']['main']['App']['ExecuteQuery'](arg1, arg2);
-}
-
 export function ExportConversationHTML(arg1) {
   return window['go']['main']['App']['ExportConversationHTML'](arg1);
 }

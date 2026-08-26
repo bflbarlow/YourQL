@@ -15,48 +15,80 @@
 /* ===== Spacing & Typography (existing, unchanged) ===== */
 :root {
   --space-2xs: 0.125rem; /* 2px  */
-  --space-xs:  0.25rem;  /* 4px  */
-  --space-sm:  0.375rem; /* 6px  */
-  --space-md:  0.5rem;   /* 8px  */
-  --space-lg:  0.625rem; /* 10px */
-  --space-xl:  0.75rem;  /* 12px */
+  --space-xs: 0.25rem; /* 4px  */
+  --space-sm: 0.375rem; /* 6px  */
+  --space-md: 0.5rem; /* 8px  */
+  --space-lg: 0.625rem; /* 10px */
+  --space-xl: 0.75rem; /* 12px */
   --space-2xl: 0.875rem; /* 14px */
-  --space-3xl: 1rem;     /* 16px */
-  --space-4xl: 1.25rem;  /* 20px */
-  --space-5xl: 1.5rem;   /* 24px */
+  --space-3xl: 1rem; /* 16px */
+  --space-4xl: 1.25rem; /* 20px */
+  --space-5xl: 1.5rem; /* 24px */
   --space-6xl: 1.875rem; /* 30px */
-  --space-7xl: 2.5rem;   /* 40px */
+  --space-7xl: 2.5rem; /* 40px */
 
-  --font-2xs:  0.625rem; /* 10px */
-  --font-xs:   0.6875rem; /* 11px */
-  --font-sm:   0.75rem;   /* 12px */
+  --font-2xs: 0.625rem; /* 10px */
+  --font-xs: 0.6875rem; /* 11px */
+  --font-sm: 0.75rem; /* 12px */
   --font-base: 0.8125rem; /* 13px */
-  --font-md:   0.875rem;  /* 14px */
-  --font-lg:   0.9375rem; /* 15px */
-  --font-xl:   1rem;      /* 16px */
-  --font-2xl:  1.125rem;  /* 18px */
-  --font-3xl:  1.25rem;   /* 20px */
-  --font-4xl:  1.5rem;    /* 24px */
-  --font-5xl:  1.75rem;   /* 28px */
+  --font-md: 0.875rem; /* 14px */
+  --font-lg: 0.9375rem; /* 15px */
+  --font-xl: 1rem; /* 16px */
+  --font-2xl: 1.125rem; /* 18px */
+  --font-3xl: 1.25rem; /* 20px */
+  --font-4xl: 1.5rem; /* 24px */
+  --font-5xl: 1.75rem; /* 28px */
 
   /* ===== Border Radii ===== */
-  --radius-sm: 0.25rem;  /* 4px */
+  --radius-sm: 0.25rem; /* 4px */
   --radius-md: 0.375rem; /* 6px */
+  --radius-lg: 0.5rem; /* 8px */
+
+  /* ===== Type scale completion ===== */
+  --font-3xs: 0.5625rem; /* 9px — referenced by tech-detail chips */
+
+  /* ===== Semantic type roles (A5) — use these at call sites ===== */
+  --text-h1: var(--font-4xl); /* app name only            */
+  --text-h2: var(--font-5xl); /* view titles              */
+  --text-title: var(--font-2xl); /* modal/card/thread titles */
+  --text-body: var(--font-md);
+  --text-meta: var(--font-sm); /* timestamps, chips        */
+  --text-label: var(--font-xs); /* form labels (uppercase)  */
+
+  /* The ONLY monospace stack */
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* Deliberate always-dark code surface (SQL / payload blocks) */
+  --code-bg: #1e1e1e;
+  --code-fg: #d4d4d4;
+
+  /* Input surface so fields read on same-color panels */
+  --bg-input: #ffffff;
+
+  /* Aliases referenced by older code paths */
+  --color-primary: var(--color-accent);
+  --border-color: var(--border-primary);
+  --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.15);
+
+  /* ===== Z-index scale (replaces arbitrary literals) ===== */
+  --z-popover: 100;
+  --z-modal: 200;
+  --z-toast: 300;
 
   /* ===== Layout ===== */
-  --sidebar-width:        15.625rem; /* 250px */
-  --sidebar-collapsed:    3.75rem;   /* 60px  */
-  --sidebar-padding-x:    1.25rem;   /* 20px  */
-  --sidebar-padding-y:    1.25rem;   /* 20px  */
-  --main-padding-x:       2.5rem;    /* 40px  */
-  --main-padding-y:       1.875rem;  /* 30px  */
-  --content-max-width:    50rem;     /* 800px */
-  --modal-width:          31.25rem;  /* 500px */
-  --gear-popover-width:   20rem;     /* 320px */
-  --gear-popover-wide:    26.25rem;  /* 420px */
+  --sidebar-width: 15.625rem; /* 250px */
+  --sidebar-collapsed: 3.75rem; /* 60px  */
+  --sidebar-padding-x: 1.25rem; /* 20px  */
+  --sidebar-padding-y: 1.25rem; /* 20px  */
+  --main-padding-x: 2.5rem; /* 40px  */
+  --main-padding-y: 1.875rem; /* 30px  */
+  --content-max-width: 50rem; /* 800px */
+  --modal-width: 31.25rem; /* 500px */
+  --gear-popover-width: 20rem; /* 320px */
+  --gear-popover-wide: 26.25rem; /* 420px */
 
   /* ===== Border Widths (don't scale) ===== */
-  --border-thin:  1px;
+  --border-thin: 1px;
   --border-thick: 2px;
   --border-heavy: 3px;
 }
@@ -64,67 +96,80 @@
 /* ===== Color Palette — Light Mode (defaults) ===== */
 :root {
   /* Surfaces */
-  --bg-primary:       #ffffff;
-  --bg-secondary:     #f5f5f5;
-  --bg-tertiary:      #f9f9f9;
-  --bg-surface:       #f8f9fa;
+  --bg-primary: #ffffff;
+  --bg-secondary: #f5f5f5;
+  --bg-tertiary: #f9f9f9;
+  --bg-surface: #f8f9fa;
 
   /* Text */
-  --text-primary:     #000000;
-  --text-secondary:   #666666;
-  --text-tertiary:    #999999;
-  --text-muted:       #808080;
+  --text-primary: #000000;
+  --text-secondary: #666666;
+  --text-tertiary: #767676; /* WCAG AA on white */
+  --text-muted: #808080;
 
   /* Borders */
-  --border-primary:   #e0e0e0;
+  --border-primary: #e0e0e0;
   --border-secondary: #f0f0f0;
 
   /* Effects */
-  --shadow: rgba(0,0,0,0.1);
+  --shadow: rgba(0, 0, 0, 0.1);
 
   /* Accent (default blue) */
-  --color-accent:             #0288d1;
-  --color-accent-hover:       #29b6f6;
-  --color-accent-light:       rgba(2,136,209,0.1);
-  --color-accent-border:      rgba(2,136,209,0.3);
+  --color-accent: #0288d1;
+  --color-accent-hover: #29b6f6;
+  --color-accent-light: rgba(2, 136, 209, 0.1);
+  --color-accent-border: rgba(2, 136, 209, 0.3);
 
   /* Semantic */
-  --color-danger:     #ef5350;
+  --color-danger: #ef5350;
   --color-danger-hover: #ff5252;
-  --color-success:    #27ae60;
-  --color-warning:    #ff9800;
+  --color-success: #27ae60;
+  --color-warning: #ff9800;
 }
 
 /* ===== Color Palette — Dark Mode (overrides) ===== */
 /* Scoped to screen so print/PDF always uses the light palette. */
 @media screen {
   [data-theme="dark"] {
-    --bg-primary:       #1a1a2e;
-    --bg-secondary:     #1e1e32;
-    --bg-tertiary:      #222240;
-    --bg-surface:       #2a2a4a;
+    --bg-primary: #1a1a2e;
+    --bg-secondary: #1e1e32;
+    --bg-tertiary: #222240;
+    --bg-surface: #2a2a4a;
 
-    --text-primary:     #e4e4e4;
-    --text-secondary:   #b0b0c0;
-    --text-tertiary:    #888898;
-    --text-muted:       #6a6a7a;
+    --text-primary: #e4e4e4;
+    --text-secondary: #b0b0c0;
+    --text-tertiary: #9a9aac;
+    --text-muted: #6a6a7a;
 
-    --border-primary:   #2e2e50;
+    --border-primary: #2e2e50;
     --border-secondary: #262648;
 
-    --shadow: rgba(0,0,0,0.3);
+    --shadow: rgba(0, 0, 0, 0.3);
 
     /* Accent dark-mode variant (default blue) */
-    --color-accent:             #4da8da;
-    --color-accent-hover:       #5db8e5;
-    --color-accent-light:       rgba(77,168,218,0.15);
-    --color-accent-border:      rgba(77,168,218,0.4);
+    --color-accent: #4da8da;
+    --color-accent-hover: #5db8e5;
+    --color-accent-light: rgba(77, 168, 218, 0.15);
+    --color-accent-border: rgba(77, 168, 218, 0.4);
 
-    --color-danger:     #ff6b6b;
+    --color-danger: #ff6b6b;
     --color-danger-hover: #ff5252;
-    --color-success:    #66bb6a;
-    --color-warning:    #ffa726;
+    --color-success: #66bb6a;
+    --color-warning: #ffa726;
+
+    --bg-input: #222240;
+    --code-bg: #11111f;
+    --code-fg: #d4d4d4;
   }
+}
+
+/* ===== Global focus visibility (B6) ===== */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+button:focus:not(:focus-visible) {
+  outline: none;
 }
 
 /* ===== User-selected accent (applied inline by main.js) ===== */
@@ -141,3 +186,42 @@ html[data-ui-scale="large"] {
 }
 
 /* medium (default) = 16px browser default */
+
+/* ===== Minimalist Mode ===== */
+html[data-minimalist="true"] {
+  /* Layout */
+  --mm-content-width: 48rem;
+  --mm-content-width-wide: 56rem;
+  --mm-viewport-padding: clamp(1.5rem, 6vw, 4rem);
+
+  /* Generous vertical rhythm */
+  --mm-gap-xs: 0.5rem;
+  --mm-gap-sm: 0.75rem;
+  --mm-gap-md: 1.25rem;
+  --mm-gap-lg: 2rem;
+  --mm-gap-xl: 3rem;
+  --mm-gap-2xl: 4.5rem;
+
+  /* Typography */
+  --mm-font-question: 1.0625rem;
+  --mm-font-answer: 1rem;
+  --mm-font-meta: 0.75rem;
+  --mm-line-height: 1.65;
+
+  /* Motion */
+  --mm-transition-fast: 120ms ease;
+  --mm-transition-med: 220ms ease;
+  --mm-transition-slow: 320ms ease;
+  --mm-crossfade: 300ms ease;
+
+  /* Opacity levels */
+  --mm-opacity-rest: 0.38;
+  --mm-opacity-hover: 0.85;
+  --mm-opacity-active: 1;
+
+  /* Radii */
+  --mm-radius: 0.5rem;
+
+  /* Legacy full-app chrome zeroed */
+  --sidebar-width: 0;
+}

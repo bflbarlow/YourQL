@@ -1,0 +1,20 @@
+#!/bin/sh
+# Pre-commit guard: refuse commits that introduce unformatted Go code.
+# Enable once with:  git config core.hooksPath .githooks
+# (AGENT_READ_FIRST.md / TECH_REVIEW_20260824.md F-3)
+unformatted="$(gofmt -l . 2>/dev/null)"
+if [ -n "$unformatted" ]; then
+    echo "gofmt check FAILED — run 'gofmt -w .' and re-stage:" >&2
+    echo "$unformatted" >&2
+    exit 1
+fi
+
+# Safety suite must never break silently (TECH_REVIEW_20260824.md F-4).
+if ! go build ./... ; then
+    echo "go build FAILED" >&2
+    exit 1
+fi
+if ! go test ./pkg/engine/... ./pkg/services/... >/dev/null 2>&1; then
+    echo "safety test suite FAILED — run 'go test ./...' for details" >&2
+    exit 1
+fi

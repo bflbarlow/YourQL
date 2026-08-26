@@ -44,8 +44,6 @@ export function DownloadUpdate(arg1:string,arg2:string):Promise<void>;
 
 export function DuplicateConversation(arg1:number):Promise<models.Conversation>;
 
-export function ExecuteQuery(arg1:number,arg2:string):Promise<main.QueryResult>;
-
 export function ExportConversationHTML(arg1:number):Promise<string>;
 
 export function ExportConversationMarkdown(arg1:number):Promise<string>;

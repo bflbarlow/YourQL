@@ -19,10 +19,10 @@ func init() {
 // SnowflakeDriver implements DBDriver for Snowflake.
 type SnowflakeDriver struct{}
 
-func (d *SnowflakeDriver) TypeKey() string      { return "snowflake" }
-func (d *SnowflakeDriver) OpenDriver() string   { return "snowflake" }
-func (d *SnowflakeDriver) DisplayName() string  { return "Snowflake" }
-func (d *SnowflakeDriver) DefaultPort() int     { return 443 }
+func (d *SnowflakeDriver) TypeKey() string     { return "snowflake" }
+func (d *SnowflakeDriver) OpenDriver() string  { return "snowflake" }
+func (d *SnowflakeDriver) DisplayName() string { return "Snowflake" }
+func (d *SnowflakeDriver) DefaultPort() int    { return 443 }
 func (d *SnowflakeDriver) SQLDialectHint() string {
 	return "Snowflake — double-quote identifier quoting, LIMIT, ILIKE, QUALIFY clause, VARIANT/ARRAY types"
 }
