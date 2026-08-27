@@ -1,0 +1,117 @@
+name: Build MSIX
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-msix:
+    name: Build Windows MSIX
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history so `git describe --tags` resolves the version
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.7'
+          cache-dependency-path: go.sum
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Wails CLI
+        shell: pwsh
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+
+      - name: Determine version
+        id: version
+        shell: bash
+        run: |
+          VERSION="$(git describe --tags --abbrev=0)"
+          MSIX_VERSION="${VERSION#v}.0"
+          echo "app_version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "msix_version=${MSIX_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Build frontend
+        working-directory: frontend
+        shell: pwsh
+        run: npm ci && npm run build
+
+      - name: Generate Wails bindings
+        shell: pwsh
+        run: |
+          $env:PATH = "$HOME\go\bin;$env:PATH"
+          wails generate module
+
+      - name: Build Windows binary
+        shell: pwsh
+        run: |
+          $env:PATH = "$HOME\go\bin;$env:PATH"
+          wails build -platform windows/amd64 -clean -ldflags "-X main.appVersion=${{ steps.version.outputs.app_version }}"
+
+      - name: Decode signing certificate
+        shell: pwsh
+        run: |
+          if ($env:MSIX_CERT_BASE64 -ne '') {
+            $bytes = [Convert]::FromBase64String($env:MSIX_CERT_BASE64)
+            [IO.File]::WriteAllBytes("$env:RUNNER_TEMP\yourql.pfx", $bytes)
+            Write-Host "Signing certificate decoded."
+          } else {
+            Write-Host "No certificate secret — package will be self-signed (sideloading only)."
+          }
+        env:
+          MSIX_CERT_BASE64: ${{ secrets.MSIX_CERT_BASE64 }}
+
+      - name: Package and sign MSIX
+        shell: pwsh
+        run: |
+          $args = @('-Version', '${{ steps.version.outputs.msix_version }}')
+          if ($env:MSIX_PUBLISHER -ne '') {
+            $args += @('-Publisher', $env:MSIX_PUBLISHER)
+          }
+          if ($env:MSIX_CERT_BASE64 -ne '') {
+            $args += @('-CertPath', "$env:RUNNER_TEMP\yourql.pfx", '-CertPassword', $env:MSIX_CERT_PASSWORD)
+          }
+          .\scripts\build-msix.ps1 @args
+        env:
+          MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER }}
+          MSIX_CERT_BASE64: ${{ secrets.MSIX_CERT_BASE64 }}
+          MSIX_CERT_PASSWORD: ${{ secrets.MSIX_CERT_PASSWORD }}
+
+      - name: Compute SHA256
+        id: hash
+        shell: pwsh
+        run: |
+          $file = Get-ChildItem scripts\YourQL-*.msix | Select-Object -First 1
+          $hash = (Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLower()
+          echo "filename=$($file.Name)" >> $env:GITHUB_OUTPUT
+          echo "sha256=$hash" >> $env:GITHUB_OUTPUT
+          Write-Host "Built: $($file.Name)  SHA256: $hash"
+
+      - name: Upload MSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: yourql-msix
+          path: scripts/YourQL-*.msix
+          if-no-files-found: error
+
+      - name: Attach MSIX to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: scripts/YourQL-*.msix
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
