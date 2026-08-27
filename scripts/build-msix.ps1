@@ -70,9 +70,9 @@ $assets = Join-Path $stage 'Assets'
 New-Item -ItemType Directory -Path $assets -Force | Out-Null
 
 # ── Copy exe + manifest ─────────────────────────────────────────────────────
-if (-not (Test-Path $ExePath)) { throw "YourQL.exe not found at $ExePath. Run 'wails build -platform windows/amd64' first." }
+if (-not (Test-Path $ExePath)) { throw "YourQL.exe not found at $ExePath. Run 'wails build' first." }
 Copy-Item $ExePath (Join-Path $stage 'YourQL.exe')
-Copy-Item (Join-Path $PSScriptRoot 'AppxManifest.xml') (Join-Path $stage 'AppxManifest.xml')
+Copy-Item (Join-Path $PSScriptRoot '..\packaging\msix\AppxManifest.xml') (Join-Path $stage 'AppxManifest.xml')
 
 # ── Generate tile icons (System.Drawing) from build/appicon.png ─────────────
 Add-Type -AssemblyName System.Drawing
