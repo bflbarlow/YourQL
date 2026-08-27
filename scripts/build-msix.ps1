@@ -35,7 +35,7 @@
 #>
 [CmdletBinding()]
 param(
-  [string]$ExePath = (Join-Path $PSScriptRoot '..\..\build\bin\YourQL.exe'),
+  [string]$ExePath = (Join-Path (Split-Path $PSScriptRoot -Parent) 'build\bin\YourQL.exe'),
   [string]$Version = '0.4.7.0',
   [string]$CertPath = '',
   [string]$CertPassword = '',
@@ -72,11 +72,12 @@ New-Item -ItemType Directory -Path $assets -Force | Out-Null
 # ── Copy exe + manifest ─────────────────────────────────────────────────────
 if (-not (Test-Path $ExePath)) { throw "YourQL.exe not found at $ExePath. Run 'wails build' first." }
 Copy-Item $ExePath (Join-Path $stage 'YourQL.exe')
-Copy-Item (Join-Path $PSScriptRoot '..\packaging\msix\AppxManifest.xml') (Join-Path $stage 'AppxManifest.xml')
+Copy-Item (Join-Path (Split-Path $PSScriptRoot -Parent) 'packaging\msix\AppxManifest.xml') (Join-Path $stage 'AppxManifest.xml')
 
 # ── Generate tile icons (System.Drawing) from build/appicon.png ─────────────
 Add-Type -AssemblyName System.Drawing
-$icon = Join-Path $PSScriptRoot '..\..\build\appicon.png'
+$repoRoot = Split-Path $PSScriptRoot -Parent
+$icon = Join-Path $repoRoot 'build\appicon.png'
 if (-not (Test-Path $icon)) { throw "appicon.png not found at $icon" }
 
 $sizes = @{
