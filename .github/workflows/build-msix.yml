@@ -78,14 +78,14 @@ jobs:
       - name: Package and sign MSIX
         shell: pwsh
         run: |
-          $args = @('-Version', '${{ steps.version.outputs.msix_version }}')
+          $msixArgs = @('-Version', '${{ steps.version.outputs.msix_version }}')
           if ($env:MSIX_PUBLISHER -ne '') {
-            $args += @('-Publisher', $env:MSIX_PUBLISHER)
+            $msixArgs += @('-Publisher', $env:MSIX_PUBLISHER)
           }
           if ($env:MSIX_CERT_BASE64 -ne '') {
-            $args += @('-CertPath', "$env:RUNNER_TEMP\yourql.pfx", '-CertPassword', $env:MSIX_CERT_PASSWORD)
+            $msixArgs += @('-CertPath', "$env:RUNNER_TEMP\yourql.pfx", '-CertPassword', $env:MSIX_CERT_PASSWORD)
           }
-          .\scripts\build-msix.ps1 @args
+          .\scripts\build-msix.ps1 @msixArgs
         env:
           MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER }}
           MSIX_CERT_BASE64: ${{ secrets.MSIX_CERT_BASE64 }}
