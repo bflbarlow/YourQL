@@ -59,8 +59,18 @@ jobs:
       - name: Build Windows binary
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           $env:PATH = "$HOME\go\bin;$env:PATH"
-          wails build -platform windows/amd64 -clean -ldflags "-X main.appVersion=${{ steps.version.outputs.app_version }}"
+          # Native build on the windows runner (no -platform flag) so the exe
+          # lands deterministically at build\bin\YourQL.exe.
+          wails build -clean -ldflags "-X main.appVersion=${{ steps.version.outputs.app_version }}"
+          if ($LASTEXITCODE -ne 0) { throw "wails build failed with exit code $LASTEXITCODE" }
+          if (-not (Test-Path 'build\bin\YourQL.exe')) {
+            Write-Host 'Expected exe not found; listing build/bin:'
+            Get-ChildItem build\bin | ForEach-Object { Write-Host "  $($_.Name)" }
+            throw 'build\bin\YourQL.exe missing after wails build'
+          }
+          echo "exe_path=build\bin\YourQL.exe" >> $env:GITHUB_OUTPUT
 
       - name: Decode signing certificate
         shell: pwsh
@@ -80,14 +90,15 @@ jobs:
         run: |
           $version = '${{ steps.version.outputs.msix_version }}'
           $publisher = $env:MSIX_PUBLISHER
+          $exe = (Resolve-Path 'build\bin\YourQL.exe').Path
           if ($env:MSIX_CERT_BASE64 -ne '' -and $publisher -ne '') {
-            .\scripts\build-msix.ps1 -Version $version -Publisher $publisher -CertPath "$env:RUNNER_TEMP\yourql.pfx" -CertPassword $env:MSIX_CERT_PASSWORD
+            .\scripts\build-msix.ps1 -ExePath $exe -Version $version -Publisher $publisher -CertPath "$env:RUNNER_TEMP\yourql.pfx" -CertPassword $env:MSIX_CERT_PASSWORD
           } elseif ($env:MSIX_CERT_BASE64 -ne '') {
-            .\scripts\build-msix.ps1 -Version $version -CertPath "$env:RUNNER_TEMP\yourql.pfx" -CertPassword $env:MSIX_CERT_PASSWORD
+            .\scripts\build-msix.ps1 -ExePath $exe -Version $version -CertPath "$env:RUNNER_TEMP\yourql.pfx" -CertPassword $env:MSIX_CERT_PASSWORD
           } elseif ($publisher -ne '') {
-            .\scripts\build-msix.ps1 -Version $version -Publisher $publisher
+            .\scripts\build-msix.ps1 -ExePath $exe -Version $version -Publisher $publisher
           } else {
-            .\scripts\build-msix.ps1 -Version $version
+            .\scripts\build-msix.ps1 -ExePath $exe -Version $version
           }
         env:
           MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER }}
