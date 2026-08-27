@@ -51,6 +51,10 @@ Key facts about the committed manifest:
 - **`runFullTrust` capability lives ONLY in the package-level
   `<Capabilities>` block.** It is *not* valid inside `<Application><Extensions>`
   — that was a schema error caught during development (`C00CE014`).
+- **`<TargetDeviceFamily MinVersion>` must be `>= 10.0.19041.0`** (Windows 10
+  2004 / 20H1). Partner Center **rejects** packages targeting
+  `MinVersion <= 10.0.17134.0` at upload. We ship `10.0.19041.0` with
+  `MaxVersionTested="10.0.22621.0"`.
 - The manifest has **no BOM** and a standard `<?xml version="1.0" ...?>` prolog
   on line 1. `makeappx` rejects any deviation.
 
@@ -176,6 +180,17 @@ wails build -clean -ldflags "-X main.appVersion=v0.4.7"
 8. **Empty dirs aren't tracked by git.** (Affected the Linux AppImage, not
    MSIX, but the same class of issue.) Create required directories in the
    build step rather than relying on git-tracked folders.
+9. **Store MinVersion too low.** Partner Center rejects MSIX uploads with
+   `MinVersion <= 10.0.17134.0`. Use `10.0.19041.0` or higher in
+   `<TargetDeviceFamily>`.
+10. **`runFullTrust` submission warning.** Partner Center flags `runFullTrust`
+    as a restricted capability. This is *expected* and standard for
+    Win32/Wails apps; it's auto-approved during certification. In the Partner
+    Center submission (App properties / Submission options / Restricted
+    capabilities), provide a justification such as:
+    > "YourQL is a native Win32 desktop application (built with Go/Wails)
+    > that requires full trust execution to perform database connections,
+    > standard file I/O, and native desktop functionality."
 
 ---
 
