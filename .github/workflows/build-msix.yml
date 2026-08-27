@@ -70,7 +70,6 @@ jobs:
             Get-ChildItem build\bin | ForEach-Object { Write-Host "  $($_.Name)" }
             throw 'build\bin\YourQL.exe missing after wails build'
           }
-          echo "exe_path=build\bin\YourQL.exe" >> $env:GITHUB_OUTPUT
 
       - name: Decode signing certificate
         shell: pwsh
