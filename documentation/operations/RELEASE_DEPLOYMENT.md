@@ -201,39 +201,40 @@ signtool sign /fd SHA256 /f codesign.pfx /p <password> ^
     build\bin\YourQL-amd64-installer.exe
 ```
 
-### Step 7b — Build the MSIX package (Windows only)
+### Step 7b — Build the MSIX package (Windows / GitHub Actions)
 
-Wails v2 does **not** produce MSIX (there is no `-msix` flag). MSIX packaging
-and signing use the Windows SDK (`makeappx.exe`, `signtool.exe`) and therefore
-must run on Windows. The cross-platform pieces are committed:
+Wails v2 does **not** produce MSIX (there is no `-msix` flag). MSIX requires
+Windows SDK tooling (`makeappx.exe`, `signtool.exe`) and a **mandatory
+signature**, so it is built via GitHub Actions on a `windows-latest` runner.
+
+The full procedure — manifest, script, workflow triggers, secrets, and the
+pitfalls that must not regress — lives in
+[`MSIX_PACKAGING.md`](MSIX_PACKAGING.md). Quick summary:
 
 - `packaging/msix/AppxManifest.xml` — Desktop Bridge (`runFullTrust`) manifest
-- `scripts/build-msix.ps1` — packages the built `YourQL.exe`, generates tile
-  icons from `build/appicon.png`, and signs the output
+- `scripts/build-msix.ps1` — packages `YourQL.exe`, generates tile icons from
+  `build/appicon.png`, stamps version/publisher, signs the output
+- `.github/workflows/build-msix.yml` — builds and signs on every `v*` tag push
 
-On a Windows machine with the Windows 10/11 SDK installed (and, for public
-distribution, a code-signing certificate):
+**Trigger it** (the tag must point at a commit on `main` that contains the
+workflow, otherwise the tag push is ignored):
 
-```powershell
-# 1. Build the exe (can be copied from the macOS cross-compile, or built here)
-wails build -platform windows/amd64 -clean `
-    -ldflags "-X main.appVersion=$(git describe --tags --abbrev=0)"
-
-# 2. Package + sign
-cd scripts
-.\build-msix.ps1 -Version 0.4.7.0 -Publisher "CN=Your Name" `
-    -CertPath C:\certs\yourql.pfx -CertPassword <password>
+```bash
+git checkout main
+git tag -f -a v0.4.7 -m "YourQL v0.4.7"
+git push origin --delete v0.4.7
+git push origin v0.4.7
 ```
 
-Notes:
+**Signing:** MSIX must be signed. Without the `MSIX_CERT_BASE64` /
+`MSIX_CERT_PASSWORD` secrets and `MSIX_PUBLISHER` variable, the workflow
+still succeeds but produces a **self-signed** package (sideloading/dev only).
+For public distribution set those repo secrets/vars to your EV/Authenticode
+certificate and matching `CN=` publisher.
 
-- **MSIX must be signed.** Without `-CertPath` the script falls back to a
-  self-signed certificate that works for sideloading/dev only — the package
-  will not install on other machines until they trust that cert.
-- `<Identity Publisher>` and `<Identity Version>` are stamped by the script,
-  but must match your certificate's subject (`CN=...`).
-- Output: `scripts/YourQL-0.4.7-x64.msix`. Add its SHA256 to `checksums.txt`
-  and upload alongside the other artifacts.
+Output: `scripts/YourQL-0.4.7-x64.msix` (SHA256 printed by the workflow's
+"Compute SHA256" step). Add it to `checksums.txt` and upload alongside the
+other artifacts.
 
 ### Step 8 — Build for Linux
 
