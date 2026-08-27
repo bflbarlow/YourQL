@@ -103,8 +103,8 @@ $src.Dispose()
 # ── Stamp version + publisher into the manifest ─────────────────────────────
 $manifest = Join-Path $stage 'AppxManifest.xml'
 $content = (Get-Content $manifest -Raw) `
-  -replace 'Version="[^"]*"', "Version=`"$Version`"" `
-  -replace 'Publisher="[^"]*"', "Publisher=`"$Publisher`""
+  -creplace 'Version="\d+\.\d+\.\d+\.\d+"', "Version=`"$Version`"" `
+  -creplace 'Publisher="[^"]*"', "Publisher=`"$Publisher`""
 # Write UTF-8 WITHOUT a BOM — makeappx rejects a BOM before the XML prolog.
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllText($manifest, $content, $utf8NoBom)
